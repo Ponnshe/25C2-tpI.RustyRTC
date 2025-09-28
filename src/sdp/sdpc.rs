@@ -23,11 +23,13 @@ impl std::str::FromStr for AddrType {
         }
     }
 }
-struct SdpC {
-    version: i64,
-    origin: Origin,
-    session_name: String,
-    time_active: (i64, i64),
-    media_description: MediaDescription,
-    attributes: Vec<Attribute>,
+#[derive(Debug)]
+pub struct Origin {
+    pub username: String,
+    pub session_id: u64,
+    pub session_version: u64,
+    pub net_type: String,    // usually "IN"
+    pub addr_type: AddrType, // IP4 or IP6
+    pub unicast_address: String,
+}
 }
