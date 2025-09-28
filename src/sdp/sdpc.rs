@@ -105,4 +105,16 @@ pub struct Attribute {
     pub key: String,           // e.g. "rtpmap", "fmtp", "rtcp-mux"
     pub value: Option<String>, // entire value part after "key:" (if any)
 }
+#[derive(Debug)]
+pub struct Media {
+    pub kind: MediaKind,                // m=<media>
+    pub port: PortSpec,                 // m=<media> <port>[/num]
+    pub proto: String,                  // e.g. "UDP/TLS/RTP/SAVPF"
+    pub fmts: Vec<String>,              // the <fmt> tokens (often payload types)
+    pub title: Option<String>,          // i=
+    pub connection: Option<Connection>, // c= at media
+    pub bandwidth: Vec<Bandwidth>,      // b=*
+    pub attrs: Vec<Attribute>,          // a=*
+    pub extra_lines: Vec<String>,       // any unknown/unsupported lines to round-trip
+}
 }
