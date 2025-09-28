@@ -133,4 +133,16 @@ pub struct Sdp {
     pub media: Vec<Media>,              // zero or more m= sections
     pub extra_lines: Vec<String>,       // unknown session-level lines
 }
+#[derive(Debug)]
+pub enum SdpError {
+    Missing(&'static str),
+    Invalid(&'static str),
+    ParseInt(ParseIntError),
+    AddrType,
+}
+impl From<ParseIntError> for SdpError {
+    fn from(e: ParseIntError) -> Self {
+        SdpError::ParseInt(e)
+    }
+}
 }
