@@ -88,4 +88,16 @@ impl fmt::Display for MediaKind {
         }
     }
 }
+impl From<&str> for MediaKind {
+    fn from(s: &str) -> Self {
+        match s {
+            "audio" => MediaKind::Audio,
+            "video" => MediaKind::Video,
+            "text" => MediaKind::Text,
+            "application" => MediaKind::Application,
+            "message" => MediaKind::Message,
+            other => MediaKind::Other(other.to_string()),
+        }
+    }
+}
 }
