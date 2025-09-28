@@ -352,4 +352,103 @@ impl Sdp {
             extra_lines: sextra,
         })
     }
+
+    pub fn to_string_crlf(&self) -> String {
+        let mut out = String::new();
+        macro_rules! pushln {
+            ($s:expr) => {{
+                out.push_str($s);
+                out.push_str("\r\n");
+            }};
+        }
+
+        pushln!(&format!("v={}", self.version));
+        pushln!(&format!(
+            "o={} {} {} {} {} {}",
+            self.origin.username,
+            self.origin.session_id,
+            self.origin.session_version,
+            self.origin.net_type,
+            self.origin.addr_type,
+            self.origin.unicast_address
+        ));
+        pushln!(&format!("s={}", self.session_name));
+        if let Some(i) = &self.session_info {
+            pushln!(&format!("i={}", i));
+        }
+        if let Some(u) = &self.uri {
+            pushln!(&format!("u={}", u));
+        }
+        for e in &self.emails {
+            pushln!(&format!("e={}", e));
+        }
+        for p in &self.phones {
+            pushln!(&format!("p={}", p));
+        }
+        if let Some(c) = &self.connection {
+            pushln!(&format!(
+                "c={} {} {}",
+                c.net_type, c.addr_type, c.connection_address
+            ));
+        }
+        for b in &self.bandwidth {
+            pushln!(&format!("b={}:{}", b.bwtype, b.bandwidth));
+        }
+
+        // At least one t= block is required by the base spec; in WebRTC it's commonly "0 0".
+        if self.times.is_empty() {
+            pushln!("t=0 0");
+        } else {
+            for t in &self.times {
+                pushln!(&format!("t={} {}", t.start, t.stop));
+                for r in &t.repeats {
+                    pushln!(&format!("r={}", r));
+                }
+                if let Some(z) = &t.zone {
+                    pushln!(&format!("z={}", z));
+                }
+            }
+        }
+
+        for a in &self.attrs {
+            match &a.value {
+                Some(v) => pushln!(&format!("a={}:{}", a.key, v)),
+                None => pushln!(&format!("a={}", a.key)),
+            }
+        }
+        for x in &self.extra_lines {
+            pushln!(x);
+        }
+
+        for m in &self.media {
+            let fmts = if m.fmts.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", m.fmts.join(" "))
+            };
+            pushln!(&format!("m={} {} {}{}", m.kind, m.port, m.proto, fmts));
+            if let Some(t) = &m.title {
+                pushln!(&format!("i={}", t));
+            }
+            if let Some(c) = &m.connection {
+                pushln!(&format!(
+                    "c={} {} {}",
+                    c.net_type, c.addr_type, c.connection_address
+                ));
+            }
+            for b in &m.bandwidth {
+                pushln!(&format!("b={}:{}", b.bwtype, b.bandwidth));
+            }
+            for a in &m.attrs {
+                match &a.value {
+                    Some(v) => pushln!(&format!("a={}:{}", a.key, v)),
+                    None => pushln!(&format!("a={}", a.key)),
+                }
+            }
+            for x in &m.extra_lines {
+                pushln!(x);
+            }
+        }
+        out
+    }
 }
