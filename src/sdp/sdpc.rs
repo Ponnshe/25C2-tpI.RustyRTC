@@ -53,4 +53,17 @@ pub struct TimeDesc {
     pub repeats: Vec<String>, // raw r= lines (spec grammar is tedious; keep raw)
     pub zone: Option<String>, // raw z= line
 }
+#[derive(Debug, Clone, Copy)]
+pub struct PortSpec {
+    pub base: u16,        // m=<media> <port>[/<num>] ...
+    pub num: Option<u16>, // for hierarchical encoding (rare in WebRTC)
+}
+impl fmt::Display for PortSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.num {
+            Some(n) => write!(f, "{}/{}", self.base, n),
+            None => write!(f, "{}", self.base),
+        }
+    }
+}
 }
