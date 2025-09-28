@@ -32,4 +32,12 @@ pub struct Origin {
     pub addr_type: AddrType, // IP4 or IP6
     pub unicast_address: String,
 }
+
+#[derive(Debug)]
+pub struct Connection {
+    pub net_type: String,    // "IN"
+    pub addr_type: AddrType, // IP4/IP6
+    /// e.g. "203.0.113.1" or multicast with optional "/ttl[/num]"
+    pub connection_address: String,
+}
 }
