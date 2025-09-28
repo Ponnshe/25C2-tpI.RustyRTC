@@ -117,4 +117,20 @@ pub struct Media {
     pub attrs: Vec<Attribute>,          // a=*
     pub extra_lines: Vec<String>,       // any unknown/unsupported lines to round-trip
 }
+#[derive(Debug)]
+pub struct Sdp {
+    pub version: u8,                    // v= (always 0)
+    pub origin: Origin,                 // o=
+    pub session_name: String,           // s=
+    pub session_info: Option<String>,   // i=*
+    pub uri: Option<String>,            // u=*
+    pub emails: Vec<String>,            // e=*
+    pub phones: Vec<String>,            // p=*
+    pub connection: Option<Connection>, // c= (optional at session)
+    pub bandwidth: Vec<Bandwidth>,      // b=*
+    pub times: Vec<TimeDesc>,           // one or more t= (with r=/z= hanging off last)
+    pub attrs: Vec<Attribute>,          // a=* (session-level)
+    pub media: Vec<Media>,              // zero or more m= sections
+    pub extra_lines: Vec<String>,       // unknown session-level lines
+}
 }
