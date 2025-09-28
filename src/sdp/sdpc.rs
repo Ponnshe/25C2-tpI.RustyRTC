@@ -46,4 +46,11 @@ pub struct Bandwidth {
     pub bandwidth: u64,
 }
 
+#[derive(Debug)]
+pub struct TimeDesc {
+    pub start: u64,           // NTP seconds, often 0
+    pub stop: u64,            // NTP seconds, often 0
+    pub repeats: Vec<String>, // raw r= lines (spec grammar is tedious; keep raw)
+    pub zone: Option<String>, // raw z= line
+}
 }
