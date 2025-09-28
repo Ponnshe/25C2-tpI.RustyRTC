@@ -13,15 +13,15 @@ impl fmt::Display for AddrType {
         })
     }
 }
-struct MediaDescription {
-    media: String,
-    port: i64,
-    protocol: String,
-    format: String,
-}
-enum Attribute {
-    Name(String),
-    NameValue(String, String),
+impl std::str::FromStr for AddrType {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "IP4" => Ok(AddrType::IP4),
+            "IP6" => Ok(AddrType::IP6),
+            _ => Err(()),
+        }
+    }
 }
 struct SdpC {
     version: i64,
