@@ -75,4 +75,17 @@ pub enum MediaKind {
     Message,
     Other(String),
 }
+impl fmt::Display for MediaKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use MediaKind::*;
+        match self {
+            Audio => f.write_str("audio"),
+            Video => f.write_str("video"),
+            Text => f.write_str("text"),
+            Application => f.write_str("application"),
+            Message => f.write_str("message"),
+            Other(s) => f.write_str(s),
+        }
+    }
+}
 }
