@@ -5,13 +5,13 @@ pub enum AddrType {
     IP4,
     IP6,
 }
-struct Origin {
-    username: String,
-    session_id: i64,
-    session_version: i64,
-    net_type: String,
-    address_type: AddressType,
-    unicast_address: String,
+impl fmt::Display for AddrType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AddrType::IP4 => "IP4",
+            AddrType::IP6 => "IP6",
+        })
+    }
 }
 struct MediaDescription {
     media: String,
