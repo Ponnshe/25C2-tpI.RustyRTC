@@ -66,4 +66,13 @@ impl fmt::Display for PortSpec {
         }
     }
 }
+#[derive(Debug)]
+pub enum MediaKind {
+    Audio,
+    Video,
+    Text,
+    Application,
+    Message,
+    Other(String),
+}
 }
