@@ -145,4 +145,211 @@ impl From<ParseIntError> for SdpError {
         SdpError::ParseInt(e)
     }
 }
+impl Sdp {
+    pub fn parse(input: &str) -> Result<Self, SdpError> {
+        let mut version: Option<u8> = None;
+        let mut origin: Option<Origin> = None;
+        let mut session_name: Option<String> = None;
+        let mut session_info = None;
+        let mut uri = None;
+        let mut emails = Vec::new();
+        let mut phones = Vec::new();
+        let mut connection: Option<Connection> = None;
+        let mut bandwidth: Vec<Bandwidth> = Vec::new();
+        let mut times: Vec<TimeDesc> = Vec::new();
+        let mut sattrs: Vec<Attribute> = Vec::new();
+        let mut media: Vec<Media> = Vec::new();
+        let mut sextra: Vec<String> = Vec::new();
+
+        // Tracks where we add attributes/lines: session or last media
+        let mut in_media = false;
+
+        for raw in input.split('\n') {
+            let line = raw.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.splitn(2, '=');
+            let (Some(prefix), Some(rest)) = (it.next(), it.next()) else {
+                continue;
+            };
+            match prefix {
+                "v" => {
+                    version = Some(rest.parse::<u8>()?);
+                    in_media = false;
+                }
+                "o" => {
+                    let parts: Vec<_> = rest.split_whitespace().collect();
+                    if parts.len() != 6 {
+                        return Err(SdpError::Invalid("o="));
+                    }
+                    origin = Some(Origin {
+                        username: parts[0].to_string(),
+                        session_id: parts[1].parse::<u64>()?,
+                        session_version: parts[2].parse::<u64>()?,
+                        net_type: parts[3].to_string(),
+                        addr_type: parts[4].parse().map_err(|_| SdpError::AddrType)?,
+                        unicast_address: parts[5].to_string(),
+                    });
+                    in_media = false;
+                }
+                "s" => {
+                    session_name = Some(rest.to_string());
+                    in_media = false;
+                }
+                "i" => {
+                    if in_media {
+                        if let Some(m) = media.last_mut() {
+                            m.title = Some(rest.to_string());
+                        }
+                    } else {
+                        session_info = Some(rest.to_string());
+                    }
+                }
+                "u" => {
+                    uri = Some(rest.to_string());
+                    in_media = false;
+                }
+                "e" => {
+                    emails.push(rest.to_string());
+                }
+                "p" => {
+                    phones.push(rest.to_string());
+                }
+                "c" => {
+                    let parts: Vec<_> = rest.split_whitespace().collect();
+                    if parts.len() != 3 {
+                        return Err(SdpError::Invalid("c="));
+                    }
+                    let c = Connection {
+                        net_type: parts[0].to_string(),
+                        addr_type: parts[1].parse().map_err(|_| SdpError::AddrType)?,
+                        connection_address: parts[2].to_string(),
+                    };
+                    if in_media {
+                        if let Some(m) = media.last_mut() {
+                            m.connection = Some(c);
+                        }
+                    } else {
+                        connection = Some(c);
+                    }
+                }
+                "b" => {
+                    let mut itb = rest.splitn(2, ':');
+                    let (Some(typ), Some(val)) = (itb.next(), itb.next()) else {
+                        return Err(SdpError::Invalid("b="));
+                    };
+                    let b = Bandwidth {
+                        bwtype: typ.to_string(),
+                        bandwidth: val.parse::<u64>()?,
+                    };
+                    if in_media {
+                        if let Some(m) = media.last_mut() {
+                            m.bandwidth.push(b);
+                        }
+                    } else {
+                        bandwidth.push(b);
+                    }
+                }
+                "t" => {
+                    let mut p = rest.split_whitespace();
+                    let (Some(st), Some(et)) = (p.next(), p.next()) else {
+                        return Err(SdpError::Invalid("t="));
+                    };
+                    times.push(TimeDesc {
+                        start: st.parse::<u64>()?,
+                        stop: et.parse::<u64>()?,
+                        repeats: Vec::new(),
+                        zone: None,
+                    });
+                    in_media = false;
+                }
+                "r" => {
+                    if let Some(td) = times.last_mut() {
+                        td.repeats.push(rest.to_string());
+                    } else {
+                        return Err(SdpError::Invalid("r= without t="));
+                    }
+                }
+                "z" => {
+                    if let Some(td) = times.last_mut() {
+                        td.zone = Some(rest.to_string());
+                    } else {
+                        return Err(SdpError::Invalid("z= without t="));
+                    }
+                }
+                "m" => {
+                    // m=<media> <port>[/<num>] <proto> <fmt>...
+                    let mut p = rest.split_whitespace();
+                    let Some(mkind) = p.next() else {
+                        return Err(SdpError::Invalid("m="));
+                    };
+                    let Some(port_tok) = p.next() else {
+                        return Err(SdpError::Invalid("m= port"));
+                    };
+                    let (base, num) = if let Some((a, b)) = port_tok.split_once('/') {
+                        (a.parse::<u16>()?, Some(b.parse::<u16>()?))
+                    } else {
+                        (port_tok.parse::<u16>()?, None)
+                    };
+                    let Some(proto) = p.next() else {
+                        return Err(SdpError::Invalid("m= proto"));
+                    };
+                    let fmts = p.map(|s| s.to_string()).collect::<Vec<_>>();
+                    media.push(Media {
+                        kind: MediaKind::from(mkind),
+                        port: PortSpec { base, num },
+                        proto: proto.to_string(),
+                        fmts,
+                        title: None,
+                        connection: None,
+                        bandwidth: Vec::new(),
+                        attrs: Vec::new(),
+                        extra_lines: Vec::new(),
+                    });
+                    in_media = true;
+                }
+                "a" => {
+                    let (key, val) = if let Some((k, v)) = rest.split_once(':') {
+                        (k.trim().to_string(), Some(v.trim().to_string()))
+                    } else {
+                        (rest.trim().to_string(), None)
+                    };
+                    let attr = Attribute { key, value: val };
+                    if in_media {
+                        if let Some(m) = media.last_mut() {
+                            m.attrs.push(attr);
+                        }
+                    } else {
+                        sattrs.push(attr);
+                    }
+                }
+                _ => {
+                    if in_media {
+                        if let Some(m) = media.last_mut() {
+                            m.extra_lines.push(line.to_string());
+                        }
+                    } else {
+                        sextra.push(line.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(Sdp {
+            version: version.ok_or(SdpError::Missing("v="))?,
+            origin: origin.ok_or(SdpError::Missing("o="))?,
+            session_name: session_name.ok_or(SdpError::Missing("s="))?,
+            session_info,
+            uri,
+            emails,
+            phones,
+            connection,
+            bandwidth,
+            times,
+            attrs: sattrs,
+            media,
+            extra_lines: sextra,
+        })
+    }
 }
