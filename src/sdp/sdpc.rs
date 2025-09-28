@@ -100,4 +100,9 @@ impl From<&str> for MediaKind {
         }
     }
 }
+#[derive(Debug)]
+pub struct Attribute {
+    pub key: String,           // e.g. "rtpmap", "fmtp", "rtcp-mux"
+    pub value: Option<String>, // entire value part after "key:" (if any)
+}
 }
