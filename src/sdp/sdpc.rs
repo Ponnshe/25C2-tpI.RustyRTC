@@ -1,4 +1,7 @@
-enum AddressType {
+use std::fmt;
+use std::num::ParseIntError;
+#[derive(Debug, PartialEq, Eq)]
+pub enum AddrType {
     IP4,
     IP6,
 }
