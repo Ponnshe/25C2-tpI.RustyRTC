@@ -40,4 +40,10 @@ pub struct Connection {
     /// e.g. "203.0.113.1" or multicast with optional "/ttl[/num]"
     pub connection_address: String,
 }
+#[derive(Debug)]
+pub struct Bandwidth {
+    pub bwtype: String, // e.g. "AS", "TIAS"
+    pub bandwidth: u64,
+}
+
 }
