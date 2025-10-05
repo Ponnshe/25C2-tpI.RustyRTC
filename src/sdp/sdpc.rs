@@ -32,7 +32,8 @@ impl std::str::FromStr for AddrType {
 
 
 #[derive(Debug)]
-pub struct Bandwidth { pub bwtype: String, 
+pub struct Bandwidth { 
+    pub bwtype: String, 
     pub bandwidth: u64,
 }
 
