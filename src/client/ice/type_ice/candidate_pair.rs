@@ -1,4 +1,4 @@
-use crate::client::ice::candidate::Candidate;
+use crate::client::ice::type_ice::candidate::Candidate;
 
 #[derive(Debug, Clone)]
 pub struct CandidatePair {
