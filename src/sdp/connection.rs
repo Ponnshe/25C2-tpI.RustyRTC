@@ -87,3 +87,101 @@ impl Connection {
         self.connection_address = address;
     }
 }
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::Connection;
+    use crate::sdp::sdpc::AddrType;
+
+    #[test]
+    fn new_sets_fields_correctly_ipv4() {
+        let c = Connection::new("IN", AddrType::IP4, "203.0.113.1");
+        assert_eq!(c.net_type(), "IN");
+        assert!(matches!(c.addr_type(), &AddrType::IP4));
+        assert_eq!(c.connection_address(), "203.0.113.1");
+    }
+
+    #[test]
+    fn new_sets_fields_correctly_ipv6() {
+        let c = Connection::new(String::from("IN"), AddrType::IP6, "::1");
+        assert_eq!(c.net_type(), "IN");
+        assert!(matches!(c.addr_type(), &AddrType::IP6));
+        assert_eq!(c.connection_address(), "::1");
+    }
+
+    #[test]
+    fn new_blank_defaults() {
+        let c = Connection::new_blank();
+        assert_eq!(c.net_type(), "IN");
+        assert!(matches!(c.addr_type(), &AddrType::IP4));
+        assert_eq!(c.connection_address(), "127.0.0.1");
+    }
+
+    #[test]
+    fn setters_update_fields() {
+        let mut c = Connection::new_blank();
+
+        c.set_net_type("IN".to_string());
+        c.set_addr_type(AddrType::IP6);
+        c.set_connection_address("ff02::1".to_string());
+
+        assert_eq!(c.net_type(), "IN");
+        assert!(matches!(c.addr_type(), &AddrType::IP6));
+        assert_eq!(c.connection_address(), "ff02::1");
+
+        // Actualizar de nuevo para verificar sobreescritura
+        c.set_net_type("ATM".to_string());
+        c.set_addr_type(AddrType::IP4);
+        c.set_connection_address("224.2.1.1/127".to_string());
+
+        assert_eq!(c.net_type(), "ATM");
+        assert!(matches!(c.addr_type(), &AddrType::IP4));
+        assert_eq!(c.connection_address(), "224.2.1.1/127");
+    }
+
+    #[test]
+    fn accepts_empty_and_whitespace_net_type_and_address() {
+        let mut c = Connection::new_blank();
+
+        c.set_net_type(String::new());
+        c.set_connection_address(String::new());
+        assert_eq!(c.net_type(), "");
+        assert_eq!(c.connection_address(), "");
+
+        c.set_net_type("  ".to_string());
+        c.set_connection_address("  ".to_string());
+        assert_eq!(c.net_type(), "  ");
+        assert_eq!(c.connection_address(), "  ");
+    }
+
+    #[test]
+    fn multicast_and_ttl_syntax_is_stored_verbatim() {
+        let mut c = Connection::new("IN", AddrType::IP4, "224.2.1.1/127");
+        assert_eq!(c.connection_address(), "224.2.1.1/127");
+
+        c.set_addr_type(AddrType::IP6);
+        c.set_connection_address("ff15::efc0:1/64".to_string());
+        assert!(matches!(c.addr_type(), &AddrType::IP6));
+        assert_eq!(c.connection_address(), "ff15::efc0:1/64");
+    }
+
+    #[test]
+    fn many_updates_last_write_wins() {
+        let mut c = Connection::new_blank();
+
+        for i in 0..5_000u32 {
+            c.set_net_type(format!("NET{i}"));
+            if i % 2 == 0 {
+                c.set_addr_type(AddrType::IP4);
+            } else {
+                c.set_addr_type(AddrType::IP6);
+            }
+            c.set_connection_address(format!("10.0.0.{i}"));
+        }
+
+        assert!(c.net_type().starts_with("NET"));
+        // 4_999 es impar, por lo tanto terminó en IP6
+        assert!(matches!(c.addr_type(), &AddrType::IP6));
+        assert_eq!(c.connection_address(), "10.0.0.4999");
+    }
+}
