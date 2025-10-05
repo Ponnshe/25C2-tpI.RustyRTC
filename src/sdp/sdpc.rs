@@ -1,10 +1,14 @@
 use std::fmt;
 use std::num::ParseIntError;
+
+use crate::sdp::origin::Origin;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
     IP4,
     IP6,
 }
+
 impl fmt::Display for AddrType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -13,6 +17,7 @@ impl fmt::Display for AddrType {
         })
     }
 }
+
 impl std::str::FromStr for AddrType {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, ()> {
@@ -23,15 +28,6 @@ impl std::str::FromStr for AddrType {
         }
     }
 }
-#[derive(Debug)]
-pub struct Origin {
-    pub username: String,
-    pub session_id: u64,
-    pub session_version: u64,
-    pub net_type: String,    // usually "IN"
-    pub addr_type: AddrType, // IP4 or IP6
-    pub unicast_address: String,
-}
 
 #[derive(Debug)]
 pub struct Connection {
@@ -40,9 +36,9 @@ pub struct Connection {
     /// e.g. "203.0.113.1" or multicast with optional "/ttl[/num]"
     pub connection_address: String,
 }
+
 #[derive(Debug)]
-pub struct Bandwidth {
-    pub bwtype: String, // e.g. "AS", "TIAS"
+pub struct Bandwidth { pub bwtype: String, 
     pub bandwidth: u64,
 }
 
@@ -53,13 +49,13 @@ pub struct TimeDesc {
     pub repeats: Vec<String>, // raw r= lines (spec grammar is tedious; keep raw)
     pub zone: Option<String>, // raw z= line
 }
+
 #[derive(Debug, Clone, Copy)]
 pub struct PortSpec {
     pub base: u16,        // m=<media> <port>[/<num>] ...
     pub num: Option<u16>, // for hierarchical encoding (rare in WebRTC)
 }
-impl fmt::Display for PortSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Display for PortSpec { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.num {
             Some(n) => write!(f, "{}/{}", self.base, n),
             None => write!(f, "{}", self.base),
@@ -450,5 +446,92 @@ impl Sdp {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Helper para leer archivos desde tests/sdp_test_files
+    fn load_sdp_file(file_name: &str) -> String {
+        let path = format!("{}/tests/sdp_test_files/{}", env!("CARGO_MANIFEST_DIR"), file_name);
+        fs::read_to_string(&path).expect(&format!("Failed to read {}", path))
+    }
+
+    #[test]
+    fn parse_example_sdp1() {
+        let sdp_str = load_sdp_file("deserialize_sdp_1.txt");
+        let sdp = Sdp::parse(&sdp_str).expect("Failed to parse SDP");
+
+        // Ejemplo de assertions
+        assert_eq!(sdp.version, 0);
+        assert_eq!(sdp.origin.username, "jdoe");
+        assert_eq!(sdp.origin.session_id, 2890844526);
+        assert_eq!(sdp.origin.session_version, 2890842807);
+        assert_eq!(sdp.origin.net_type, "IN");
+        assert_eq!(sdp.origin.addr_type, AddrType::IP4);
+        assert_eq!(sdp.origin.unicast_address, "203.0.113.1");
+        assert_eq!(sdp.session_name, "Example Session");
+        assert_eq!(sdp.session_info.as_deref(), Some("A simple test session"));
+
+        let conn = sdp.connection.as_ref().expect("Expected connection");
+        assert_eq!(conn.net_type, "IN");
+        assert_eq!(conn.addr_type, AddrType::IP4);
+        assert_eq!(conn.connection_address, "203.0.113.1");
+
+        assert_eq!(sdp.times.len(), 1);
+        assert_eq!(sdp.times[0].start, 0);
+        assert_eq!(sdp.times[0].stop, 0);
+
+        assert_eq!(sdp.attrs.len(), 1);
+        assert_eq!(sdp.attrs[0].key, "tool");
+        assert_eq!(sdp.attrs[0].value.as_deref(), Some("libSDP"));
+
+        assert_eq!(sdp.media.len(), 1);
+        assert_eq!(sdp.media[0].kind.to_string(), "audio");
+        assert_eq!(sdp.media[0].port.to_string(), "49170");
+        assert_eq!(sdp.media[0].proto, "RTP/AVP");
+        assert_eq!(sdp.media[0].fmts.len(), 1);
+        assert_eq!(sdp.media[0].fmts[0], "0");
+
+        assert_eq!(sdp.media[0].title.as_deref(), Some("Audio stream"));
+        assert_eq!(sdp.media[0].attrs.len(), 1);
+        assert_eq!(sdp.media[0].attrs[0].key, "rtpmap");
+
+        assert_eq!(sdp.media[0].attrs[0].value.as_deref(), Some("0 PCMU/8000"));
+    }
+
+    #[test]
+    fn parse_multiple_media() {
+        let sdp_str = load_sdp_file("deserialize_sdp_2.txt");
+        let sdp = Sdp::parse(&sdp_str).expect("Failed to parse SDP");
+
+        assert_eq!(sdp.media.len(), 2);
+
+        // Audio
+        assert_eq!(sdp.media[0].kind.to_string(), "audio");
+        assert_eq!(sdp.media[0].fmts, vec!["0", "96"]);
+        assert_eq!(sdp.media[0].attrs.len(), 2);
+
+        // Video
+        assert_eq!(sdp.media[1].kind.to_string(), "video");
+        assert_eq!(sdp.media[1].fmts, vec!["97"]);
+        assert_eq!(sdp.media[1].attrs[0].key, "rtpmap");
+    }
+
+    #[test]
+    fn parse_invalid_missing_origin() {
+        let sdp_str = load_sdp_file("deserialize_sdp_3.txt");
+        let result = Sdp::parse(&sdp_str);
+        assert!(matches!(result, Err(SdpError::Missing("o="))));
+    }
+
+    #[test]
+    fn parse_invalid_connection() {
+        let sdp_str = load_sdp_file("deserialize_sdp_invalid_connection.txt");
+        let result = Sdp::parse(&sdp_str);
+        assert!(matches!(result, Err(SdpError::Invalid("c="))));
     }
 }
