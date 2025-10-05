@@ -2,9 +2,9 @@ use std::fmt;
 use std::num::ParseIntError;
 
 use crate::sdp::attribute::Attribute;
-use crate::sdp::media::{MediaKind, Media};
 use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::connection::Connection;
+use crate::sdp::media::{Media, MediaKind};
 use crate::sdp::origin::Origin;
 use crate::sdp::port_spec::PortSpec;
 use crate::sdp::time_desc::TimeDesc;
@@ -118,7 +118,7 @@ impl Sdp {
                 "i" => {
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.title = Some(rest.to_string());
+                            m.set_title(Some(rest.to_string()));
                         }
                     } else {
                         session_info = Some(rest.to_string());
@@ -146,7 +146,7 @@ impl Sdp {
                     );
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.connection = Some(c);
+                            m.set_connection(Some(c));
                         }
                     } else {
                         connection = Some(c);
@@ -160,7 +160,7 @@ impl Sdp {
                     let b = Bandwidth::new(typ.to_string(), val.parse::<u64>()?);
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.bandwidth.push(b);
+                            m.add_bandwidth(b);
                         }
                     } else {
                         bandwidth.push(b);
@@ -233,7 +233,7 @@ impl Sdp {
                     let attr = Attribute::new(key, val);
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.attrs.push(attr);
+                            m.add_attr(attr);
                         }
                     } else {
                         sattrs.push(attr);
@@ -242,7 +242,7 @@ impl Sdp {
                 _ => {
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.extra_lines.push(line.to_string());
+                            m.add_extra_line(line.to_string());
                         }
                     } else {
                         sextra.push(line.to_string());
@@ -338,16 +338,22 @@ impl Sdp {
         }
 
         for m in &self.media {
-            let fmts = if m.fmts.is_empty() {
+            let fmts = if m.fmts().is_empty() {
                 String::new()
             } else {
-                format!(" {}", m.fmts.join(" "))
+                format!(" {}", m.fmts().join(" "))
             };
-            pushln!(&format!("m={} {} {}{}", m.kind, m.port, m.proto, fmts));
-            if let Some(t) = &m.title {
+            pushln!(&format!(
+                "m={} {} {}{}",
+                m.kind(),
+                m.port(),
+                m.proto(),
+                fmts
+            ));
+            if let Some(t) = &m.title() {
                 pushln!(&format!("i={}", t));
             }
-            if let Some(c) = &m.connection {
+            if let Some(c) = m.connection() {
                 pushln!(&format!(
                     "c={} {} {}",
                     c.net_type(),
@@ -355,16 +361,16 @@ impl Sdp {
                     c.connection_address()
                 ));
             }
-            for b in &m.bandwidth {
+            for b in m.bandwidth() {
                 pushln!(&format!("b={}:{}", b.bwtype(), b.bandwidth()));
             }
-            for a in &m.attrs {
+            for a in m.attrs() {
                 match a.value() {
                     Some(v) => pushln!(&format!("a={}:{}", a.key(), v)),
                     None => pushln!(&format!("a={}", a.key())),
                 }
             }
-            for x in &m.extra_lines {
+            for x in m.extra_lines() {
                 pushln!(x);
             }
         }
@@ -417,18 +423,18 @@ mod tests {
         assert_eq!(sdp.attrs[0].value().as_deref(), Some("libSDP"));
 
         assert_eq!(sdp.media.len(), 1);
-        assert_eq!(sdp.media[0].kind.to_string(), "audio");
-        assert_eq!(sdp.media[0].port.to_string(), "49170");
-        assert_eq!(sdp.media[0].proto, "RTP/AVP");
-        assert_eq!(sdp.media[0].fmts.len(), 1);
-        assert_eq!(sdp.media[0].fmts[0], "0");
+        assert_eq!(sdp.media[0].kind().to_string(), "audio");
+        assert_eq!(sdp.media[0].port().to_string(), "49170");
+        assert_eq!(sdp.media[0].proto(), "RTP/AVP");
+        assert_eq!(sdp.media[0].fmts().len(), 1);
+        assert_eq!(sdp.media[0].fmts()[0], "0");
 
-        assert_eq!(sdp.media[0].title.as_deref(), Some("Audio stream"));
-        assert_eq!(sdp.media[0].attrs.len(), 1);
-        assert_eq!(sdp.media[0].attrs[0].key(), "rtpmap");
+        assert_eq!(sdp.media[0].title().as_deref(), Some("Audio stream"));
+        assert_eq!(sdp.media[0].attrs().len(), 1);
+        assert_eq!(sdp.media[0].attrs()[0].key(), "rtpmap");
 
         assert_eq!(
-            sdp.media[0].attrs[0].value().as_deref(),
+            sdp.media[0].attrs()[0].value().as_deref(),
             Some("0 PCMU/8000")
         );
     }
@@ -441,14 +447,14 @@ mod tests {
         assert_eq!(sdp.media.len(), 2);
 
         // Audio
-        assert_eq!(sdp.media[0].kind.to_string(), "audio");
-        assert_eq!(sdp.media[0].fmts, vec!["0", "96"]);
-        assert_eq!(sdp.media[0].attrs.len(), 2);
+        assert_eq!(sdp.media[0].kind().to_string(), "audio");
+        assert_eq!(*sdp.media[0].fmts(), vec!["0", "96"]);
+        assert_eq!(sdp.media[0].attrs().len(), 2);
 
         // Video
-        assert_eq!(sdp.media[1].kind.to_string(), "video");
-        assert_eq!(sdp.media[1].fmts, vec!["97"]);
-        assert_eq!(sdp.media[1].attrs[0].key(), "rtpmap");
+        assert_eq!(sdp.media[1].kind().to_string(), "video");
+        assert_eq!(*sdp.media[1].fmts(), vec!["97"]);
+        assert_eq!(sdp.media[1].attrs()[0].key(), "rtpmap");
     }
 
     #[test]
