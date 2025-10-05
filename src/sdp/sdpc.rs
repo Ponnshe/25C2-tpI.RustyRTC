@@ -7,6 +7,7 @@ use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::time_desc::TimeDesc;
 use crate::sdp::port_spec::PortSpec;
 use crate::sdp::attribute::Attribute;
+use crate::sdp::media::{MediaKind, Media};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -34,52 +35,6 @@ impl std::str::FromStr for AddrType {
     }
 }
 
-#[derive(Debug)]
-pub enum MediaKind {
-    Audio,
-    Video,
-    Text,
-    Application,
-    Message,
-    Other(String),
-}
-impl fmt::Display for MediaKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use MediaKind::*;
-        match self {
-            Audio => f.write_str("audio"),
-            Video => f.write_str("video"),
-            Text => f.write_str("text"),
-            Application => f.write_str("application"),
-            Message => f.write_str("message"),
-            Other(s) => f.write_str(s),
-        }
-    }
-}
-impl From<&str> for MediaKind {
-    fn from(s: &str) -> Self {
-        match s {
-            "audio" => MediaKind::Audio,
-            "video" => MediaKind::Video,
-            "text" => MediaKind::Text,
-            "application" => MediaKind::Application,
-            "message" => MediaKind::Message,
-            other => MediaKind::Other(other.to_string()),
-        }
-    }
-}
-#[derive(Debug)]
-pub struct Media {
-    pub kind: MediaKind,                // m=<media>
-    pub port: PortSpec,                 // m=<media> <port>[/num]
-    pub proto: String,                  // e.g. "UDP/TLS/RTP/SAVPF"
-    pub fmts: Vec<String>,              // the <fmt> tokens (often payload types)
-    pub title: Option<String>,          // i=
-    pub connection: Option<Connection>, // c= at media
-    pub bandwidth: Vec<Bandwidth>,      // b=*
-    pub attrs: Vec<Attribute>,          // a=*
-    pub extra_lines: Vec<String>,       // any unknown/unsupported lines to round-trip
-}
 #[derive(Debug)]
 pub struct Sdp {
     pub version: u8,                    // v= (always 0)
