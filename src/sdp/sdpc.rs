@@ -202,10 +202,7 @@ impl Sdp {
                     let (Some(typ), Some(val)) = (itb.next(), itb.next()) else {
                         return Err(SdpError::Invalid("b="));
                     };
-                    let b = Bandwidth {
-                        bwtype: typ.to_string(),
-                        bandwidth: val.parse::<u64>()?,
-                    };
+                    let b = Bandwidth::new(typ.to_string(), val.parse::<u64>()?);
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.bandwidth.push(b);
@@ -219,24 +216,24 @@ impl Sdp {
                     let (Some(st), Some(et)) = (p.next(), p.next()) else {
                         return Err(SdpError::Invalid("t="));
                     };
-                    times.push(TimeDesc {
-                        start: st.parse::<u64>()?,
-                        stop: et.parse::<u64>()?,
-                        repeats: Vec::new(),
-                        zone: None,
-                    });
+                    times.push(TimeDesc::new(
+                        st.parse::<u64>()?,
+                        et.parse::<u64>()?,
+                        Vec::new(),
+                        None,
+                    ));
                     in_media = false;
                 }
                 "r" => {
                     if let Some(td) = times.last_mut() {
-                        td.repeats.push(rest.to_string());
+                        td.add_repeat(rest.to_string());
                     } else {
                         return Err(SdpError::Invalid("r= without t="));
                     }
                 }
                 "z" => {
                     if let Some(td) = times.last_mut() {
-                        td.zone = Some(rest.to_string());
+                        td.set_zone(Some(rest.to_string()));
                     } else {
                         return Err(SdpError::Invalid("z= without t="));
                     }
@@ -259,17 +256,17 @@ impl Sdp {
                         return Err(SdpError::Invalid("m= proto"));
                     };
                     let fmts = p.map(|s| s.to_string()).collect::<Vec<_>>();
-                    media.push(Media {
-                        kind: MediaKind::from(mkind),
-                        port: PortSpec { base, num },
-                        proto: proto.to_string(),
+                    media.push(Media::new(
+                        MediaKind::from(mkind),
+                        PortSpec::new(base, num),
+                        proto.to_string(),
                         fmts,
-                        title: None,
-                        connection: None,
-                        bandwidth: Vec::new(),
-                        attrs: Vec::new(),
-                        extra_lines: Vec::new(),
-                    });
+                        None,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ));
                     in_media = true;
                 }
                 "a" => {
@@ -278,7 +275,7 @@ impl Sdp {
                     } else {
                         (rest.trim().to_string(), None)
                     };
-                    let attr = Attribute { key, value: val };
+                    let attr = Attribute::new(key, val);
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.attrs.push(attr);
@@ -357,7 +354,7 @@ impl Sdp {
             ));
         }
         for b in &self.bandwidth {
-            pushln!(&format!("b={}:{}", b.bwtype, b.bandwidth));
+            pushln!(&format!("b={}:{}", b.bwtype(), b.bandwidth()));
         }
 
         // At least one t= block is required by the base spec; in WebRTC it's commonly "0 0".
@@ -365,20 +362,20 @@ impl Sdp {
             pushln!("t=0 0");
         } else {
             for t in &self.times {
-                pushln!(&format!("t={} {}", t.start, t.stop));
-                for r in &t.repeats {
+                pushln!(&format!("t={} {}", t.start(), t.stop()));
+                for r in t.repeats() {
                     pushln!(&format!("r={}", r));
                 }
-                if let Some(z) = &t.zone {
+                if let Some(z) = &t.zone() {
                     pushln!(&format!("z={}", z));
                 }
             }
         }
 
         for a in &self.attrs {
-            match &a.value {
-                Some(v) => pushln!(&format!("a={}:{}", a.key, v)),
-                None => pushln!(&format!("a={}", a.key)),
+            match a.value() {
+                Some(v) => pushln!(&format!("a={}:{}", a.key(), v)),
+                None => pushln!(&format!("a={}", a.key())),
             }
         }
         for x in &self.extra_lines {
@@ -404,12 +401,12 @@ impl Sdp {
                 ));
             }
             for b in &m.bandwidth {
-                pushln!(&format!("b={}:{}", b.bwtype, b.bandwidth));
+                pushln!(&format!("b={}:{}", b.bwtype(), b.bandwidth()));
             }
             for a in &m.attrs {
-                match &a.value {
-                    Some(v) => pushln!(&format!("a={}:{}", a.key, v)),
-                    None => pushln!(&format!("a={}", a.key)),
+                match a.value() {
+                    Some(v) => pushln!(&format!("a={}:{}", a.key(), v)),
+                    None => pushln!(&format!("a={}", a.key())),
                 }
             }
             for x in &m.extra_lines {
@@ -457,12 +454,12 @@ mod tests {
         assert_eq!(conn.connection_address(), "203.0.113.1");
 
         assert_eq!(sdp.times.len(), 1);
-        assert_eq!(sdp.times[0].start, 0);
-        assert_eq!(sdp.times[0].stop, 0);
+        assert_eq!(sdp.times[0].start(), 0);
+        assert_eq!(sdp.times[0].stop(), 0);
 
         assert_eq!(sdp.attrs.len(), 1);
-        assert_eq!(sdp.attrs[0].key, "tool");
-        assert_eq!(sdp.attrs[0].value.as_deref(), Some("libSDP"));
+        assert_eq!(sdp.attrs[0].key(), "tool");
+        assert_eq!(sdp.attrs[0].value().as_deref(), Some("libSDP"));
 
         assert_eq!(sdp.media.len(), 1);
         assert_eq!(sdp.media[0].kind.to_string(), "audio");
@@ -473,9 +470,12 @@ mod tests {
 
         assert_eq!(sdp.media[0].title.as_deref(), Some("Audio stream"));
         assert_eq!(sdp.media[0].attrs.len(), 1);
-        assert_eq!(sdp.media[0].attrs[0].key, "rtpmap");
+        assert_eq!(sdp.media[0].attrs[0].key(), "rtpmap");
 
-        assert_eq!(sdp.media[0].attrs[0].value.as_deref(), Some("0 PCMU/8000"));
+        assert_eq!(
+            sdp.media[0].attrs[0].value().as_deref(),
+            Some("0 PCMU/8000")
+        );
     }
 
     #[test]
@@ -493,7 +493,7 @@ mod tests {
         // Video
         assert_eq!(sdp.media[1].kind.to_string(), "video");
         assert_eq!(sdp.media[1].fmts, vec!["97"]);
-        assert_eq!(sdp.media[1].attrs[0].key, "rtpmap");
+        assert_eq!(sdp.media[1].attrs[0].key(), "rtpmap");
     }
 
     #[test]
