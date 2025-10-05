@@ -5,7 +5,10 @@ use crate::sdp::sdpc::AddrType;
 fn ntp_seconds() -> u64 {
     // NTP epoch starts at 1900, UNIX_EPOCH starts at 1970
     const NTP_UNIX_DIFF: u64 = 2_208_988_800; // segundos entre 1900 y 1970
-    let unix_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let unix_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     unix_now + NTP_UNIX_DIFF
 }
 
@@ -21,7 +24,14 @@ pub struct Origin {
 
 impl Origin {
     /// Constructor
-    pub fn new (username: impl Into<String>, session_id: u64, session_version: u64, net_type: impl Into<String>, addr_type: AddrType, unicast_address: impl Into<String>) -> Self {
+    pub fn new(
+        username: impl Into<String>,
+        session_id: u64,
+        session_version: u64,
+        net_type: impl Into<String>,
+        addr_type: AddrType,
+        unicast_address: impl Into<String>,
+    ) -> Self {
         Self {
             username: username.into(),
             session_id,
@@ -40,7 +50,7 @@ impl Origin {
             session_version: session_id,
             net_type: "IN".to_string(),
             addr_type: AddrType::IP4,
-            unicast_address:"".to_string(),
+            unicast_address: "".to_string(),
         }
     }
 
