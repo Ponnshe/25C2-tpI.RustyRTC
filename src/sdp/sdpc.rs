@@ -5,6 +5,7 @@ use crate::sdp::origin::Origin;
 use crate::sdp::connection::Connection;
 use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::time_desc::TimeDesc;
+use crate::sdp::port_spec::PortSpec;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -32,18 +33,6 @@ impl std::str::FromStr for AddrType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct PortSpec {
-    pub base: u16,        // m=<media> <port>[/<num>] ...
-    pub num: Option<u16>, // for hierarchical encoding (rare in WebRTC)
-}
-impl fmt::Display for PortSpec { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.num {
-            Some(n) => write!(f, "{}/{}", self.base, n),
-            None => write!(f, "{}", self.base),
-        }
-    }
-}
 #[derive(Debug)]
 pub enum MediaKind {
     Audio,
