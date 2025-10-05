@@ -6,6 +6,7 @@ use crate::sdp::connection::Connection;
 use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::time_desc::TimeDesc;
 use crate::sdp::port_spec::PortSpec;
+use crate::sdp::attribute::Attribute;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -66,11 +67,6 @@ impl From<&str> for MediaKind {
             other => MediaKind::Other(other.to_string()),
         }
     }
-}
-#[derive(Debug)]
-pub struct Attribute {
-    pub key: String,           // e.g. "rtpmap", "fmtp", "rtcp-mux"
-    pub value: Option<String>, // entire value part after "key:" (if any)
 }
 #[derive(Debug)]
 pub struct Media {

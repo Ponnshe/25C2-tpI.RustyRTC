@@ -6,3 +6,4 @@ pub mod connection;
 pub mod bandwith;
 pub mod time_desc;
 pub mod port_spec;
+pub mod attribute;
