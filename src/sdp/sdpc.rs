@@ -2,6 +2,7 @@ use std::fmt;
 use std::num::ParseIntError;
 
 use crate::sdp::origin::Origin;
+use crate::sdp::connection::Connection;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -29,13 +30,6 @@ impl std::str::FromStr for AddrType {
     }
 }
 
-#[derive(Debug)]
-pub struct Connection {
-    pub net_type: String,    // "IN"
-    pub addr_type: AddrType, // IP4/IP6
-    /// e.g. "203.0.113.1" or multicast with optional "/ttl[/num]"
-    pub connection_address: String,
-}
 
 #[derive(Debug)]
 pub struct Bandwidth { pub bwtype: String, 

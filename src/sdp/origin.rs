@@ -21,7 +21,7 @@ pub struct Origin {
 
 impl Origin {
     /// Constructor
-    pub fn new<U: Into<String>, N: Into<String>>(username: U, session_id: u64, session_version: u64, net_type: N, addr_type: AddrType, unicast_address: U) -> Self {
+    pub fn new (username: impl Into<String>, session_id: u64, session_version: u64, net_type: impl Into<String>, addr_type: AddrType, unicast_address: impl Into<String>) -> Self {
         Self {
             username: username.into(),
             session_id,
