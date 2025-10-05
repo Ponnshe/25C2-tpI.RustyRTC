@@ -249,4 +249,23 @@ impl Media {
     pub fn set_extra_lines(&mut self, extra_lines: Vec<String>) {
         self.extra_lines = extra_lines; 
     }
+    /// Agrega un formato de payload (`<fmt>`) a la media.
+    pub fn add_fmt<S: Into<String>>(&mut self, fmt: S) {
+        self.fmts.push(fmt.into());
+    }
+
+    /// Agrega un atributo (`a=*`) a la media.
+    pub fn add_attr(&mut self, attr: Attribute) {
+        self.attrs.push(attr);
+    }
+
+    /// Agrega un ancho de banda (`b=*`) a la media.
+    pub fn add_bandwidth(&mut self, bw: Bandwidth) {
+        self.bandwidth.push(bw);
+    }
+
+    /// Agrega una línea adicional desconocida o extra para round-trip.
+    pub fn add_extra_line<S: Into<String>>(&mut self, line: S) {
+        self.extra_lines.push(line.into());
+    }
 }
