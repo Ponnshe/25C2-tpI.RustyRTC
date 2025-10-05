@@ -1,6 +1,8 @@
-# Taller de Programacion {Grupo}
+# Taller de Programacion rusty-rtc
 
 ## Integrantes
+
+Alexander Villa Jimenez
 
 ## Como usar 
 
