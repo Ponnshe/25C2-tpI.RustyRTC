@@ -1,8 +1,12 @@
 use std::fmt;
 use std::num::ParseIntError;
 
+use crate::sdp::attribute::Attribute;
+use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::connection::Connection;
 use crate::sdp::origin::Origin;
+use crate::sdp::port_spec::PortSpec;
+use crate::sdp::time_desc::TimeDesc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -30,33 +34,6 @@ impl std::str::FromStr for AddrType {
     }
 }
 
-#[derive(Debug)]
-pub struct Bandwidth {
-    pub bwtype: String,
-    pub bandwidth: u64,
-}
-
-#[derive(Debug)]
-pub struct TimeDesc {
-    pub start: u64,           // NTP seconds, often 0
-    pub stop: u64,            // NTP seconds, often 0
-    pub repeats: Vec<String>, // raw r= lines (spec grammar is tedious; keep raw)
-    pub zone: Option<String>, // raw z= line
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PortSpec {
-    pub base: u16,        // m=<media> <port>[/<num>] ...
-    pub num: Option<u16>, // for hierarchical encoding (rare in WebRTC)
-}
-impl fmt::Display for PortSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.num {
-            Some(n) => write!(f, "{}/{}", self.base, n),
-            None => write!(f, "{}", self.base),
-        }
-    }
-}
 #[derive(Debug)]
 pub enum MediaKind {
     Audio,
@@ -90,11 +67,6 @@ impl From<&str> for MediaKind {
             other => MediaKind::Other(other.to_string()),
         }
     }
-}
-#[derive(Debug)]
-pub struct Attribute {
-    pub key: String,           // e.g. "rtpmap", "fmtp", "rtcp-mux"
-    pub value: Option<String>, // entire value part after "key:" (if any)
 }
 #[derive(Debug)]
 pub struct Media {
