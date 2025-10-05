@@ -94,3 +94,64 @@ impl Origin {
         self.unicast_address = unicast_address.into();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::{AddrType, Origin, ntp_seconds};
+
+    #[test]
+    fn new_sets_fields_correctly() {
+        let o = Origin::new(
+            String::from("-"),
+            42,
+            7,
+            String::from("IN"), // show that `N: Into<String>` accepts String
+            AddrType::IP4,
+            "127.0.0.1",
+        );
+
+        assert_eq!(o.username(), "-");
+        assert_eq!(o.session_id(), 42);
+        assert_eq!(o.session_version(), 7);
+        assert_eq!(o.net_type(), "IN");
+        assert!(matches!(*o.addr_type(), AddrType::IP4));
+        assert_eq!(o.unicast_address(), "127.0.0.1");
+    }
+
+    #[test]
+    fn new_blank_sets_sane_defaults() {
+        // Bound the generated NTP time to avoid flakiness
+        let before = ntp_seconds();
+        let o = Origin::new_blank();
+        let after = ntp_seconds();
+
+        assert_eq!(o.username(), "-");
+        assert_eq!(o.net_type(), "IN");
+        assert!(matches!(*o.addr_type(), AddrType::IP4));
+        assert_eq!(o.unicast_address(), "");
+
+        // session_id should be "now" in NTP seconds and equal to session_version
+        assert!(o.session_id() >= before && o.session_id() <= after);
+        assert_eq!(o.session_version(), o.session_id());
+    }
+
+    #[test]
+    fn setters_update_fields() {
+        let mut o = Origin::new_blank();
+
+        o.set_username("alice");
+        o.set_session_id(100);
+        o.set_session_version(101);
+        o.set_net_type("IN"); // keep as IN, just exercising setter
+        o.set_addr_type(AddrType::IP6);
+        o.set_unicast_address("::1");
+
+        assert_eq!(o.username(), "alice");
+        assert_eq!(o.session_id(), 100);
+        assert_eq!(o.session_version(), 101);
+        assert_eq!(o.net_type(), "IN");
+        assert!(matches!(*o.addr_type(), AddrType::IP6));
+        assert_eq!(o.unicast_address(), "::1");
+    }
+}
