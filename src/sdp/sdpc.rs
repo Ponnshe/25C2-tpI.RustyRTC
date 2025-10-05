@@ -1,8 +1,8 @@
 use std::fmt;
 use std::num::ParseIntError;
 
-use crate::sdp::origin::Origin;
 use crate::sdp::connection::Connection;
+use crate::sdp::origin::Origin;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddrType {
@@ -30,9 +30,9 @@ impl std::str::FromStr for AddrType {
     }
 }
 
-
 #[derive(Debug)]
-pub struct Bandwidth { pub bwtype: String, 
+pub struct Bandwidth {
+    pub bwtype: String,
     pub bandwidth: u64,
 }
 
@@ -49,7 +49,8 @@ pub struct PortSpec {
     pub base: u16,        // m=<media> <port>[/<num>] ...
     pub num: Option<u16>, // for hierarchical encoding (rare in WebRTC)
 }
-impl fmt::Display for PortSpec { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Display for PortSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.num {
             Some(n) => write!(f, "{}/{}", self.base, n),
             None => write!(f, "{}", self.base),
@@ -173,14 +174,14 @@ impl Sdp {
                     if parts.len() != 6 {
                         return Err(SdpError::Invalid("o="));
                     }
-                    origin = Some(Origin {
-                        username: parts[0].to_string(),
-                        session_id: parts[1].parse::<u64>()?,
-                        session_version: parts[2].parse::<u64>()?,
-                        net_type: parts[3].to_string(),
-                        addr_type: parts[4].parse().map_err(|_| SdpError::AddrType)?,
-                        unicast_address: parts[5].to_string(),
-                    });
+                    origin = Some(Origin::new(
+                        parts[0].to_owned(),
+                        parts[1].parse::<u64>()?,
+                        parts[2].parse::<u64>()?,
+                        parts[3].to_owned(),
+                        parts[4].parse().map_err(|_| SdpError::AddrType)?,
+                        parts[5].to_owned(),
+                    ));
                     in_media = false;
                 }
                 "s" => {
@@ -211,11 +212,11 @@ impl Sdp {
                     if parts.len() != 3 {
                         return Err(SdpError::Invalid("c="));
                     }
-                    let c = Connection {
-                        net_type: parts[0].to_string(),
-                        addr_type: parts[1].parse().map_err(|_| SdpError::AddrType)?,
-                        connection_address: parts[2].to_string(),
-                    };
+                    let c = Connection::new(
+                        parts[0].to_string(),
+                        parts[1].parse().map_err(|_| SdpError::AddrType)?,
+                        parts[2].to_string(),
+                    );
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.connection = Some(c);
@@ -355,12 +356,12 @@ impl Sdp {
         pushln!(&format!("v={}", self.version));
         pushln!(&format!(
             "o={} {} {} {} {} {}",
-            self.origin.username,
-            self.origin.session_id,
-            self.origin.session_version,
-            self.origin.net_type,
-            self.origin.addr_type,
-            self.origin.unicast_address
+            self.origin.username(),
+            self.origin.session_id(),
+            self.origin.session_version(),
+            self.origin.net_type(),
+            self.origin.addr_type(),
+            self.origin.unicast_address()
         ));
         pushln!(&format!("s={}", self.session_name));
         if let Some(i) = &self.session_info {
@@ -378,7 +379,9 @@ impl Sdp {
         if let Some(c) = &self.connection {
             pushln!(&format!(
                 "c={} {} {}",
-                c.net_type, c.addr_type, c.connection_address
+                c.net_type(),
+                c.addr_type(),
+                c.connection_address()
             ));
         }
         for b in &self.bandwidth {
@@ -423,7 +426,9 @@ impl Sdp {
             if let Some(c) = &m.connection {
                 pushln!(&format!(
                     "c={} {} {}",
-                    c.net_type, c.addr_type, c.connection_address
+                    c.net_type(),
+                    *c.addr_type(),
+                    c.connection_address()
                 ));
             }
             for b in &m.bandwidth {
@@ -450,7 +455,11 @@ mod tests {
 
     /// Helper para leer archivos desde tests/sdp_test_files
     fn load_sdp_file(file_name: &str) -> String {
-        let path = format!("{}/tests/sdp_test_files/{}", env!("CARGO_MANIFEST_DIR"), file_name);
+        let path = format!(
+            "{}/tests/sdp_test_files/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            file_name
+        );
         fs::read_to_string(&path).expect(&format!("Failed to read {}", path))
     }
 
@@ -461,19 +470,19 @@ mod tests {
 
         // Ejemplo de assertions
         assert_eq!(sdp.version, 0);
-        assert_eq!(sdp.origin.username, "jdoe");
-        assert_eq!(sdp.origin.session_id, 2890844526);
-        assert_eq!(sdp.origin.session_version, 2890842807);
-        assert_eq!(sdp.origin.net_type, "IN");
-        assert_eq!(sdp.origin.addr_type, AddrType::IP4);
-        assert_eq!(sdp.origin.unicast_address, "203.0.113.1");
+        assert_eq!(sdp.origin.username(), "jdoe");
+        assert_eq!(sdp.origin.session_id(), 2890844526);
+        assert_eq!(sdp.origin.session_version(), 2890842807);
+        assert_eq!(sdp.origin.net_type(), "IN");
+        assert_eq!(*sdp.origin.addr_type(), AddrType::IP4);
+        assert_eq!(sdp.origin.unicast_address(), "203.0.113.1");
         assert_eq!(sdp.session_name, "Example Session");
         assert_eq!(sdp.session_info.as_deref(), Some("A simple test session"));
 
         let conn = sdp.connection.as_ref().expect("Expected connection");
-        assert_eq!(conn.net_type, "IN");
-        assert_eq!(conn.addr_type, AddrType::IP4);
-        assert_eq!(conn.connection_address, "203.0.113.1");
+        assert_eq!(conn.net_type(), "IN");
+        assert_eq!(*conn.addr_type(), AddrType::IP4);
+        assert_eq!(conn.connection_address(), "203.0.113.1");
 
         assert_eq!(sdp.times.len(), 1);
         assert_eq!(sdp.times[0].start, 0);
@@ -524,7 +533,7 @@ mod tests {
 
     #[test]
     fn parse_invalid_connection() {
-        let sdp_str = load_sdp_file("deserialize_sdp_invalid_connection.txt");
+        let sdp_str = load_sdp_file("deserialize_sdp_4.txt");
         let result = Sdp::parse(&sdp_str);
         assert!(matches!(result, Err(SdpError::Invalid("c="))));
     }
