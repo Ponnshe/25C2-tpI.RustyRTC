@@ -1,13 +1,13 @@
 use std::fmt;
 
-use crate::sdp::port_spec::PortSpec;
-use crate::sdp::connection::Connection;
-use crate::sdp::bandwith::Bandwidth;
 use crate::sdp::attribute::Attribute;
+use crate::sdp::bandwidth::Bandwidth;
+use crate::sdp::connection::Connection;
+use crate::sdp::port_spec::PortSpec;
 
 /// Enum que representa los posibles tipos de medios en una sección `m=` de un SDP.
 ///
-/// Los valores estándar son `Audio`, `Video`, `Text`, `Application` y `Message`. 
+/// Los valores estándar son `Audio`, `Video`, `Text`, `Application` y `Message`.
 /// Para medios no estándar se utiliza `Other(String)`.
 #[derive(Debug)]
 pub enum MediaKind {
@@ -154,100 +154,99 @@ impl Media {
     // --- GETTERS ---
 
     /// Retorna el tipo de medio (`MediaKind`) de esta sección `m=`.
-    /// 
+    ///
     /// Ejemplo: `Audio`, `Video`, `Other("custom")`.
-    pub fn kind(&self) -> &MediaKind { 
-        &self.kind 
+    pub fn kind(&self) -> &MediaKind {
+        &self.kind
     }
 
     /// Retorna la especificación de puerto (`PortSpec`) de la media.
     /// Puede incluir base y cantidad de puertos para rangos.
     pub fn port(&self) -> &PortSpec {
-        &self.port 
+        &self.port
     }
 
     /// Retorna el protocolo de transporte utilizado (ej. `"UDP/TLS/RTP/SAVPF"`).
     pub fn proto(&self) -> &str {
-        &self.proto 
+        &self.proto
     }
 
     /// Retorna los formatos de payload asociados a la media.
     /// Cada string representa un `<fmt>` de la línea `m=` o `a=rtpmap`.
     pub fn fmts(&self) -> &Vec<String> {
-        &self.fmts 
+        &self.fmts
     }
 
     /// Retorna el título de la media (`i=`) si está presente.
     pub fn title(&self) -> Option<&str> {
-        self.title.as_deref() 
+        self.title.as_deref()
     }
 
     /// Retorna la conexión asociada a la media (`c=`) si está presente.
     pub fn connection(&self) -> Option<&Connection> {
-        self.connection.as_ref() 
+        self.connection.as_ref()
     }
 
     /// Retorna la lista de líneas de ancho de banda (`b=*`) asociadas a esta media.
     pub fn bandwidth(&self) -> &Vec<Bandwidth> {
-        &self.bandwidth 
+        &self.bandwidth
     }
 
     /// Retorna los atributos (`a=*`) definidos en esta media.
     pub fn attrs(&self) -> &Vec<Attribute> {
-        &self.attrs 
+        &self.attrs
     }
 
     /// Retorna cualquier línea adicional desconocida o no estándar, útil para round-trip.
     pub fn extra_lines(&self) -> &Vec<String> {
-        &self.extra_lines 
+        &self.extra_lines
     }
-
 
     // --- SETTERS ---
 
     /// Establece el tipo de medio (`MediaKind`) de esta sección `m=`.
     pub fn set_kind(&mut self, kind: MediaKind) {
-        self.kind = kind; 
+        self.kind = kind;
     }
 
     /// Establece la especificación de puerto (`PortSpec`) de la media.
     pub fn set_port(&mut self, port: PortSpec) {
-        self.port = port; 
+        self.port = port;
     }
 
     /// Establece el protocolo de transporte de la media.
     pub fn set_proto<S: Into<String>>(&mut self, proto: S) {
-        self.proto = proto.into(); 
+        self.proto = proto.into();
     }
 
     /// Establece la lista de formatos de payload (`<fmt>` tokens) de la media.
     pub fn set_fmts(&mut self, fmts: Vec<String>) {
-        self.fmts = fmts; 
+        self.fmts = fmts;
     }
 
     /// Establece el título de la media (`i=`), opcional.
     pub fn set_title<S: Into<String>>(&mut self, title: Option<S>) {
-        self.title = title.map(|s| s.into()); 
+        self.title = title.map(|s| s.into());
     }
 
     /// Establece la conexión de la media (`c=`), opcional.
     pub fn set_connection(&mut self, connection: Option<Connection>) {
-        self.connection = connection; 
+        self.connection = connection;
     }
 
     /// Establece la lista de líneas de ancho de banda (`b=*`) de la media.
     pub fn set_bandwidth(&mut self, bandwidth: Vec<Bandwidth>) {
-        self.bandwidth = bandwidth; 
+        self.bandwidth = bandwidth;
     }
 
     /// Establece los atributos (`a=*`) de la media.
     pub fn set_attrs(&mut self, attrs: Vec<Attribute>) {
-        self.attrs = attrs; 
+        self.attrs = attrs;
     }
 
     /// Establece cualquier línea adicional desconocida o extra para round-trip.
     pub fn set_extra_lines(&mut self, extra_lines: Vec<String>) {
-        self.extra_lines = extra_lines; 
+        self.extra_lines = extra_lines;
     }
     /// Agrega un formato de payload (`<fmt>`) a la media.
     pub fn add_fmt<S: Into<String>>(&mut self, fmt: S) {

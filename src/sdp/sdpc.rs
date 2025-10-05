@@ -2,7 +2,7 @@ use std::fmt;
 use std::num::ParseIntError;
 
 use crate::sdp::attribute::Attribute;
-use crate::sdp::bandwith::Bandwidth;
+use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
 use crate::sdp::media::{Media, MediaKind};
 use crate::sdp::origin::Origin;
