@@ -1,4 +1,4 @@
-use crate::client::ice::candidate_type::CandidateType;
+use crate::client::ice::type_ice::candidate_type::CandidateType;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
