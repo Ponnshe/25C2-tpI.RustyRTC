@@ -3,6 +3,7 @@
 
 
 # --- Rust / Cargo ---
+target/
 /target/
 debug/
 /**/*.rs.bk
