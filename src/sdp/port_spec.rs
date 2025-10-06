@@ -1,5 +1,5 @@
-use std::fmt;
-
+use crate::sdp::sdp_error::SdpError;
+use std::{fmt, str::FromStr};
 /// Represents a port specifier (`m=`) in SDP.
 ///
 /// Includes the base port and an optional number for hierarchical encoding,
@@ -52,14 +52,27 @@ impl PortSpec {
     }
 }
 
-impl fmt::Display for PortSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.num {
-            Some(n) => write!(f, "{}/{}", self.base, n),
-            None => write!(f, "{}", self.base),
+impl FromStr for PortSpec {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((a, b)) = s.split_once('/') {
+            Ok(Self::new(a.parse::<u16>()?, Some(b.parse::<u16>()?)))
+        } else {
+            Ok(Self::new(s.parse::<u16>()?, None))
         }
     }
 }
+
+impl fmt::Display for PortSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.num() {
+            Some(n) => write!(f, "{}/{}", self.base(), n),
+            None => write!(f, "{}", self.base()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
