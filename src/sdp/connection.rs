@@ -1,4 +1,6 @@
 use crate::sdp::addr_type::AddrType;
+use crate::sdp::sdp_error::SdpError;
+use std::{fmt, str::FromStr};
 
 /// Represents the connection information of an SDP session.
 ///
@@ -85,6 +87,35 @@ impl Connection {
     /// Sets the connection address.
     pub fn set_connection_address(&mut self, address: String) {
         self.conn_address = address;
+    }
+}
+
+impl FromStr for Connection {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // nettype addrtype address
+        let parts: Vec<_> = s.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(SdpError::Invalid("c="));
+        }
+        Ok(Self::new(
+            parts[0].to_owned(),
+            parts[1].parse().map_err(|_| SdpError::AddrType)?,
+            parts[2].to_owned(),
+        ))
+    }
+}
+
+impl fmt::Display for Connection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {}",
+            self.net_type(),
+            self.addr_type(),
+            self.connection_address()
+        )
     }
 }
 
