@@ -11,7 +11,7 @@ pub struct Connection {
     /// Tipo de dirección: IPv4 o IPv6
     addr_type: AddrType,
     /// Dirección de conexión, por ejemplo `"203.0.113.1"` o direcciones multicast con `/ttl`
-    connection_address: String,
+    conn_address: String,
 }
 
 impl Connection {
@@ -34,7 +34,7 @@ impl Connection {
         Self {
             net_type: net_type.into(),
             addr_type,
-            connection_address: connection_address.into(),
+            conn_address: connection_address.into(),
         }
     }
 
@@ -49,7 +49,7 @@ impl Connection {
         Self {
             net_type: "IN".to_string(),
             addr_type: AddrType::IP4,
-            connection_address: "127.0.0.1".to_string(),
+            conn_address: "127.0.0.1".to_string(),
         }
     }
 
@@ -67,7 +67,7 @@ impl Connection {
 
     /// Retorna una referencia a la dirección de conexión.
     pub fn connection_address(&self) -> &str {
-        &self.connection_address
+        &self.conn_address
     }
 
     // --- SETTERS ---
@@ -84,7 +84,7 @@ impl Connection {
 
     /// Modifica la dirección de conexión.
     pub fn set_connection_address(&mut self, address: String) {
-        self.connection_address = address;
+        self.conn_address = address;
     }
 }
 #[cfg(test)]

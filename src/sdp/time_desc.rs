@@ -183,7 +183,7 @@ mod tests {
     fn large_number_of_repeats_is_supported() {
         let mut t = TimeDesc::new_blank();
         for i in 0..10_000 {
-            t.add_repeat(format!("r=86400 {} 0 3600", i));
+            t.add_repeat("r=86400 ".to_string() + &i.to_string() + " 0 3600");
         }
         assert_eq!(t.repeats().len(), 10_000);
         // spot check start/end

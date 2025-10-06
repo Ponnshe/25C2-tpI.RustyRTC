@@ -1,6 +1,6 @@
 /// Representa un atributo `a=` en SDP.
 ///
-/// Un atributo consiste en una clave y un valor opcional.  
+/// Un atributo consiste en una clave y un valor opcional.
 /// Ejemplos comunes: `"rtpmap"`, `"fmtp"`, `"rtcp-mux"`.
 #[derive(Debug)]
 pub struct Attribute {
@@ -28,7 +28,7 @@ impl Attribute {
     /// - `value` = `None`
     pub fn new_blank() -> Self {
         Self {
-            key: "".to_string(),
+            key: String::new(),
             value: None,
         }
     }

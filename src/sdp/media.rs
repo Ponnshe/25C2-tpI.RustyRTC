@@ -19,16 +19,16 @@ pub enum MediaKind {
     Other(String),
 }
 
+#[allow(clippy::use_self)]
 impl fmt::Display for MediaKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use MediaKind::*;
         match self {
-            Audio => f.write_str("audio"),
-            Video => f.write_str("video"),
-            Text => f.write_str("text"),
-            Application => f.write_str("application"),
-            Message => f.write_str("message"),
-            Other(s) => f.write_str(s),
+            MediaKind::Audio => f.write_str("audio"),
+            MediaKind::Video => f.write_str("video"),
+            MediaKind::Text => f.write_str("text"),
+            MediaKind::Application => f.write_str("application"),
+            MediaKind::Message => f.write_str("message"),
+            MediaKind::Other(s) => f.write_str(s),
         }
     }
 }
@@ -110,6 +110,7 @@ impl Media {
     ///     vec![],
     /// );
     /// ```
+    #[allow(clippy::too_many_arguments)]
     pub fn new<K: Into<String>>(
         kind: MediaKind,
         port: PortSpec,
@@ -141,7 +142,7 @@ impl Media {
         Self {
             kind: MediaKind::Audio,
             port: PortSpec::new_blank(),
-            proto: "".to_string(),
+            proto: String::new(),
             fmts: Vec::new(),
             title: None,
             connection: None,
@@ -226,7 +227,7 @@ impl Media {
 
     /// Establece el título de la media (`i=`), opcional.
     pub fn set_title<S: Into<String>>(&mut self, title: Option<S>) {
-        self.title = title.map(|s| s.into());
+        self.title = title.map(Into::into);
     }
 
     /// Establece la conexión de la media (`c=`), opcional.
@@ -476,7 +477,7 @@ mod tests {
         m.set_proto("");
         m.add_fmt("");
         assert_eq!(m.proto(), "");
-        assert_eq!(m.fmts(), &vec!["".to_string()]);
+        assert_eq!(m.fmts(), &vec![String::new()]);
 
         // Empty title vs None
         m.set_title(Some(""));
@@ -487,7 +488,7 @@ mod tests {
         // Extra lines can be empty/whitespace
         m.add_extra_line("");
         m.add_extra_line("  ");
-        assert_eq!(m.extra_lines(), &vec!["".to_string(), "  ".to_string()]);
+        assert_eq!(m.extra_lines(), &vec![String::new(), "  ".to_string()]);
     }
 
     #[test]
@@ -497,7 +498,7 @@ mod tests {
         for i in 0..2_000u32 {
             m.add_fmt(i.to_string());
             m.add_attr(Attribute::new(format!("k{i}"), Some(format!("v{i}"))));
-            m.add_bandwidth(Bandwidth::new("AS", i as u64));
+            m.add_bandwidth(Bandwidth::new("AS", u64::from(i)));
             m.add_extra_line(format!("x-{i}"));
         }
 

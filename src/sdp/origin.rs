@@ -1,16 +1,21 @@
 use crate::sdp::sdpc::AddrType;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Calcula los segundos NTP actuales (epoch 1900) a partir del UNIX_EPOCH (1970).
+/// Calcula los segundos NTP actuales (epoch 1900) a partir del `UNIX_EPOCH` (1970).
 ///
 /// Se utiliza para generar valores de `session_id` y `session_version` por defecto
 /// en SDP.
 fn ntp_seconds() -> u64 {
-    const NTP_UNIX_DIFF: u64 = 2_208_988_800; // segundos entre 1900 y 1970
+    const NTP_UNIX_DIFF: u64 = 2_208_988_800;
+
     let unix_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|err| {
+            eprintln!("Advertencia: reloj antes de UNIX_EPOCH: {err:?}");
+            std::time::Duration::from_secs(0)
+        })
         .as_secs();
+
     unix_now + NTP_UNIX_DIFF
 }
 
@@ -83,7 +88,7 @@ impl Origin {
             session_version: session_id,
             net_type: "IN".to_string(),
             addr_type: AddrType::IP4,
-            unicast_address: "".to_string(),
+            unicast_address: String::new(),
         }
     }
 

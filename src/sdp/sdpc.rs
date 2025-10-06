@@ -64,6 +64,7 @@ impl From<ParseIntError> for SdpError {
     }
 }
 impl Sdp {
+    #[allow(clippy::too_many_lines)]
     pub fn parse(input: &str) -> Result<Self, SdpError> {
         let mut version: Option<u8> = None;
         let mut origin: Option<Origin> = None;
@@ -106,7 +107,7 @@ impl Sdp {
                         parts[1].parse::<u64>()?,
                         parts[2].parse::<u64>()?,
                         parts[3].to_owned(),
-                        parts[4].parse().map_err(|_| SdpError::AddrType)?,
+                        parts[4].parse().map_err(|()| SdpError::AddrType)?,
                         parts[5].to_owned(),
                     ));
                     in_media = false;
@@ -141,7 +142,7 @@ impl Sdp {
                     }
                     let c = Connection::new(
                         parts[0].to_string(),
-                        parts[1].parse().map_err(|_| SdpError::AddrType)?,
+                        parts[1].parse().map_err(|()| SdpError::AddrType)?,
                         parts[2].to_string(),
                     );
                     if in_media {
@@ -210,7 +211,7 @@ impl Sdp {
                     let Some(proto) = p.next() else {
                         return Err(SdpError::Invalid("m= proto"));
                     };
-                    let fmts = p.map(|s| s.to_string()).collect::<Vec<_>>();
+                    let fmts = p.map(Into::into).collect::<Vec<_>>();
                     media.push(Media::new(
                         MediaKind::from(mkind),
                         PortSpec::new(base, num),
@@ -268,17 +269,19 @@ impl Sdp {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn to_string_crlf(&self) -> String {
         let mut out = String::new();
         macro_rules! pushln {
-            ($s:expr) => {{
-                out.push_str($s);
-                out.push_str("\r\n");
+            ($($arg:tt)*) => {{
+                use std::fmt::Write as _;
+                let _ = write!(out, $($arg)*);
+                let _ = out.write_str("\r\n");
             }};
         }
 
-        pushln!(&format!("v={}", self.version));
-        pushln!(&format!(
+        pushln!("v={}", self.version);
+        pushln!(
             "o={} {} {} {} {} {}",
             self.origin.username(),
             self.origin.session_id(),
@@ -286,30 +289,30 @@ impl Sdp {
             self.origin.net_type(),
             self.origin.addr_type(),
             self.origin.unicast_address()
-        ));
-        pushln!(&format!("s={}", self.session_name));
+        );
+        pushln!("s={}", self.session_name);
         if let Some(i) = &self.session_info {
-            pushln!(&format!("i={}", i));
+            pushln!("i={}", i);
         }
         if let Some(u) = &self.uri {
-            pushln!(&format!("u={}", u));
+            pushln!("u={}", u);
         }
         for e in &self.emails {
-            pushln!(&format!("e={}", e));
+            pushln!("e={}", e);
         }
         for p in &self.phones {
-            pushln!(&format!("p={}", p));
+            pushln!("p={}", p);
         }
         if let Some(c) = &self.connection {
-            pushln!(&format!(
+            pushln!(
                 "c={} {} {}",
                 c.net_type(),
                 c.addr_type(),
                 c.connection_address()
-            ));
+            );
         }
         for b in &self.bandwidth {
-            pushln!(&format!("b={}:{}", b.bwtype(), b.bandwidth()));
+            pushln!("b={}:{}", b.bwtype(), b.bandwidth());
         }
 
         // At least one t= block is required by the base spec; in WebRTC it's commonly "0 0".
@@ -317,24 +320,25 @@ impl Sdp {
             pushln!("t=0 0");
         } else {
             for t in &self.times {
-                pushln!(&format!("t={} {}", t.start(), t.stop()));
+                pushln!("t={} {}", t.start(), t.stop());
                 for r in t.repeats() {
-                    pushln!(&format!("r={}", r));
+                    pushln!("r={}", r);
                 }
                 if let Some(z) = &t.zone() {
-                    pushln!(&format!("z={}", z));
+                    pushln!("z={}", z);
                 }
             }
         }
 
         for a in &self.attrs {
-            match a.value() {
-                Some(v) => pushln!(&format!("a={}:{}", a.key(), v)),
-                None => pushln!(&format!("a={}", a.key())),
+            if let Some(v) = a.value() {
+                pushln!("a={}:{}", a.key(), v);
+            } else {
+                pushln!("a={}", a.key());
             }
         }
         for x in &self.extra_lines {
-            pushln!(x);
+            pushln!("{x}");
         }
 
         for m in &self.media {
@@ -343,35 +347,36 @@ impl Sdp {
             } else {
                 format!(" {}", m.fmts().join(" "))
             };
-            pushln!(&format!(
+            pushln!(
                 "m={} {} {}{}",
                 m.kind(),
                 m.port(),
                 m.proto(),
                 fmts
-            ));
+            );
             if let Some(t) = &m.title() {
-                pushln!(&format!("i={}", t));
+                pushln!("i={}", t);
             }
             if let Some(c) = m.connection() {
-                pushln!(&format!(
+                pushln!(
                     "c={} {} {}",
                     c.net_type(),
                     *c.addr_type(),
                     c.connection_address()
-                ));
+                );
             }
             for b in m.bandwidth() {
-                pushln!(&format!("b={}:{}", b.bwtype(), b.bandwidth()));
+                pushln!("b={}:{}", b.bwtype(), b.bandwidth());
             }
             for a in m.attrs() {
-                match a.value() {
-                    Some(v) => pushln!(&format!("a={}:{}", a.key(), v)),
-                    None => pushln!(&format!("a={}", a.key())),
+                if let Some(v) = a.value() {
+                    pushln!("a={}:{}", a.key(), v);
+                } else {
+                    pushln!("a={}", a.key());
                 }
             }
             for x in m.extra_lines() {
-                pushln!(x);
+                pushln!("{x}");
             }
         }
         out
@@ -380,17 +385,19 @@ impl Sdp {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
 
-    /// Helper para leer archivos desde tests/sdp_test_files
+    /// Helper para leer archivos desde `tests/sdp_test_files`
+    #[allow(clippy::expect_fun_call)]
     fn load_sdp_file(file_name: &str) -> String {
         let path = format!(
             "{}/tests/sdp_test_files/{}",
             env!("CARGO_MANIFEST_DIR"),
             file_name
         );
-        fs::read_to_string(&path).expect(&format!("Failed to read {}", path))
+        fs::read_to_string(&path).expect(&format!("Failed to read {path}"))
     }
 
     #[test]
@@ -401,8 +408,8 @@ mod tests {
         // Ejemplo de assertions
         assert_eq!(sdp.version, 0);
         assert_eq!(sdp.origin.username(), "jdoe");
-        assert_eq!(sdp.origin.session_id(), 2890844526);
-        assert_eq!(sdp.origin.session_version(), 2890842807);
+        assert_eq!(sdp.origin.session_id(), 2_890_844_526);
+        assert_eq!(sdp.origin.session_version(), 2_890_842_807);
         assert_eq!(sdp.origin.net_type(), "IN");
         assert_eq!(*sdp.origin.addr_type(), AddrType::IP4);
         assert_eq!(sdp.origin.unicast_address(), "203.0.113.1");

@@ -4,7 +4,7 @@ use std::fmt;
 ///
 /// Incluye el puerto base y un número opcional para codificación jerárquica,
 /// aunque raramente se usa en WebRTC.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct PortSpec {
     base: u16,        // puerto base
     num: Option<u16>, // número opcional de puertos
@@ -70,12 +70,12 @@ mod tests {
         let p = PortSpec::new(5004, Some(2));
         assert_eq!(p.base(), 5004);
         assert_eq!(p.num(), Some(2));
-        assert_eq!(format!("{}", p), "5004/2");
+        assert_eq!(format!("{p}"), "5004/2");
 
         let p2 = PortSpec::new(3478, None);
         assert_eq!(p2.base(), 3478);
         assert_eq!(p2.num(), None);
-        assert_eq!(format!("{}", p2), "3478");
+        assert_eq!(format!("{p2}"), "3478");
     }
 
     #[test]
@@ -83,7 +83,7 @@ mod tests {
         let p = PortSpec::new_blank();
         assert_eq!(p.base(), 0);
         assert_eq!(p.num(), None);
-        assert_eq!(format!("{}", p), "0");
+        assert_eq!(format!("{p}"), "0");
     }
 
     #[test]
@@ -94,47 +94,31 @@ mod tests {
         p.set_num(Some(4));
         assert_eq!(p.base(), 80);
         assert_eq!(p.num(), Some(4));
-        assert_eq!(format!("{}", p), "80/4");
+        assert_eq!(format!("{p}"), "80/4");
 
         // switch to None
         p.set_num(None);
         assert_eq!(p.num(), None);
-        assert_eq!(format!("{}", p), "80");
+        assert_eq!(format!("{p}"), "80");
     }
 
     #[test]
     fn display_formats_edge_cases() {
         // base = 0
         let mut p = PortSpec::new(0, None);
-        assert_eq!(format!("{}", p), "0");
+        assert_eq!(format!("{p}"), "0");
 
         // base = u16::MAX
         p.set_base(u16::MAX);
-        assert_eq!(format!("{}", p), format!("{}", u16::MAX));
+        assert_eq!(format!("{p}"), format!("{}", u16::MAX));
 
         // num = 0 should be preserved verbatim
         p.set_num(Some(0));
-        assert_eq!(format!("{}", p), format!("{}/0", u16::MAX));
+        assert_eq!(format!("{p}"), format!("{}/0", u16::MAX));
 
         // num = u16::MAX
         p.set_num(Some(u16::MAX));
-        assert_eq!(format!("{}", p), format!("{}/{}", u16::MAX, u16::MAX));
-    }
-
-    #[test]
-    fn copy_clone_semantics() {
-        // PortSpec is Copy; cloning/copying should keep values independent
-        let p1 = PortSpec::new(1234, Some(10));
-        let p2 = p1; // copy
-        let p3 = p1.clone(); // clone
-
-        // original still usable after copy (compile-time check for Copy)
-        assert_eq!(p1.base(), 1234);
-        assert_eq!(p1.num(), Some(10));
-        assert_eq!(p2.base(), 1234);
-        assert_eq!(p2.num(), Some(10));
-        assert_eq!(p3.base(), 1234);
-        assert_eq!(p3.num(), Some(10));
+        assert_eq!(format!("{p}"), format!("{}/{}", u16::MAX, u16::MAX));
     }
 
     #[test]
@@ -154,6 +138,6 @@ mod tests {
         // After loop: i == 9999 (odd), so num = Some(9999)
         assert_eq!(p.base(), 9_999);
         assert_eq!(p.num(), Some(9_999));
-        assert_eq!(format!("{}", p), "9999/9999");
+        assert_eq!(format!("{p}"), "9999/9999");
     }
 }
