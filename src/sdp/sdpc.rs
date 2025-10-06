@@ -54,7 +54,6 @@ impl Sdp {
         let mut media: Vec<Media> = Vec::new();
         let mut sextra: Vec<String> = Vec::new();
 
-        // Tracks where we add attributes/lines: session or last media
         let mut in_media = false;
 
         for raw in input.split('\n') {
@@ -62,63 +61,40 @@ impl Sdp {
             if line.is_empty() {
                 continue;
             }
-            let mut it = line.splitn(2, '=');
-            let (Some(prefix), Some(rest)) = (it.next(), it.next()) else {
+            let Some((prefix, rest)) = split_line(line) else {
                 continue;
             };
+
             match prefix {
                 "v" => {
                     version = Some(rest.parse::<u8>()?);
                     in_media = false;
                 }
                 "o" => {
-                    let parts: Vec<_> = rest.split_whitespace().collect();
-                    if parts.len() != 6 {
-                        return Err(SdpError::Invalid("o="));
-                    }
-                    origin = Some(Origin::new(
-                        parts[0].to_owned(),
-                        parts[1].parse::<u64>()?,
-                        parts[2].parse::<u64>()?,
-                        parts[3].to_owned(),
-                        parts[4].parse().map_err(|()| SdpError::AddrType)?,
-                        parts[5].to_owned(),
-                    ));
+                    origin = Some(rest.parse::<Origin>()?);
                     in_media = false;
                 }
                 "s" => {
-                    session_name = Some(rest.to_string());
+                    session_name = Some(rest.to_owned());
                     in_media = false;
                 }
                 "i" => {
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.set_title(Some(rest.to_string()));
+                            m.set_title(Some(rest.to_owned()));
                         }
                     } else {
-                        session_info = Some(rest.to_string());
+                        session_info = Some(rest.to_owned());
                     }
                 }
                 "u" => {
-                    uri = Some(rest.to_string());
+                    uri = Some(rest.to_owned());
                     in_media = false;
                 }
-                "e" => {
-                    emails.push(rest.to_string());
-                }
-                "p" => {
-                    phones.push(rest.to_string());
-                }
+                "e" => emails.push(rest.to_owned()),
+                "p" => phones.push(rest.to_owned()),
                 "c" => {
-                    let parts: Vec<_> = rest.split_whitespace().collect();
-                    if parts.len() != 3 {
-                        return Err(SdpError::Invalid("c="));
-                    }
-                    let c = Connection::new(
-                        parts[0].to_string(),
-                        parts[1].parse().map_err(|()| SdpError::AddrType)?,
-                        parts[2].to_string(),
-                    );
+                    let c: Connection = rest.parse()?;
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.set_connection(Some(c));
@@ -128,11 +104,7 @@ impl Sdp {
                     }
                 }
                 "b" => {
-                    let mut itb = rest.splitn(2, ':');
-                    let (Some(typ), Some(val)) = (itb.next(), itb.next()) else {
-                        return Err(SdpError::Invalid("b="));
-                    };
-                    let b = Bandwidth::new(typ.to_string(), val.parse::<u64>()?);
+                    let b: Bandwidth = rest.parse()?;
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.add_bandwidth(b);
@@ -142,70 +114,29 @@ impl Sdp {
                     }
                 }
                 "t" => {
-                    let mut p = rest.split_whitespace();
-                    let (Some(st), Some(et)) = (p.next(), p.next()) else {
-                        return Err(SdpError::Invalid("t="));
-                    };
-                    times.push(TimeDesc::new(
-                        st.parse::<u64>()?,
-                        et.parse::<u64>()?,
-                        Vec::new(),
-                        None,
-                    ));
+                    times.push(rest.parse::<TimeDesc>()?);
                     in_media = false;
                 }
                 "r" => {
                     if let Some(td) = times.last_mut() {
-                        td.add_repeat(rest.to_string());
+                        td.add_repeat(rest.to_owned());
                     } else {
                         return Err(SdpError::Invalid("r= without t="));
                     }
                 }
                 "z" => {
                     if let Some(td) = times.last_mut() {
-                        td.set_zone(Some(rest.to_string()));
+                        td.set_zone(Some(rest.to_owned()));
                     } else {
                         return Err(SdpError::Invalid("z= without t="));
                     }
                 }
                 "m" => {
-                    // m=<media> <port>[/<num>] <proto> <fmt>...
-                    let mut p = rest.split_whitespace();
-                    let Some(mkind) = p.next() else {
-                        return Err(SdpError::Invalid("m="));
-                    };
-                    let Some(port_tok) = p.next() else {
-                        return Err(SdpError::Invalid("m= port"));
-                    };
-                    let (base, num) = if let Some((a, b)) = port_tok.split_once('/') {
-                        (a.parse::<u16>()?, Some(b.parse::<u16>()?))
-                    } else {
-                        (port_tok.parse::<u16>()?, None)
-                    };
-                    let Some(proto) = p.next() else {
-                        return Err(SdpError::Invalid("m= proto"));
-                    };
-                    let fmts = p.map(Into::into).collect::<Vec<_>>();
-                    media.push(Media::new(
-                        MediaKind::from(mkind),
-                        PortSpec::new(base, num),
-                        proto.to_string(),
-                        fmts,
-                        None,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                    ));
+                    media.push(rest.parse::<Media>()?);
                     in_media = true;
                 }
                 "a" => {
-                    let (key, val) = if let Some((k, v)) = rest.split_once(':') {
-                        (k.trim().to_string(), Some(v.trim().to_string()))
-                    } else {
-                        (rest.trim().to_string(), None)
-                    };
-                    let attr = Attribute::new(key, val);
+                    let attr: Attribute = rest.parse()?;
                     if in_media {
                         if let Some(m) = media.last_mut() {
                             m.add_attr(attr);
@@ -217,10 +148,10 @@ impl Sdp {
                 _ => {
                     if in_media {
                         if let Some(m) = media.last_mut() {
-                            m.add_extra_line(line.to_string());
+                            m.add_extra_line(line.to_owned());
                         }
                     } else {
-                        sextra.push(line.to_string());
+                        sextra.push(line.to_owned());
                     }
                 }
             }
