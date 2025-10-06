@@ -1,5 +1,3 @@
-//pub mod encode;
-//pub mod parse;
 pub mod addr_type;
 pub mod attribute;
 pub mod bandwidth;
@@ -10,3 +8,4 @@ pub mod port_spec;
 pub mod sdp_error;
 pub mod sdpc;
 pub mod time_desc;
+mod util;
