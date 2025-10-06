@@ -12,6 +12,6 @@ fn main() {
 
     println!("Candidatos locales encontrados:");
     for c in &agent.local_candidates {
-        println!(" - {}", c.address);
+        println!("{}", c.to_json());
     }
 }
