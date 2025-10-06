@@ -1,5 +1,7 @@
 use crate::sdp::addr_type::AddrType;
+use crate::sdp::sdp_error::SdpError; // adjust path if SdpError is elsewhere
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fmt, str::FromStr};
 
 /// Computes the current NTP seconds (epoch 1900) from the UNIX_EPOCH (1970).
 ///
@@ -154,6 +156,42 @@ impl Origin {
         self.unicast_address = unicast_address.into();
     }
 }
+
+impl FromStr for Origin {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // username sess-id sess-version nettype addrtype unicast
+        let parts: Vec<_> = s.split_whitespace().collect();
+        if parts.len() != 6 {
+            return Err(SdpError::Invalid("o="));
+        }
+        Ok(Self::new(
+            parts[0].to_owned(),
+            parts[1].parse::<u64>()?,
+            parts[2].parse::<u64>()?,
+            parts[3].to_owned(),
+            parts[4].parse().map_err(|_| SdpError::AddrType)?,
+            parts[5].to_owned(),
+        ))
+    }
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {} {} {}",
+            self.username(),
+            self.session_id(),
+            self.session_version(),
+            self.net_type(),
+            self.addr_type(),
+            self.unicast_address()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
