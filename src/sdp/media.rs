@@ -1,9 +1,9 @@
-use std::fmt;
-
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
 use crate::sdp::port_spec::PortSpec;
+use crate::sdp::sdp_error::SdpError;
+use std::{fmt, str::FromStr};
 
 /// Enum representing the possible media types in an SDP `m=` section.
 ///
@@ -43,6 +43,12 @@ impl From<&str> for MediaKind {
             "message" => Self::Message,
             other => Self::Other(other.to_string()),
         }
+    }
+}
+impl FromStr for MediaKind {
+    type Err = SdpError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(MediaKind::from(s)) // reusing From<&str> for the fallible version
     }
 }
 
@@ -269,6 +275,68 @@ impl Media {
         self.extra_lines.push(line.into());
     }
 }
+
+// Parse only the "m=" line (header). The following i=/c=/b=/a=/extra lines are added later.
+impl FromStr for Media {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // m=<media> <port>[/<num>] <proto> <fmt>...
+        let mut p = s.split_whitespace();
+        let kind: MediaKind = p.next().ok_or(SdpError::Invalid("m="))?.parse()?;
+        let port: PortSpec = p.next().ok_or(SdpError::Invalid("m= port"))?.parse()?;
+        let proto = p.next().ok_or(SdpError::Invalid("m= proto"))?.to_owned();
+        let fmts = p.map(ToOwned::to_owned).collect::<Vec<_>>();
+
+        Ok(Self::new(
+            kind,
+            port,
+            proto,
+            fmts,
+            None,       // title
+            None,       // connection
+            Vec::new(), // bandwidth
+            Vec::new(), // attrs
+            Vec::new(), // extra_lines
+        ))
+    }
+}
+
+// Emit all media lines (m/i/c/b/a/+extra)
+impl Media {
+    pub fn fmt_lines(&self, out: &mut String) {
+        use std::fmt::Write as _;
+        let fmts = if self.fmts().is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.fmts().join(" "))
+        };
+        let _ = writeln!(
+            out,
+            "m={} {} {}{}",
+            self.kind(),
+            self.port(),
+            self.proto(),
+            fmts
+        );
+        if let Some(t) = &self.title() {
+            let _ = writeln!(out, "i={}", t);
+        }
+        if let Some(c) = self.connection() {
+            let _ = writeln!(out, "c={}", c);
+        }
+        for b in self.bandwidth() {
+            let _ = writeln!(out, "b={}", b);
+        }
+        for a in self.attrs() {
+            let _ = writeln!(out, "a={}", a);
+        }
+        for x in self.extra_lines() {
+            let _ = writeln!(out, "{}", x);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
