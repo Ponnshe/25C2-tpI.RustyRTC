@@ -1,3 +1,4 @@
+use super::util::push_crlf;
 use crate::sdp::sdp_error::SdpError;
 use std::str::FromStr;
 /// Represents a time block (`t=`) in SDP (Session Description Protocol),
@@ -110,13 +111,12 @@ impl FromStr for TimeDesc {
 
 impl TimeDesc {
     pub fn fmt_lines(&self, out: &mut String) {
-        use std::fmt::Write as _;
-        let _ = writeln!(out, "t={} {}", self.start(), self.stop());
+        push_crlf(out, format_args!("t={} {}", self.start(), self.stop()));
         for r in self.repeats() {
-            let _ = writeln!(out, "r={r}");
+            push_crlf(out, format_args!("r={}", r));
         }
         if let Some(z) = &self.zone() {
-            let _ = writeln!(out, "z={z}");
+            push_crlf(out, format_args!("z={}", z));
         }
     }
 }
