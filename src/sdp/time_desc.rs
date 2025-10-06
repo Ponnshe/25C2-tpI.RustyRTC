@@ -113,10 +113,10 @@ impl TimeDesc {
     pub fn fmt_lines(&self, out: &mut String) {
         push_crlf(out, format_args!("t={} {}", self.start(), self.stop()));
         for r in self.repeats() {
-            push_crlf(out, format_args!("r={}", r));
+            push_crlf(out, format_args!("r={r}"));
         }
         if let Some(z) = &self.zone() {
-            push_crlf(out, format_args!("z={}", z));
+            push_crlf(out, format_args!("z={z}"));
         }
     }
 }
