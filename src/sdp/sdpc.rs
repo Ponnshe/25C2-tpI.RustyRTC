@@ -1,13 +1,12 @@
-use std::num::ParseIntError;
-
-use crate::sdp::addr_type::AddrType;
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
 use crate::sdp::media::{Media, MediaKind};
 use crate::sdp::origin::Origin;
 use crate::sdp::port_spec::PortSpec;
+use crate::sdp::sdp_error::SdpError;
 use crate::sdp::time_desc::TimeDesc;
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct Sdp {
@@ -25,18 +24,7 @@ pub struct Sdp {
     pub media: Vec<Media>,              // zero or more m= sections
     pub extra_lines: Vec<String>,       // unknown session-level lines
 }
-#[derive(Debug)]
-pub enum SdpError {
-    Missing(&'static str),
-    Invalid(&'static str),
-    ParseInt(ParseIntError),
-    AddrType,
-}
-impl From<ParseIntError> for SdpError {
-    fn from(e: ParseIntError) -> Self {
-        Self::ParseInt(e)
-    }
-}
+
 impl Sdp {
     #[allow(clippy::too_many_lines)]
     pub fn parse(input: &str) -> Result<Self, SdpError> {
@@ -175,7 +163,7 @@ impl Sdp {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn to_string_crlf(&self) -> String {
+    pub fn encode(&self) -> String {
         let mut out = String::new();
         macro_rules! pushln {
             ($($arg:tt)*) => {{
@@ -186,16 +174,9 @@ impl Sdp {
         }
 
         pushln!("v={}", self.version);
-        pushln!(
-            "o={} {} {} {} {} {}",
-            self.origin.username(),
-            self.origin.session_id(),
-            self.origin.session_version(),
-            self.origin.net_type(),
-            self.origin.addr_type(),
-            self.origin.unicast_address()
-        );
+        pushln!("o={}", self.origin);
         pushln!("s={}", self.session_name);
+
         if let Some(i) = &self.session_info {
             pushln!("i={}", i);
         }
@@ -209,83 +190,45 @@ impl Sdp {
             pushln!("p={}", p);
         }
         if let Some(c) = &self.connection {
-            pushln!(
-                "c={} {} {}",
-                c.net_type(),
-                c.addr_type(),
-                c.connection_address()
-            );
+            pushln!("c={}", c);
         }
         for b in &self.bandwidth {
-            pushln!("b={}:{}", b.bwtype(), b.bandwidth());
+            pushln!("b={}", b);
         }
 
-        // At least one t= block is required by the base spec; in WebRTC it's commonly "0 0".
         if self.times.is_empty() {
             pushln!("t=0 0");
         } else {
             for t in &self.times {
-                pushln!("t={} {}", t.start(), t.stop());
-                for r in t.repeats() {
-                    pushln!("r={}", r);
-                }
-                if let Some(z) = &t.zone() {
-                    pushln!("z={}", z);
-                }
+                t.fmt_lines(&mut out); // writes t=/r=/z= with CRLFs
             }
         }
 
         for a in &self.attrs {
-            if let Some(v) = a.value() {
-                pushln!("a={}:{}", a.key(), v);
-            } else {
-                pushln!("a={}", a.key());
-            }
+            pushln!("a={}", a);
         }
         for x in &self.extra_lines {
-            pushln!("{x}");
+            pushln!("{}", x);
         }
 
         for m in &self.media {
-            let fmts = if m.fmts().is_empty() {
-                String::new()
-            } else {
-                format!(" {}", m.fmts().join(" "))
-            };
-            pushln!("m={} {} {}{}", m.kind(), m.port(), m.proto(), fmts);
-            if let Some(t) = &m.title() {
-                pushln!("i={}", t);
-            }
-            if let Some(c) = m.connection() {
-                pushln!(
-                    "c={} {} {}",
-                    c.net_type(),
-                    *c.addr_type(),
-                    c.connection_address()
-                );
-            }
-            for b in m.bandwidth() {
-                pushln!("b={}:{}", b.bwtype(), b.bandwidth());
-            }
-            for a in m.attrs() {
-                if let Some(v) = a.value() {
-                    pushln!("a={}:{}", a.key(), v);
-                } else {
-                    pushln!("a={}", a.key());
-                }
-            }
-            for x in m.extra_lines() {
-                pushln!("{x}");
-            }
+            m.fmt_lines(&mut out); // writes m=/i=/c=/b=/a=/extras with CRLFs
         }
         out
     }
+}
+
+// Small helper to split "x=rest"
+fn split_line(line: &str) -> Option<(&str, &str)> {
+    let mut it = line.splitn(2, '=');
+    Some((it.next()?, it.next()?))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::sdp::addr_type::AddrType;
     use std::fs;
 
     /// Helper para leer archivos desde `tests/sdp_test_files`
