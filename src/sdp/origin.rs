@@ -1,12 +1,11 @@
 use crate::sdp::sdpc::AddrType;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Calcula los segundos NTP actuales (epoch 1900) a partir del UNIX_EPOCH (1970).
+/// Computes the current NTP seconds (epoch 1900) from the UNIX_EPOCH (1970).
 ///
-/// Se utiliza para generar valores de `session_id` y `session_version` por defecto
-/// en SDP.
+/// Used to generate default values for `session_id` and `session_version` in SDP.
 fn ntp_seconds() -> u64 {
-    const NTP_UNIX_DIFF: u64 = 2_208_988_800; // segundos entre 1900 y 1970
+    const NTP_UNIX_DIFF: u64 = 2_208_988_800; // seconds between 1900 and 1970
     let unix_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -14,15 +13,15 @@ fn ntp_seconds() -> u64 {
     unix_now + NTP_UNIX_DIFF
 }
 
-/// Representa la línea `o=` de un SDP (Session Description Protocol).
+/// Represents the `o=` line of an SDP (Session Description Protocol).
 ///
-/// Contiene la información de origen de la sesión:
-/// - `username`: nombre del usuario que originó la sesión.
-/// - `session_id`: identificador único de la sesión (NTP seconds recomendado para unicidad).
-/// - `session_version`: versión de la sesión, usualmente igual a `session_id` al inicio.
-/// - `net_type`: tipo de red (usualmente `"IN"` para Internet).
-/// - `addr_type`: tipo de dirección (IPv4 o IPv6).
-/// - `unicast_address`: dirección unicast de origen (IP del host).
+/// Contains the session origin information:
+/// - `username`: name of the user who originated the session.
+/// - `session_id`: unique session identifier (NTP seconds recommended for uniqueness).
+/// - `session_version`: session version, usually equal to `session_id` initially.
+/// - `net_type`: network type (usually `"IN"` for Internet).
+/// - `addr_type`: address type (IPv4 or IPv6).
+/// - `unicast_address`: origin unicast address (host IP).
 #[derive(Debug)]
 pub struct Origin {
     username: String,
@@ -34,17 +33,17 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// Crea una nueva instancia de `Origin` con todos los valores especificados.
+    /// Creates a new `Origin` instance with all specified values.
     ///
-    /// # Parámetros
-    /// - `username`: nombre del usuario que inicia la sesión.
-    /// - `session_id`: identificador único de la sesión.
-    /// - `session_version`: versión de la sesión.
-    /// - `net_type`: tipo de red (por ejemplo `"IN"`).
-    /// - `addr_type`: tipo de dirección (`AddrType::IP4` o `AddrType::IP6`).
-    /// - `unicast_address`: dirección unicast de origen.
+    /// # Parameters
+    /// - `username`: name of the user initiating the session.
+    /// - `session_id`: unique session identifier.
+    /// - `session_version`: session version.
+    /// - `net_type`: network type (e.g., `"IN"`).
+    /// - `addr_type`: address type (`AddrType::IP4` or `AddrType::IP6`).
+    /// - `unicast_address`: origin unicast address.
     ///
-    /// # Ejemplo
+    /// # Example
     /// ```rust, ignore
     /// let origin = Origin::new("alice", 12345, 12345, "IN", AddrType::IP4, "192.168.1.1");
     /// ```
@@ -66,15 +65,15 @@ impl Origin {
         }
     }
 
-    /// Crea una instancia de `Origin` con valores por defecto.
+    /// Creates an `Origin` instance with default values.
     ///
     /// - `username` = `"-"` (placeholder)
-    /// - `session_id` y `session_version` = segundos NTP actuales
+    /// - `session_id` and `session_version` = current NTP seconds
     /// - `net_type` = `"IN"`
     /// - `addr_type` = `IP4`
-    /// - `unicast_address` = `""` (vacío)
+    /// - `unicast_address` = `""` (empty)
     ///
-    /// Útil para inicializar un SDP rápidamente sin valores específicos.
+    /// Useful to quickly initialize an SDP without specific values.
     pub fn new_blank() -> Self {
         let session_id = ntp_seconds();
         Self {
@@ -89,69 +88,68 @@ impl Origin {
 
     // ---------------- Getters ----------------
 
-    /// Retorna el nombre de usuario de origen.
+    /// Returns the origin username.
     pub fn username(&self) -> &str {
         &self.username
     }
 
-    /// Retorna el identificador de sesión.
+    /// Returns the session identifier.
     pub const fn session_id(&self) -> u64 {
         self.session_id
     }
 
-    /// Retorna la versión de la sesión.
+    /// Returns the session version.
     pub const fn session_version(&self) -> u64 {
         self.session_version
     }
 
-    /// Retorna el tipo de red (generalmente `"IN"`).
+    /// Returns the network type (generally `"IN"`).
     pub fn net_type(&self) -> &str {
         &self.net_type
     }
 
-    /// Retorna el tipo de dirección (IPv4 o IPv6).
+    /// Returns the address type (IPv4 or IPv6).
     pub const fn addr_type(&self) -> &AddrType {
         &self.addr_type
     }
 
-    /// Retorna la dirección unicast de origen.
+    /// Returns the origin unicast address.
     pub fn unicast_address(&self) -> &str {
         &self.unicast_address
     }
 
     // ---------------- Setters ----------------
 
-    /// Establece el nombre de usuario de origen.
+    /// Sets the origin username.
     pub fn set_username<U: Into<String>>(&mut self, username: U) {
         self.username = username.into();
     }
 
-    /// Establece el identificador de sesión.
+    /// Sets the session identifier.
     pub const fn set_session_id(&mut self, session_id: u64) {
         self.session_id = session_id;
     }
 
-    /// Establece la versión de la sesión.
+    /// Sets the session version.
     pub const fn set_session_version(&mut self, session_version: u64) {
         self.session_version = session_version;
     }
 
-    /// Establece el tipo de red.
+    /// Sets the network type.
     pub fn set_net_type<N: Into<String>>(&mut self, net_type: N) {
         self.net_type = net_type.into();
     }
 
-    /// Establece el tipo de dirección (IPv4 o IPv6).
+    /// Sets the address type (IPv4 or IPv6).
     pub const fn set_addr_type(&mut self, addr_type: AddrType) {
         self.addr_type = addr_type;
     }
 
-    /// Establece la dirección unicast de origen.
+    /// Sets the origin unicast address.
     pub fn set_unicast_address<U: Into<String>>(&mut self, unicast_address: U) {
         self.unicast_address = unicast_address.into();
     }
 }
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
