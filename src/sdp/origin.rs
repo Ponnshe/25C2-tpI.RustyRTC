@@ -1,4 +1,4 @@
-use crate::sdp::sdpc::AddrType;
+use crate::sdp::addr_type::AddrType;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Computes the current NTP seconds (epoch 1900) from the UNIX_EPOCH (1970).

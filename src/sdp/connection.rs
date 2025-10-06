@@ -1,4 +1,4 @@
-use crate::sdp::sdpc::AddrType;
+use crate::sdp::addr_type::AddrType;
 
 /// Represents the connection information of an SDP session.
 ///
@@ -92,7 +92,7 @@ impl Connection {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::Connection;
-    use crate::sdp::sdpc::AddrType;
+    use crate::sdp::addr_type::AddrType;
 
     #[test]
     fn new_sets_fields_correctly_ipv4() {

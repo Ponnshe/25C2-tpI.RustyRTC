@@ -1,5 +1,6 @@
 //pub mod encode;
 //pub mod parse;
+pub mod addr_type;
 pub mod attribute;
 pub mod bandwidth;
 pub mod connection;

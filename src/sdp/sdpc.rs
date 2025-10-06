@@ -1,6 +1,6 @@
-use std::fmt;
 use std::num::ParseIntError;
 
+use crate::sdp::addr_type::AddrType;
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
@@ -8,32 +8,6 @@ use crate::sdp::media::{Media, MediaKind};
 use crate::sdp::origin::Origin;
 use crate::sdp::port_spec::PortSpec;
 use crate::sdp::time_desc::TimeDesc;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum AddrType {
-    IP4,
-    IP6,
-}
-
-impl fmt::Display for AddrType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::IP4 => "IP4",
-            Self::IP6 => "IP6",
-        })
-    }
-}
-
-impl std::str::FromStr for AddrType {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "IP4" => Ok(Self::IP4),
-            "IP6" => Ok(Self::IP6),
-            _ => Err(()),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Sdp {
@@ -347,13 +321,7 @@ impl Sdp {
             } else {
                 format!(" {}", m.fmts().join(" "))
             };
-            pushln!(
-                "m={} {} {}{}",
-                m.kind(),
-                m.port(),
-                m.proto(),
-                fmts
-            );
+            pushln!("m={} {} {}{}", m.kind(), m.port(), m.proto(), fmts);
             if let Some(t) = &m.title() {
                 pushln!("i={}", t);
             }

@@ -273,11 +273,11 @@ impl Media {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::{Media, MediaKind};
+    use crate::sdp::addr_type::AddrType;
     use crate::sdp::attribute::Attribute;
     use crate::sdp::bandwidth::Bandwidth;
     use crate::sdp::connection::Connection;
     use crate::sdp::port_spec::PortSpec;
-    use crate::sdp::sdpc::AddrType;
 
     // ---- MediaKind ----
 
