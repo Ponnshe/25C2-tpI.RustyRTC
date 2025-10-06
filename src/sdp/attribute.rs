@@ -1,7 +1,7 @@
-/// Representa un atributo `a=` en SDP.
+/// Represents an `a=` attribute in SDP.
 ///
-/// Un atributo consiste en una clave y un valor opcional.  
-/// Ejemplos comunes: `"rtpmap"`, `"fmtp"`, `"rtcp-mux"`.
+/// An attribute consists of a key and an optional value.  
+/// Common examples: `"rtpmap"`, `"fmtp"`, `"rtcp-mux"`.
 #[derive(Debug)]
 pub struct Attribute {
     key: String,
@@ -9,11 +9,11 @@ pub struct Attribute {
 }
 
 impl Attribute {
-    /// Constructor completo.
+    /// Full constructor.
     ///
-    /// # Parámetros
-    /// - `key`: clave del atributo, por ejemplo `"rtpmap"`.
-    /// - `value`: valor opcional asociado al atributo.
+    /// # Parameters
+    /// - `key`: attribute key, e.g., `"rtpmap"`.
+    /// - `value`: optional value associated with the attribute.
     pub fn new<K: Into<String>, V: Into<Option<String>>>(key: K, value: V) -> Self {
         Self {
             key: key.into(),
@@ -21,9 +21,9 @@ impl Attribute {
         }
     }
 
-    /// Constructor por defecto.
+    /// Default constructor.
     ///
-    /// Valores por defecto:
+    /// Default values:
     /// - `key` = `""`
     /// - `value` = `None`
     pub fn new_blank() -> Self {
@@ -34,23 +34,23 @@ impl Attribute {
     }
 
     // --- GETTERS ---
-    /// Retorna una referencia a la clave del atributo.
+    /// Returns a reference to the attribute key.
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    /// Retorna una referencia al valor opcional del atributo.
+    /// Returns a reference to the optional attribute value.
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
     }
 
     // --- SETTERS ---
-    /// Establece la clave del atributo.
+    /// Sets the attribute key.
     pub fn set_key<K: Into<String>>(&mut self, key: K) {
         self.key = key.into();
     }
 
-    /// Establece el valor opcional del atributo.
+    /// Sets the optional attribute value.
     pub fn set_value<V: Into<Option<String>>>(&mut self, value: V) {
         self.value = value.into();
     }
