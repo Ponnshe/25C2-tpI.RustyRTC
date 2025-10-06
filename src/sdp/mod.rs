@@ -7,5 +7,6 @@ pub mod connection;
 pub mod media;
 pub mod origin;
 pub mod port_spec;
+pub mod sdp_error;
 pub mod sdpc;
 pub mod time_desc;
