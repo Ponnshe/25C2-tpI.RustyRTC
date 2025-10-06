@@ -3,6 +3,7 @@ use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
 use crate::sdp::port_spec::PortSpec;
 use crate::sdp::sdp_error::SdpError;
+use crate::sdp::util::push_crlf;
 use std::{fmt, str::FromStr};
 
 /// Enum representing the possible media types in an SDP `m=` section.
@@ -303,40 +304,36 @@ impl FromStr for Media {
 }
 
 // Emit all media lines (m/i/c/b/a/+extra)
+
 impl Media {
     pub fn fmt_lines(&self, out: &mut String) {
-        use std::fmt::Write as _;
         let fmts = if self.fmts().is_empty() {
             String::new()
         } else {
             format!(" {}", self.fmts().join(" "))
         };
-        let _ = writeln!(
+
+        push_crlf(
             out,
-            "m={} {} {}{}",
-            self.kind(),
-            self.port(),
-            self.proto(),
-            fmts
+            format_args!("m={} {} {}{}", self.kind(), self.port(), self.proto(), fmts),
         );
         if let Some(t) = &self.title() {
-            let _ = writeln!(out, "i={t}");
+            push_crlf(out, format_args!("i={t}"));
         }
         if let Some(c) = self.connection() {
-            let _ = writeln!(out, "c={c}");
+            push_crlf(out, format_args!("c={c}"));
         }
         for b in self.bandwidth() {
-            let _ = writeln!(out, "b={b}");
+            push_crlf(out, format_args!("b={b}"));
         }
         for a in self.attrs() {
-            let _ = writeln!(out, "a={a}");
+            push_crlf(out, format_args!("a={a}"));
         }
         for x in self.extra_lines() {
-            let _ = writeln!(out, "{x}");
+            push_crlf(out, format_args!("{x}"));
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
