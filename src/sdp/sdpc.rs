@@ -1,3 +1,34 @@
+//! `sdpc`: top-level SDP record and parse/encode entrypoints.
+//!
+//! This module exposes [`Sdp`] and its two main methods:
+//! - [`Sdp::parse`] — parse a full SDP text into a structured value
+//! - [`Sdp::encode`] — serialize an [`Sdp`] back to text (CRLF line endings)
+//!
+//! Parsing is line-oriented: we dispatch on the SDP prefix (`v/o/s/i/u/e/p/c/b/t/r/z/m/a`)
+//! and delegate each RHS to component types that implement `FromStr<Err = SdpError>`
+//! (e.g., [`Origin`], [`Connection`], [`Bandwidth`], [`Attribute`], [`TimeDesc`], [`Media`]).
+//! The encoder relies on their `Display`/format helpers.
+//!
+//! **Input** accepts `\n` or `\r\n`; output always uses `\r\n` (CRLF).
+//! Unknown session-level lines are preserved in [`Sdp::extra_lines`].
+//!
+//! ### Examples
+//! ```ignore
+//! use crate::sdp::sdpc::Sdp;
+//!
+//! let raw = "\
+//! v=0\r\n\
+//! o=- 123 1 IN IP4 203.0.113.1\r\n\
+//! s=Example\r\n\
+//! t=0 0\r\n\
+//! m=audio 49170 RTP/AVP 0\r\n\
+//! a=rtpmap:0 PCMU/8000\r\n";
+//!
+//! let sdp = Sdp::parse(raw)?;
+//! assert_eq!(sdp.version, 0);
+//! let text = sdp.encode(); // always CRLF
+//! ```
+
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
@@ -6,24 +37,63 @@ use crate::sdp::origin::Origin;
 use crate::sdp::sdp_error::SdpError;
 use crate::sdp::time_desc::TimeDesc;
 
+/// In-memory representation of an SDP message (session + zero or more media sections).
+///
+/// Fields mirror well-known SDP lines. Session-vs-media routing rules:
+/// - `i=`, `c=`, `b=`, `a=` lines are applied to the **current media** if we are
+///   inside an `m=` section; otherwise they apply at the **session** level.
+/// - `r=` and `z=` are attached to the **last** `t=` block.
+/// - Any unknown session-level lines are preserved verbatim in [`extra_lines`].
 #[derive(Debug)]
 pub struct Sdp {
-    pub version: u8,                    // v= (always 0)
-    pub origin: Origin,                 // o=
-    pub session_name: String,           // s=
-    pub session_info: Option<String>,   // i=*
-    pub uri: Option<String>,            // u=*
-    pub emails: Vec<String>,            // e=*
-    pub phones: Vec<String>,            // p=*
-    pub connection: Option<Connection>, // c= (optional at session)
-    pub bandwidth: Vec<Bandwidth>,      // b=*
-    pub times: Vec<TimeDesc>,           // one or more t= (with r=/z= hanging off last)
-    pub attrs: Vec<Attribute>,          // a=* (session-level)
-    pub media: Vec<Media>,              // zero or more m= sections
-    pub extra_lines: Vec<String>,       // unknown session-level lines
+    /// `v=` — SDP version (per spec this is always `0`).
+    pub version: u8,
+    /// `o=` — session origin.
+    pub origin: Origin,
+    /// `s=` — session name.
+    pub session_name: String,
+    /// `i=` (session) — optional session information/title.
+    pub session_info: Option<String>,
+    /// `u=` — optional session URI.
+    pub uri: Option<String>,
+    /// `e=` — zero or more contact emails.
+    pub emails: Vec<String>,
+    /// `p=` — zero or more contact phones.
+    pub phones: Vec<String>,
+    /// `c=` (session) — optional session-level connection info.
+    pub connection: Option<Connection>,
+    /// `b=` (session) — zero or more bandwidth lines.
+    pub bandwidth: Vec<Bandwidth>,
+    /// One or more `t=` time descriptions; `r=`/`z=` hang off the last pushed `t=`.
+    pub times: Vec<TimeDesc>,
+    /// `a=` (session) — zero or more session-level attributes.
+    pub attrs: Vec<Attribute>,
+    /// Zero or more `m=` sections (each with their own `i/c/b/a` and extra lines).
+    pub media: Vec<Media>,
+    /// Unknown session-level lines preserved verbatim.
+    pub extra_lines: Vec<String>,
 }
 
 impl Sdp {
+    /// Parse a full SDP text into [`Sdp`].
+    ///
+    /// - Accepts `\n` or `\r\n` line endings; `\r` is stripped per line.
+    /// - Routes `i/c/b/a` either to session or the current `m=` block.
+    /// - Attaches `r=`/`z=` to the last `t=` seen; errors if none exists.
+    /// - Returns `SdpError::Missing` if required lines (`v=`, `o=`, `s=`) are absent.
+    ///
+    /// # Errors
+    /// Propagates component parsing errors as [`SdpError`], including:
+    /// - `Missing("v=" | "o=" | "s=")`
+    /// - `Invalid("<prefix>")` for arity/structure problems
+    /// - `ParseInt` for numeric fields
+    /// - `AddrType` for invalid address family tokens
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sdp = Sdp::parse("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=Test\r\nt=0 0\r\n")?;
+    /// assert_eq!(sdp.session_name, "Test");
+    /// ```
     #[allow(clippy::too_many_lines)]
     pub fn parse(input: &str) -> Result<Self, SdpError> {
         let mut version: Option<u8> = None;
@@ -40,6 +110,7 @@ impl Sdp {
         let mut media: Vec<Media> = Vec::new();
         let mut sextra: Vec<String> = Vec::new();
 
+        // Tracks whether subsequent i=/c=/b=/a= lines target session or current media.
         let mut in_media = false;
 
         for raw in input.split('\n') {
@@ -160,6 +231,18 @@ impl Sdp {
         })
     }
 
+    /// Encode this [`Sdp`] into an SDP text with **CRLF** (`\r\n`) line endings.
+    ///
+    /// If no `t=` blocks were parsed/added, emits a single `t=0 0` (common WebRTC default).
+    /// Media sections are serialized via `Media::fmt_lines`, which appends their `i/c/b/a`
+    /// and any media-level extra lines.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let s = sdp.encode();
+    /// assert!(s.starts_with("v=0\r\n"));
+    /// assert!(s.contains("\r\n"));
+    /// ```
     #[allow(clippy::too_many_lines)]
     pub fn encode(&self) -> String {
         let mut out = String::new();
@@ -215,11 +298,16 @@ impl Sdp {
         out
     }
 }
-
-// Small helper to split "x=rest"
+/// Split an SDP line into `(prefix, rhs)` by the first `=`, e.g. `"a=foo"` → `("a", "foo")`.
 fn split_line(line: &str) -> Option<(&str, &str)> {
     let mut it = line.splitn(2, '=');
     Some((it.next()?, it.next()?))
+}
+
+pub(crate) fn push_crlf(out: &mut String, args: std::fmt::Arguments) {
+    use std::fmt::Write as _;
+    let _ = out.write_fmt(args);
+    let _ = out.write_str("\r\n");
 }
 
 #[cfg(test)]
