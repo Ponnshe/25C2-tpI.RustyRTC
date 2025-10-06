@@ -48,7 +48,7 @@ impl From<&str> for MediaKind {
 impl FromStr for MediaKind {
     type Err = SdpError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(MediaKind::from(s)) // reusing From<&str> for the fallible version
+        Ok(Self::from(s)) // reusing From<&str> for the fallible version
     }
 }
 
@@ -143,7 +143,7 @@ impl Media {
     /// Creates a default `Media` with placeholder values.
     ///
     /// Useful for quick initialization or tests.
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self {
             kind: MediaKind::Audio,
             port: PortSpec::new_blank(),
@@ -320,19 +320,19 @@ impl Media {
             fmts
         );
         if let Some(t) = &self.title() {
-            let _ = writeln!(out, "i={}", t);
+            let _ = writeln!(out, "i={t}");
         }
         if let Some(c) = self.connection() {
-            let _ = writeln!(out, "c={}", c);
+            let _ = writeln!(out, "c={c}");
         }
         for b in self.bandwidth() {
-            let _ = writeln!(out, "b={}", b);
+            let _ = writeln!(out, "b={b}");
         }
         for a in self.attrs() {
-            let _ = writeln!(out, "a={}", a);
+            let _ = writeln!(out, "a={a}");
         }
         for x in self.extra_lines() {
-            let _ = writeln!(out, "{}", x);
+            let _ = writeln!(out, "{x}");
         }
     }
 }

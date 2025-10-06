@@ -101,7 +101,7 @@ impl FromStr for Connection {
         }
         Ok(Self::new(
             parts[0].to_owned(),
-            parts[1].parse().map_err(|_| SdpError::AddrType)?,
+            parts[1].parse().map_err(|()| SdpError::AddrType)?,
             parts[2].to_owned(),
         ))
     }

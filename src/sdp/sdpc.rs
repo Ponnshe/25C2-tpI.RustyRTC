@@ -1,12 +1,10 @@
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
-use crate::sdp::media::{Media, MediaKind};
+use crate::sdp::media::Media;
 use crate::sdp::origin::Origin;
-use crate::sdp::port_spec::PortSpec;
 use crate::sdp::sdp_error::SdpError;
 use crate::sdp::time_desc::TimeDesc;
-use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct Sdp {

@@ -113,10 +113,10 @@ impl TimeDesc {
         use std::fmt::Write as _;
         let _ = writeln!(out, "t={} {}", self.start(), self.stop());
         for r in self.repeats() {
-            let _ = writeln!(out, "r={}", r);
+            let _ = writeln!(out, "r={r}");
         }
         if let Some(z) = &self.zone() {
-            let _ = writeln!(out, "z={}", z);
+            let _ = writeln!(out, "z={z}");
         }
     }
 }

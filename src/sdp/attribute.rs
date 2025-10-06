@@ -2,7 +2,7 @@ use crate::sdp::sdp_error::SdpError;
 use std::{fmt, str::FromStr};
 /// Represents an `a=` attribute in SDP.
 ///
-/// An attribute consists of a key and an optional value.  
+/// An attribute consists of a key and an optional value.
 /// Common examples: `"rtpmap"`, `"fmtp"`, `"rtcp-mux"`.
 #[derive(Debug)]
 pub struct Attribute {
@@ -28,7 +28,7 @@ impl Attribute {
     /// Default values:
     /// - `key` = `""`
     /// - `value` = `None`
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self {
             key: String::new(),
             value: None,

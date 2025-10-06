@@ -3,7 +3,7 @@ use crate::sdp::sdp_error::SdpError; // adjust path if SdpError is elsewhere
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, str::FromStr};
 
-/// Computes the current NTP seconds (epoch 1900) from the UNIX_EPOCH (1970).
+/// Computes the current NTP seconds (epoch 1900) from the `UNIX_EPOCH` (1970).
 ///
 /// Used to generate default values for `session_id` and `session_version` in SDP.
 fn ntp_seconds() -> u64 {
@@ -171,7 +171,7 @@ impl FromStr for Origin {
             parts[1].parse::<u64>()?,
             parts[2].parse::<u64>()?,
             parts[3].to_owned(),
-            parts[4].parse().map_err(|_| SdpError::AddrType)?,
+            parts[4].parse().map_err(|()| SdpError::AddrType)?,
             parts[5].to_owned(),
         ))
     }
