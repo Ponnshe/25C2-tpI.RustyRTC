@@ -221,4 +221,13 @@ mod tests {
         assert!(t.repeats().first().unwrap().starts_with("r=86400 "));
         assert!(t.repeats().last().unwrap().starts_with("r=86400 "));
     }
+    #[test]
+    fn timedesc_emits_crlf() {
+        let td = TimeDesc::new(0, 0, vec!["7d 1h".into()], Some("0 0 1".into()));
+        let mut s = String::new();
+        td.fmt_lines(&mut s);
+        assert!(s.contains("t=0 0\r\n"));
+        assert!(s.contains("\r\nr="));
+        assert!(s.contains("\r\nz="));
+    }
 }
