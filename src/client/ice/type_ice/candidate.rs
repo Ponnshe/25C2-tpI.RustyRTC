@@ -1,6 +1,6 @@
 use crate::client::ice::type_ice::candidate_type::CandidateType;
-use std::net::SocketAddr;
 use std::fmt;
+use std::net::SocketAddr;
 
 const DEFAULT_COMPONENT_ID: u8 = 1;
 const DEFAULT_TRANSPORT: &str = "UDP";
@@ -68,6 +68,7 @@ impl fmt::Display for Candidate {
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
