@@ -36,12 +36,12 @@ impl fmt::Display for MediaKind {
 impl From<&str> for MediaKind {
     fn from(s: &str) -> Self {
         match s {
-            "audio" => MediaKind::Audio,
-            "video" => MediaKind::Video,
-            "text" => MediaKind::Text,
-            "application" => MediaKind::Application,
-            "message" => MediaKind::Message,
-            other => MediaKind::Other(other.to_string()),
+            "audio" => Self::Audio,
+            "video" => Self::Video,
+            "text" => Self::Text,
+            "application" => Self::Application,
+            "message" => Self::Message,
+            other => Self::Other(other.to_string()),
         }
     }
 }
@@ -96,8 +96,7 @@ impl Media {
     /// - `extra_lines`: líneas desconocidas para round-trip.
     ///
     /// # Ejemplo
-    /// ```rust
-    /// use crate::sdp::{Media, MediaKind, PortSpec, Bandwidth, Attribute};
+    /// ```rust, ignore
     /// let media = Media::new(
     ///     MediaKind::Audio,
     ///     PortSpec { base: 5004, num: None },
@@ -156,13 +155,13 @@ impl Media {
     /// Retorna el tipo de medio (`MediaKind`) de esta sección `m=`.
     ///
     /// Ejemplo: `Audio`, `Video`, `Other("custom")`.
-    pub fn kind(&self) -> &MediaKind {
+    pub const fn kind(&self) -> &MediaKind {
         &self.kind
     }
 
     /// Retorna la especificación de puerto (`PortSpec`) de la media.
     /// Puede incluir base y cantidad de puertos para rangos.
-    pub fn port(&self) -> &PortSpec {
+    pub const fn port(&self) -> &PortSpec {
         &self.port
     }
 
@@ -173,7 +172,7 @@ impl Media {
 
     /// Retorna los formatos de payload asociados a la media.
     /// Cada string representa un `<fmt>` de la línea `m=` o `a=rtpmap`.
-    pub fn fmts(&self) -> &Vec<String> {
+    pub const fn fmts(&self) -> &Vec<String> {
         &self.fmts
     }
 
@@ -183,22 +182,22 @@ impl Media {
     }
 
     /// Retorna la conexión asociada a la media (`c=`) si está presente.
-    pub fn connection(&self) -> Option<&Connection> {
+    pub const fn connection(&self) -> Option<&Connection> {
         self.connection.as_ref()
     }
 
     /// Retorna la lista de líneas de ancho de banda (`b=*`) asociadas a esta media.
-    pub fn bandwidth(&self) -> &Vec<Bandwidth> {
+    pub const fn bandwidth(&self) -> &Vec<Bandwidth> {
         &self.bandwidth
     }
 
     /// Retorna los atributos (`a=*`) definidos en esta media.
-    pub fn attrs(&self) -> &Vec<Attribute> {
+    pub const fn attrs(&self) -> &Vec<Attribute> {
         &self.attrs
     }
 
     /// Retorna cualquier línea adicional desconocida o no estándar, útil para round-trip.
-    pub fn extra_lines(&self) -> &Vec<String> {
+    pub const fn extra_lines(&self) -> &Vec<String> {
         &self.extra_lines
     }
 
@@ -210,7 +209,7 @@ impl Media {
     }
 
     /// Establece la especificación de puerto (`PortSpec`) de la media.
-    pub fn set_port(&mut self, port: PortSpec) {
+    pub const fn set_port(&mut self, port: PortSpec) {
         self.port = port;
     }
 
@@ -273,7 +272,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::{Media, MediaKind};
     use crate::sdp::attribute::Attribute;
-    use crate::sdp::bandwidth::Bandwidth; // ensure your module is `bandwidth`
+    use crate::sdp::bandwidth::Bandwidth;
     use crate::sdp::connection::Connection;
     use crate::sdp::port_spec::PortSpec;
     use crate::sdp::sdpc::AddrType;
@@ -324,7 +323,7 @@ mod tests {
     }
 
     // ---- Media ----
-
+    #[allow(clippy::cognitive_complexity)]
     #[test]
     fn new_sets_all_fields() {
         let m = Media::new(

@@ -16,7 +16,7 @@ impl PortSpec {
     /// # Parámetros
     /// - `base`: puerto base
     /// - `num`: número opcional para codificación jerárquica
-    pub fn new(base: u16, num: Option<u16>) -> Self {
+    pub const fn new(base: u16, num: Option<u16>) -> Self {
         Self { base, num }
     }
 
@@ -25,29 +25,29 @@ impl PortSpec {
     /// Valores por defecto:
     /// - `base` = 0
     /// - `num` = None
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self { base: 0, num: None }
     }
 
     // --- GETTERS ---
     /// Retorna el puerto base.
-    pub fn base(&self) -> u16 {
+    pub const fn base(&self) -> u16 {
         self.base
     }
 
     /// Retorna el número opcional.
-    pub fn num(&self) -> Option<u16> {
+    pub const fn num(&self) -> Option<u16> {
         self.num
     }
 
     // --- SETTERS ---
     /// Establece el puerto base.
-    pub fn set_base(&mut self, base: u16) {
+    pub const fn set_base(&mut self, base: u16) {
         self.base = base;
     }
 
     /// Establece el número opcional.
-    pub fn set_num(&mut self, num: Option<u16>) {
+    pub const fn set_num(&mut self, num: Option<u16>) {
         self.num = num;
     }
 }

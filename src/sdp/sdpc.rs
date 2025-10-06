@@ -18,8 +18,8 @@ pub enum AddrType {
 impl fmt::Display for AddrType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            AddrType::IP4 => "IP4",
-            AddrType::IP6 => "IP6",
+            Self::IP4 => "IP4",
+            Self::IP6 => "IP6",
         })
     }
 }
@@ -28,8 +28,8 @@ impl std::str::FromStr for AddrType {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, ()> {
         match s {
-            "IP4" => Ok(AddrType::IP4),
-            "IP6" => Ok(AddrType::IP6),
+            "IP4" => Ok(Self::IP4),
+            "IP6" => Ok(Self::IP6),
             _ => Err(()),
         }
     }
@@ -60,7 +60,7 @@ pub enum SdpError {
 }
 impl From<ParseIntError> for SdpError {
     fn from(e: ParseIntError) -> Self {
-        SdpError::ParseInt(e)
+        Self::ParseInt(e)
     }
 }
 impl Sdp {
@@ -251,7 +251,7 @@ impl Sdp {
             }
         }
 
-        Ok(Sdp {
+        Ok(Self {
             version: version.ok_or(SdpError::Missing("v="))?,
             origin: origin.ok_or(SdpError::Missing("o="))?,
             session_name: session_name.ok_or(SdpError::Missing("s="))?,

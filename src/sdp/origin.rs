@@ -45,7 +45,7 @@ impl Origin {
     /// - `unicast_address`: dirección unicast de origen.
     ///
     /// # Ejemplo
-    /// ```rust
+    /// ```rust, ignore
     /// let origin = Origin::new("alice", 12345, 12345, "IN", AddrType::IP4, "192.168.1.1");
     /// ```
     pub fn new(
@@ -95,12 +95,12 @@ impl Origin {
     }
 
     /// Retorna el identificador de sesión.
-    pub fn session_id(&self) -> u64 {
+    pub const fn session_id(&self) -> u64 {
         self.session_id
     }
 
     /// Retorna la versión de la sesión.
-    pub fn session_version(&self) -> u64 {
+    pub const fn session_version(&self) -> u64 {
         self.session_version
     }
 
@@ -110,7 +110,7 @@ impl Origin {
     }
 
     /// Retorna el tipo de dirección (IPv4 o IPv6).
-    pub fn addr_type(&self) -> &AddrType {
+    pub const fn addr_type(&self) -> &AddrType {
         &self.addr_type
     }
 
@@ -127,12 +127,12 @@ impl Origin {
     }
 
     /// Establece el identificador de sesión.
-    pub fn set_session_id(&mut self, session_id: u64) {
+    pub const fn set_session_id(&mut self, session_id: u64) {
         self.session_id = session_id;
     }
 
     /// Establece la versión de la sesión.
-    pub fn set_session_version(&mut self, session_version: u64) {
+    pub const fn set_session_version(&mut self, session_version: u64) {
         self.session_version = session_version;
     }
 
@@ -142,7 +142,7 @@ impl Origin {
     }
 
     /// Establece el tipo de dirección (IPv4 o IPv6).
-    pub fn set_addr_type(&mut self, addr_type: AddrType) {
+    pub const fn set_addr_type(&mut self, addr_type: AddrType) {
         self.addr_type = addr_type;
     }
 

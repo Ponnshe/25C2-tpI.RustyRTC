@@ -16,7 +16,7 @@ impl TimeDesc {
     /// - `stop`: tiempo de fin en segundos NTP
     /// - `repeats`: vectores de líneas r= crudas
     /// - `zone`: opcional, línea z= cruda
-    pub fn new(start: u64, stop: u64, repeats: Vec<String>, zone: Option<String>) -> Self {
+    pub const fn new(start: u64, stop: u64, repeats: Vec<String>, zone: Option<String>) -> Self {
         Self {
             start,
             stop,
@@ -32,7 +32,7 @@ impl TimeDesc {
     /// - `stop` = 0
     /// - `repeats` = vacío
     /// - `zone` = None
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self {
             start: 0,
             stop: 0,
@@ -43,33 +43,33 @@ impl TimeDesc {
 
     // --- GETTERS ---
     /// Retorna el tiempo de inicio.
-    pub fn start(&self) -> u64 {
+    pub const fn start(&self) -> u64 {
         self.start
     }
 
     /// Retorna el tiempo de fin.
-    pub fn stop(&self) -> u64 {
+    pub const fn stop(&self) -> u64 {
         self.stop
     }
 
     /// Retorna las líneas de repetición r=.
-    pub fn repeats(&self) -> &Vec<String> {
+    pub const fn repeats(&self) -> &Vec<String> {
         &self.repeats
     }
 
     /// Retorna la zona horaria z= (si existe).
-    pub fn zone(&self) -> Option<&String> {
+    pub const fn zone(&self) -> Option<&String> {
         self.zone.as_ref()
     }
 
     // --- SETTERS ---
     /// Establece el tiempo de inicio.
-    pub fn set_start(&mut self, start: u64) {
+    pub const fn set_start(&mut self, start: u64) {
         self.start = start;
     }
 
     /// Establece el tiempo de fin.
-    pub fn set_stop(&mut self, stop: u64) {
+    pub const fn set_stop(&mut self, stop: u64) {
         self.stop = stop;
     }
 

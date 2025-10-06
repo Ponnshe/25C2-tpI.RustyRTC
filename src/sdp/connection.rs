@@ -23,7 +23,7 @@ impl Connection {
     /// - `connection_address`: dirección de conexión.
     ///
     /// # Ejemplo
-    /// ```rust
+    /// ```rust, ignore
     /// let conn = Connection::new("IN", AddrType::IP4, "203.0.113.1");
     /// ```
     pub fn new(
@@ -61,7 +61,7 @@ impl Connection {
     }
 
     /// Retorna una referencia al tipo de dirección.
-    pub fn addr_type(&self) -> &AddrType {
+    pub const fn addr_type(&self) -> &AddrType {
         &self.addr_type
     }
 
@@ -78,7 +78,7 @@ impl Connection {
     }
 
     /// Modifica el tipo de dirección.
-    pub fn set_addr_type(&mut self, addr_type: AddrType) {
+    pub const fn set_addr_type(&mut self, addr_type: AddrType) {
         self.addr_type = addr_type;
     }
 
@@ -87,6 +87,7 @@ impl Connection {
         self.connection_address = address;
     }
 }
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

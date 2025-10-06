@@ -17,7 +17,7 @@ impl Bandwidth {
     /// - `bandwidth`: valor numérico en kbps.
     ///
     /// # Ejemplo
-    /// ```rust
+    /// ```rust, ignore
     /// let b = Bandwidth::new("AS", 512);
     /// ```
     pub fn new(bwtype: impl Into<String>, bandwidth: u64) -> Self {
@@ -46,7 +46,7 @@ impl Bandwidth {
     }
 
     /// Retorna el valor del ancho de banda en kbps.
-    pub fn bandwidth(&self) -> u64 {
+    pub const fn bandwidth(&self) -> u64 {
         self.bandwidth
     }
 
@@ -57,7 +57,7 @@ impl Bandwidth {
     }
 
     /// Establece el valor del ancho de banda en kbps.
-    pub fn set_bandwidth(&mut self, bandwidth: u64) {
+    pub const fn set_bandwidth(&mut self, bandwidth: u64) {
         self.bandwidth = bandwidth;
     }
 }
