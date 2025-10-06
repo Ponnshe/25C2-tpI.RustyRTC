@@ -1,3 +1,5 @@
+use crate::sdp::sdp_error::SdpError;
+use std::{fmt, str::FromStr};
 /// Represents the `b=` line of an SDP (Session Description Protocol).
 ///
 /// Indicates the bandwidth of the session or of a specific media stream.
@@ -59,6 +61,21 @@ impl Bandwidth {
     /// Sets the bandwidth value in kbps.
     pub const fn set_bandwidth(&mut self, bandwidth: u64) {
         self.bandwidth = bandwidth;
+    }
+}
+
+impl FromStr for Bandwidth {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (typ, val) = s.split_once(':').ok_or(SdpError::Invalid("b="))?;
+        Ok(Self::new(typ.to_owned(), val.parse::<u64>()?))
+    }
+}
+
+impl fmt::Display for Bandwidth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.bwtype(), self.bandwidth())
     }
 }
 
