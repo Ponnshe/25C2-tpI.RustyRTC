@@ -1,3 +1,5 @@
+use crate::sdp::sdp_error::SdpError;
+use std::{fmt, str::FromStr};
 /// Represents an `a=` attribute in SDP.
 ///
 /// An attribute consists of a key and an optional value.  
@@ -53,6 +55,29 @@ impl Attribute {
     /// Sets the optional attribute value.
     pub fn set_value<V: Into<Option<String>>>(&mut self, value: V) {
         self.value = value.into();
+    }
+}
+
+impl FromStr for Attribute {
+    type Err = SdpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (k, v) = if let Some((k, v)) = s.split_once(':') {
+            (k.trim().to_owned(), Some(v.trim().to_owned()))
+        } else {
+            (s.trim().to_owned(), None)
+        };
+        Ok(Self::new(k, v))
+    }
+}
+
+impl fmt::Display for Attribute {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(v) = self.value() {
+            write!(f, "{}:{}", self.key(), v)
+        } else {
+            write!(f, "{}", self.key())
+        }
     }
 }
 #[cfg(test)]
