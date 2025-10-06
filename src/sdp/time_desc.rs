@@ -1,22 +1,22 @@
-/// Representa un bloque de tiempo (`t=`) en SDP (Session Description Protocol),
-/// incluyendo repeticiones (`r=`) y zonas horarias (`z=`).
+/// Represents a time block (`t=`) in SDP (Session Description Protocol),
+/// including repetitions (`r=`) and time zones (`z=`).
 #[derive(Debug)]
 pub struct TimeDesc {
-    start: u64,           // tiempo de inicio en segundos NTP, usualmente 0
-    stop: u64,            // tiempo de fin en segundos NTP, usualmente 0
-    repeats: Vec<String>, // líneas r= crudas
-    zone: Option<String>, // línea z= cruda (zona horaria)
+    start: u64,           // start time in NTP seconds, usually 0
+    stop: u64,            // end time in NTP seconds, usually 0
+    repeats: Vec<String>, // raw r= lines
+    zone: Option<String>, // raw z= line (time zone)
 }
 
 impl TimeDesc {
-    /// Constructor completo.
+    /// Full constructor.
     ///
-    /// # Parámetros
-    /// - `start`: tiempo de inicio en segundos NTP
-    /// - `stop`: tiempo de fin en segundos NTP
-    /// - `repeats`: vectores de líneas r= crudas
-    /// - `zone`: opcional, línea z= cruda
-    pub fn new(start: u64, stop: u64, repeats: Vec<String>, zone: Option<String>) -> Self {
+    /// # Parameters
+    /// - `start`: start time in NTP seconds
+    /// - `stop`: end time in NTP seconds
+    /// - `repeats`: vector of raw r= lines
+    /// - `zone`: optional raw z= line
+    pub const fn new(start: u64, stop: u64, repeats: Vec<String>, zone: Option<String>) -> Self {
         Self {
             start,
             stop,
@@ -25,14 +25,14 @@ impl TimeDesc {
         }
     }
 
-    /// Constructor por defecto (placeholder).
+    /// Default constructor (placeholder).
     ///
-    /// Valores por defecto:
+    /// Default values:
     /// - `start` = 0
     /// - `stop` = 0
-    /// - `repeats` = vacío
+    /// - `repeats` = empty
     /// - `zone` = None
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self {
             start: 0,
             stop: 0,
@@ -42,48 +42,48 @@ impl TimeDesc {
     }
 
     // --- GETTERS ---
-    /// Retorna el tiempo de inicio.
-    pub fn start(&self) -> u64 {
+    /// Returns the start time.
+    pub const fn start(&self) -> u64 {
         self.start
     }
 
-    /// Retorna el tiempo de fin.
-    pub fn stop(&self) -> u64 {
+    /// Returns the end time.
+    pub const fn stop(&self) -> u64 {
         self.stop
     }
 
-    /// Retorna las líneas de repetición r=.
-    pub fn repeats(&self) -> &Vec<String> {
+    /// Returns the repetition r= lines.
+    pub const fn repeats(&self) -> &Vec<String> {
         &self.repeats
     }
 
-    /// Retorna la zona horaria z= (si existe).
-    pub fn zone(&self) -> Option<&String> {
+    /// Returns the z= time zone (if present).
+    pub const fn zone(&self) -> Option<&String> {
         self.zone.as_ref()
     }
 
     // --- SETTERS ---
-    /// Establece el tiempo de inicio.
-    pub fn set_start(&mut self, start: u64) {
+    /// Sets the start time.
+    pub const fn set_start(&mut self, start: u64) {
         self.start = start;
     }
 
-    /// Establece el tiempo de fin.
-    pub fn set_stop(&mut self, stop: u64) {
+    /// Sets the end time.
+    pub const fn set_stop(&mut self, stop: u64) {
         self.stop = stop;
     }
 
-    /// Establece las líneas de repetición r=.
+    /// Sets the repetition r= lines.
     pub fn set_repeats(&mut self, repeats: Vec<String>) {
         self.repeats = repeats;
     }
 
-    /// Establece la zona horaria z=.
+    /// Sets the z= time zone.
     pub fn set_zone(&mut self, zone: Option<String>) {
         self.zone = zone;
     }
 
-    /// Agrega una línea de repetición r= al final del vector.
+    /// Appends a repetition r= line to the end of the vector.
     pub fn add_repeat(&mut self, repeat: String) {
         self.repeats.push(repeat);
     }

@@ -1,29 +1,29 @@
 use crate::sdp::sdpc::AddrType;
 
-/// Representa la información de conexión de una sesión SDP.
+/// Represents the connection information of an SDP session.
 ///
-/// Esta estructura corresponde a la línea `c=` en SDP (Session Description Protocol),
-/// indicando tipo de red, tipo de dirección y la dirección de conexión unicast o multicast.
+/// This structure corresponds to the `c=` line in SDP (Session Description Protocol),
+/// indicating network type, address type, and the unicast or multicast connection address.
 #[derive(Debug)]
 pub struct Connection {
-    /// Tipo de red, usualmente `"IN"` (Internet)
+    /// Network type, usually `"IN"` (Internet)
     net_type: String,
-    /// Tipo de dirección: IPv4 o IPv6
+    /// Address type: IPv4 or IPv6
     addr_type: AddrType,
-    /// Dirección de conexión, por ejemplo `"203.0.113.1"` o direcciones multicast con `/ttl`
+    /// Connection address, e.g. `"203.0.113.1"` or multicast addresses with `/ttl`
     conn_address: String,
 }
 
 impl Connection {
-    /// Crea una nueva conexión con valores especificados.
+    /// Creates a new connection with specified values.
     ///
-    /// # Parámetros
-    /// - `net_type`: tipo de red, usualmente `"IN"`.
-    /// - `addr_type`: tipo de dirección (`AddrType::IP4` o `AddrType::IP6`).
-    /// - `connection_address`: dirección de conexión.
+    /// # Parameters
+    /// - `net_type`: network type, usually `"IN"`.
+    /// - `addr_type`: address type (`AddrType::IP4` or `AddrType::IP6`).
+    /// - `connection_address`: connection address.
     ///
-    /// # Ejemplo
-    /// ```rust
+    /// # Example
+    /// ```rust, ignore
     /// let conn = Connection::new("IN", AddrType::IP4, "203.0.113.1");
     /// ```
     pub fn new(
@@ -38,13 +38,13 @@ impl Connection {
         }
     }
 
-    /// Crea una conexión con valores por defecto.
+    /// Creates a connection with default values.
     ///
     /// - `net_type` = `"IN"`
     /// - `addr_type` = `IP4`
     /// - `connection_address` = `"127.0.0.1"`
     ///
-    /// Útil como placeholder para pruebas o inicialización rápida.
+    /// Useful as a placeholder for tests or quick initialization.
     pub fn new_blank() -> Self {
         Self {
             net_type: "IN".to_string(),
@@ -55,38 +55,39 @@ impl Connection {
 
     // --- GETTERS ---
 
-    /// Retorna una referencia al tipo de red.
+    /// Returns a reference to the network type.
     pub fn net_type(&self) -> &str {
         &self.net_type
     }
 
-    /// Retorna una referencia al tipo de dirección.
-    pub fn addr_type(&self) -> &AddrType {
+    /// Returns a reference to the address type.
+    pub const fn addr_type(&self) -> &AddrType {
         &self.addr_type
     }
 
-    /// Retorna una referencia a la dirección de conexión.
+    /// Returns a reference to the connection address.
     pub fn connection_address(&self) -> &str {
         &self.conn_address
     }
 
     // --- SETTERS ---
 
-    /// Modifica el tipo de red.
+    /// Sets the network type.
     pub fn set_net_type(&mut self, net_type: String) {
         self.net_type = net_type;
     }
 
-    /// Modifica el tipo de dirección.
-    pub fn set_addr_type(&mut self, addr_type: AddrType) {
+    /// Sets the address type.
+    pub const fn set_addr_type(&mut self, addr_type: AddrType) {
         self.addr_type = addr_type;
     }
 
-    /// Modifica la dirección de conexión.
+    /// Sets the connection address.
     pub fn set_connection_address(&mut self, address: String) {
         self.conn_address = address;
     }
 }
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

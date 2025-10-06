@@ -1,53 +1,53 @@
 use std::fmt;
 
-/// Representa un especificador de puerto (`m=`) en SDP.
+/// Represents a port specifier (`m=`) in SDP.
 ///
-/// Incluye el puerto base y un número opcional para codificación jerárquica,
-/// aunque raramente se usa en WebRTC.
+/// Includes the base port and an optional number for hierarchical encoding,
+/// although it is rarely used in WebRTC.
 #[derive(Debug)]
 pub struct PortSpec {
-    base: u16,        // puerto base
-    num: Option<u16>, // número opcional de puertos
+    base: u16,        // base port
+    num: Option<u16>, // optional number of ports
 }
 
 impl PortSpec {
-    /// Constructor completo.
+    /// Full constructor.
     ///
-    /// # Parámetros
-    /// - `base`: puerto base
-    /// - `num`: número opcional para codificación jerárquica
-    pub fn new(base: u16, num: Option<u16>) -> Self {
+    /// # Parameters
+    /// - `base`: base port
+    /// - `num`: optional number for hierarchical encoding
+    pub const fn new(base: u16, num: Option<u16>) -> Self {
         Self { base, num }
     }
 
-    /// Constructor por defecto.
+    /// Default constructor.
     ///
-    /// Valores por defecto:
+    /// Default values:
     /// - `base` = 0
     /// - `num` = None
-    pub fn new_blank() -> Self {
+    pub const fn new_blank() -> Self {
         Self { base: 0, num: None }
     }
 
     // --- GETTERS ---
-    /// Retorna el puerto base.
-    pub fn base(&self) -> u16 {
+    /// Returns the base port.
+    pub const fn base(&self) -> u16 {
         self.base
     }
 
-    /// Retorna el número opcional.
-    pub fn num(&self) -> Option<u16> {
+    /// Returns the optional number.
+    pub const fn num(&self) -> Option<u16> {
         self.num
     }
 
     // --- SETTERS ---
-    /// Establece el puerto base.
-    pub fn set_base(&mut self, base: u16) {
+    /// Sets the base port.
+    pub const fn set_base(&mut self, base: u16) {
         self.base = base;
     }
 
-    /// Establece el número opcional.
-    pub fn set_num(&mut self, num: Option<u16>) {
+    /// Sets the optional number.
+    pub const fn set_num(&mut self, num: Option<u16>) {
         self.num = num;
     }
 }

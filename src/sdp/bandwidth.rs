@@ -1,8 +1,8 @@
-/// Representa la línea `b=` de un SDP (Session Description Protocol).
+/// Represents the `b=` line of an SDP (Session Description Protocol).
 ///
-/// Indica el ancho de banda de la sesión o de un media stream específico.
-/// - `bwtype`: tipo de ancho de banda (por ejemplo `"AS"` para Application-Specific).
-/// - `bandwidth`: valor del ancho de banda en kbps.
+/// Indicates the bandwidth of the session or of a specific media stream.
+/// - `bwtype`: bandwidth type (for example `"AS"` for Application-Specific).
+/// - `bandwidth`: bandwidth value in kbps.
 #[derive(Debug)]
 pub struct Bandwidth {
     bwtype: String,
@@ -10,14 +10,14 @@ pub struct Bandwidth {
 }
 
 impl Bandwidth {
-    /// Constructor completo.
+    /// Full constructor.
     ///
-    /// # Parámetros
-    /// - `bwtype`: tipo de ancho de banda (`"AS"`, `"CT"`, etc.).
-    /// - `bandwidth`: valor numérico en kbps.
+    /// # Parameters
+    /// - `bwtype`: bandwidth type (`"AS"`, `"CT"`, etc.).
+    /// - `bandwidth`: numeric value in kbps.
     ///
-    /// # Ejemplo
-    /// ```rust
+    /// # Example
+    /// ```rust, ignore
     /// let b = Bandwidth::new("AS", 512);
     /// ```
     pub fn new(bwtype: impl Into<String>, bandwidth: u64) -> Self {
@@ -27,9 +27,9 @@ impl Bandwidth {
         }
     }
 
-    /// Constructor "vacío" o por defecto.
+    /// Blank or default constructor.
     ///
-    /// Valores por defecto:
+    /// Default values:
     /// - `bwtype` = `"AS"`
     /// - `bandwidth` = `0`
     pub fn new_blank() -> Self {
@@ -40,24 +40,24 @@ impl Bandwidth {
     }
 
     // --- GETTERS ---
-    /// Retorna el tipo de ancho de banda.
+    /// Returns the bandwidth type.
     pub fn bwtype(&self) -> &str {
         &self.bwtype
     }
 
-    /// Retorna el valor del ancho de banda en kbps.
-    pub fn bandwidth(&self) -> u64 {
+    /// Returns the bandwidth value in kbps.
+    pub const fn bandwidth(&self) -> u64 {
         self.bandwidth
     }
 
     // --- SETTERS ---
-    /// Establece el tipo de ancho de banda.
+    /// Sets the bandwidth type.
     pub fn set_bwtype(&mut self, bwtype: impl Into<String>) {
         self.bwtype = bwtype.into();
     }
 
-    /// Establece el valor del ancho de banda en kbps.
-    pub fn set_bandwidth(&mut self, bandwidth: u64) {
+    /// Sets the bandwidth value in kbps.
+    pub const fn set_bandwidth(&mut self, bandwidth: u64) {
         self.bandwidth = bandwidth;
     }
 }
