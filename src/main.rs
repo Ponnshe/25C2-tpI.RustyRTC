@@ -1,13 +1,11 @@
-mod client;
-
 use std::env;
 use std::process;
 
-use crate::client::ice::gathering_service::gather_host_candidates;
-use crate::client::ice::signaling_mock::{
+use rustyrtc::ice::gathering_service::gather_host_candidates;
+use rustyrtc::ice::signaling_mock::{
     load_remote_candidates_from_file, print_candidates_stdout, save_candidates_to_file,
 };
-use crate::client::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use rustyrtc::ice::type_ice::ice_agent::{IceAgent, IceRole};
 
 const FILE_A: &str = "candidates_A.json";
 const FILE_B: &str = "candidates_B.json";

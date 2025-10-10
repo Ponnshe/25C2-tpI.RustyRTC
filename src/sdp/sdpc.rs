@@ -36,6 +36,7 @@ use crate::sdp::media::Media;
 use crate::sdp::origin::Origin;
 use crate::sdp::sdp_error::SdpError;
 use crate::sdp::time_desc::TimeDesc;
+use crate::ice::type_ice::candidate::Candidate;
 
 /// In-memory representation of an SDP message (session + zero or more media sections).
 ///
@@ -296,6 +297,20 @@ impl Sdp {
             m.fmt_lines(&mut out); // writes m=/i=/c=/b=/a=/extras with CRLFs
         }
         out
+    }
+
+    /// Crea un nuevo mensaje SDP de oferta vacío con los campos obligatorios.
+    pub fn new_offer() -> Self {
+        todo!()
+    }
+    /// Añade un candidato ICE a este mensaje SDP.
+    pub fn add_candidate(&mut self, candidate: &Candidate) {
+        todo!()
+    }
+
+    /// Extrae todos los candidatos ICE de este mensaje SDP.
+    pub fn get_candidates(&self) -> Vec<Candidate> {
+        todo!()
     }
 }
 /// Split an SDP line into `(prefix, rhs)` by the first `=`, e.g. `"a=foo"` → `("a", "foo")`.

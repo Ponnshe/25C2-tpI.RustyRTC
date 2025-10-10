@@ -34,6 +34,22 @@ impl IceAgent {
     pub fn add_remote_candidate(&mut self, candidate: Candidate) {
         self.remote_candidates.push(candidate);
     }
+
+    /// Recolecta candidatos locales, esta funcion sera asincrona en una implementacion futura.
+    pub fn gather_candidates(&mut self) {
+        todo!()
+    }
+
+    /// Forma pares de candidatos locales y remotos para iniciar las verificaciones.
+    pub fn form_candidate_pairs(&mut self) {
+        todo!()
+    }
+
+    /// Ejecuta las verificaciones de conectividad entre los pares de candidatos.
+    /// Selecciona el mejor par de candidatos al finalizar.
+    pub async fn run_connectivity_checks(&mut self) {
+        todo!()
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::client::ice::type_ice::candidate_type::CandidateType;
+use crate::ice::type_ice::candidate_type::CandidateType;
 use std::fmt;
 use std::net::SocketAddr;
 

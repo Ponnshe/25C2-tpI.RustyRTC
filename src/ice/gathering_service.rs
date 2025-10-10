@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
-use crate::client::ice::type_ice::candidate::Candidate;
-use crate::client::ice::type_ice::candidate_type::CandidateType;
+use crate::ice::type_ice::candidate::Candidate;
+use crate::ice::type_ice::candidate_type::CandidateType;
 
 /// Dirección para bind inicial (todas las interfaces)
 const BIND_IP: &str = "0.0.0.0";

@@ -3,9 +3,9 @@ use std::net::SocketAddr;
 use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 
-use crate::IceAgent;
-use crate::client::ice::type_ice::candidate::Candidate;
-use crate::client::ice::type_ice::candidate_type::CandidateType;
+use crate::ice::type_ice::ice_agent::IceAgent;
+use crate::ice::type_ice::candidate::Candidate;
+use crate::ice::type_ice::candidate_type::CandidateType;
 
 /// Guarda los candidatos locales del agente en un archivo JSON (uno por línea)
 pub fn save_candidates_to_file(agent: &IceAgent, file_path: &str) -> io::Result<()> {
