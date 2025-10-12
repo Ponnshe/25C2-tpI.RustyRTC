@@ -1,5 +1,5 @@
-use crate::sdp::sdpc::Sdp;
 use crate::ice::type_ice::ice_agent::IceAgent;
+use crate::sdp::sdpc::Sdp;
 
 /// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
 pub struct ConnectionManager {
@@ -30,7 +30,7 @@ impl ConnectionManager {
     pub fn receive_answer(&mut self, answer: Sdp) -> Result<(), String> {
         todo!()
     }
-    
+
     /// Ejecuta las verificaciones de conectividad (envía y recibe STUN).
     /// Es `async` porque implica esperar I/O de red.
     pub async fn start_connectivity_checks(&mut self) {

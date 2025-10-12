@@ -71,6 +71,7 @@ mod tests {
             addr,
             CandidateType::Host,
             None,
+            None,
         );
         assert_eq!(one_candidate.cand_type, CandidateType::Host);
         assert_eq!(one_candidate.address.port(), 5000);
@@ -91,6 +92,7 @@ mod tests {
             addr,
             CandidateType::Host,
             None,
+            None,
         );
         agent.add_local_candidate(c);
         assert_eq!(agent.local_candidates.len(), 1);
@@ -110,6 +112,7 @@ mod tests {
             1234,
             addr,
             CandidateType::Host,
+            None,
             None,
         );
         agent.add_remote_candidate(c);

@@ -29,6 +29,7 @@
 //! let text = sdp.encode(); // always CRLF
 //! ```
 
+use crate::ice::type_ice::candidate::Candidate;
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
@@ -36,7 +37,6 @@ use crate::sdp::media::Media;
 use crate::sdp::origin::Origin;
 use crate::sdp::sdp_error::SdpError;
 use crate::sdp::time_desc::TimeDesc;
-use crate::ice::type_ice::candidate::Candidate;
 
 /// In-memory representation of an SDP message (session + zero or more media sections).
 ///
