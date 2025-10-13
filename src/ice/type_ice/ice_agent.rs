@@ -3,6 +3,7 @@ use super::candidate_pair::CandidatePair;
 use super::candidate_type::CandidateType;
 use std::io::Error;
 use std::net::SocketAddr;
+use crate::ice::gathering_service::gather_host_candidates;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IceRole {
@@ -37,8 +38,12 @@ impl IceAgent {
     }
 
     /// Recolecta candidatos locales, esta funcion sera asincrona en una implementacion futura.
-    pub fn gather_candidates(&mut self) -> Result<Vec<Candidate>, Error> {
-        todo!()
+    pub fn gather_candidates(&mut self) -> Result<&Vec<Candidate>, Error> {
+        let candidates = gather_host_candidates();
+        for c in candidates {
+            self.add_local_candidate(c);
+        }
+        Ok(&self.local_candidates)
     }
 
     /// Forma pares de candidatos locales y remotos para iniciar las verificaciones.
