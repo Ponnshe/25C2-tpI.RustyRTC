@@ -20,3 +20,34 @@ const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
 const DEFAULT_CODEC: &str = "VP8 90000";
 const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
 
+/// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
+pub struct ConnectionManager {
+    ice_agent: IceAgent,
+    // Otros campos necesarios para gestionar la conexión.
+}
+
+
+const DEFAULT_PORT: u16 = 9;
+const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
+const DEFAULT_FMT: &str = "99";
+const DEFAULT_NET_TYPE: &str = "IN";
+const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
+const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
+const DEFAULT_CODEC: &str = "VP8 90000";
+const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
+
+/// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
+pub struct ConnectionManager {
+    ice_agent: IceAgent,
+    // Otros campos necesarios para gestionar la conexión.
+}
+
+const DEFAULT_PORT: u16 = 9;
+const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
+const DEFAULT_FMT: &str = "99";
+const DEFAULT_NET_TYPE: &str = "IN";
+const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
+const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
+const DEFAULT_CODEC: &str = "VP8 90000";
+const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
+
