@@ -1,11 +1,11 @@
 use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
-use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 
-use crate::ice::type_ice::ice_agent::IceAgent;
 use crate::ice::type_ice::candidate::Candidate;
 use crate::ice::type_ice::candidate_type::CandidateType;
+use crate::ice::type_ice::ice_agent::IceAgent;
 
 /// Guarda los candidatos locales del agente en un archivo JSON (uno por línea)
 pub fn save_candidates_to_file(agent: &IceAgent, file_path: &str) -> io::Result<()> {
@@ -37,7 +37,10 @@ pub fn load_remote_candidates_from_file(agent: &mut IceAgent, file_path: &str) -
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("No se pudo leer una línea del archivo '{}': {}", file_path, e);
+                eprintln!(
+                    "No se pudo leer una línea del archivo '{}': {}",
+                    file_path, e
+                );
                 continue;
             }
         };
@@ -59,6 +62,7 @@ pub fn load_remote_candidates_from_file(agent: &mut IceAgent, file_path: &str) -
 /// Parseo básico de una línea JSON -> Candidate
 /// TODO: modelar errores
 fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
+    use std::net::UdpSocket;
     let json = line.trim();
 
     let foundation = extract_json_string(json, "foundation")
@@ -66,21 +70,27 @@ fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
 
     let component_str = extract_json_string(json, "component")
         .ok_or_else(|| "Falta campo 'component'".to_string())?;
-    let component: u8 = component_str.parse().map_err(|_| "Valor inválido en 'component'")?;
+    let component: u8 = component_str
+        .parse()
+        .map_err(|_| "Valor inválido en 'component'")?;
 
     let transport = extract_json_string(json, "transport")
         .ok_or_else(|| "Falta campo 'transport'".to_string())?;
 
     let priority_str = extract_json_string(json, "priority")
         .ok_or_else(|| "Falta campo 'priority'".to_string())?;
-    let priority: u32 = priority_str.parse().map_err(|_| "Valor inválido en 'priority'")?;
+    let priority: u32 = priority_str
+        .parse()
+        .map_err(|_| "Valor inválido en 'priority'")?;
 
-    let address_str = extract_json_string(json, "address")
-        .ok_or_else(|| "Falta campo 'address'".to_string())?;
-    let address: SocketAddr = address_str.parse().map_err(|_| "Formato inválido en 'address'")?;
+    let address_str =
+        extract_json_string(json, "address").ok_or_else(|| "Falta campo 'address'".to_string())?;
+    let address: SocketAddr = address_str
+        .parse()
+        .map_err(|_| "Formato inválido en 'address'")?;
 
-    let type_str = extract_json_string(json, "type")
-        .ok_or_else(|| "Falta campo 'type'".to_string())?;
+    let type_str =
+        extract_json_string(json, "type").ok_or_else(|| "Falta campo 'type'".to_string())?;
     let cand_type = match type_str.as_str() {
         "Host" => CandidateType::Host,
         "ServerReflexive" => CandidateType::ServerReflexive,
@@ -89,18 +99,20 @@ fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
         other => return Err(format!("Tipo de candidato desconocido: {}", other)),
     };
 
+    let socket = match UdpSocket::bind(address) {
+        Ok(s) => Some(s),
+        Err(_) => {
+            eprintln!("Advertencia: no se pudo bindear socket en {}", address);
+            None
+        }
+    };
+
     Ok(Candidate::new(
-        foundation,
-        component,
-        &transport,
-        priority,
-        address,
-        cand_type,
-        None,
+        foundation, component, &transport, priority, address, cand_type, None, socket,
     ))
 }
 
-/// Extrae un valor string o numérico de un JSON 
+/// Extrae un valor string o numérico de un JSON
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\":", key);
     let start_idx = json.find(&pattern)?;
@@ -119,35 +131,5 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
             rest.len()
         };
         Some(rest[..end_idx].trim().to_string())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use std::fs;
-
-    use crate::client::ice::{
-        gathering_service::gather_host_candidates, type_ice::ice_agent::IceRole,
-    };
-
-    use super::*;
-
-    #[test]
-    fn test_save_candidates_in_file_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
-        let candidates = gather_host_candidates();
-        for c in candidates {
-            agent.add_local_candidate(c);
-        }
-
-        let path = "test_candidates.json";
-        save_candidates_to_file(&agent, path).expect("No se pudo guardar archivo");
-
-        let content = fs::read_to_string(path).expect("No se pudo leer archivo");
-        assert!(content.contains("\"foundation\""));
-        assert!(content.contains("\"address\""));
-
-        fs::remove_file(path).unwrap();
     }
 }

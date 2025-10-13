@@ -1,6 +1,6 @@
 use crate::ice::type_ice::candidate::Candidate;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
