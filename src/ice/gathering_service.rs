@@ -3,29 +3,34 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use crate::ice::type_ice::candidate::Candidate;
 use crate::ice::type_ice::candidate_type::CandidateType;
 
-/// Dirección para bind inicial (todas las interfaces)
+/// Default gateway for all interfaces
 const BIND_IP: &str = "0.0.0.0";
-const BIND_PORT: u16 = 0; // 0 = puerto aleatorio
+/// 0 = random port
+const BIND_PORT: u16 = 0;
 
-/// IP de destino usada solo para descubrir interfaz local
+/// Destination IP and port used only to discover local interface
 const DISCOVERY_TARGET_IP: &str = "8.8.8.8";
 const DISCOVERY_TARGET_PORT: u16 = 80;
 
 const EMPTY_VALUE: &str = "";
 const ZERO_VALUE: u32 = 0;
 const DEFAULT_COMPONENT_ID: u8 = 1; // RTP
+/// Transmission protocol UDP
 const DEFAULT_TRANSPORT: &str = "UDP";
 
-/// Datos para el candidato loopback (testing local)
+/// Data for the loopback candidate (local testing)
 const LOOPBACK_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const LOOPBACK_PORT: u16 = 5000;
 
-/// Obtiene las direcciones IP locales de la máquina (IPv4), filtrando loopback,
-/// y crea candidatos host para cada dirección encontrada.
+/// Get local IP addresses of this machine (IPv4), filtering loopback
+/// and creates host candidates for each address found.
+///
+/// # Return
+/// Return a list of local candidates.
 pub fn gather_host_candidates() -> Vec<Candidate> {
     let mut candidates = Vec::new();
 
-    // Paso 1: descubrir IP local saliente mediante socket UDP temporal
+    // Step 1: Discover outgoing local IP using temporary UDP socket
     let bind_addr = format!("{}:{}", BIND_IP, BIND_PORT);
     if let Ok(socket) = UdpSocket::bind(&bind_addr) {
         let target_addr = format!("{}:{}", DISCOVERY_TARGET_IP, DISCOVERY_TARGET_PORT);
@@ -49,7 +54,7 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
         }
     }
 
-    // Paso 2: agregar loopback (solo si querés usarlo para pruebas locales)
+    // Step 2: Add loopback (only for local testing)
     if let Ok(loop_socket) =
         UdpSocket::bind(SocketAddr::new(IpAddr::V4(LOOPBACK_IP), LOOPBACK_PORT))
     {

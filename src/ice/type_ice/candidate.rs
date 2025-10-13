@@ -4,39 +4,48 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::net::{SocketAddr, UdpSocket};
 
-/// Component ID por defecto (1 = RTP, 2 = RTCP)
-const DEFAULT_COMPONENT_ID: u8 = 1;
-
-/// Protocolo de transporte por defecto
-const DEFAULT_TRANSPORT: &str = "UDP";
-
-/// Tipo de preferencia por tipo de candidato (según convenciones WebRTC/Pion)
+/// Preference type by candidate type (according to WebRTC conventions)
 const HOST_TYPE_PREF: u32 = 126;
 const PEER_REFLEXIVE_TYPE_PREF: u32 = 110;
 const SERVER_REFLEXIVE_TYPE_PREF: u32 = 100;
 const RELAYED_TYPE_PREF: u32 = 0;
 
-/// Preferencia local máxima (sin distinción de interfaz)
+/// Maximum local preference (interface-insensitive)
 const MAX_LOCAL_PREF: u16 = u16::MAX; // 65535
 
-/// Desplazamientos usados en la fórmula RFC 8445 §5.1.2.1
+/// Offsets used in the priority calculation -> RFC 8445 §5.1.2.1
 const TYPE_PREF_SHIFT: u32 = 24;
 const LOCAL_PREF_SHIFT: u32 = 8;
 const COMPONENT_OFFSET: u32 = 256;
 
+/// Represents a network address that a client can offer to connect. 
 #[derive(Debug)]
 pub struct Candidate {
+    /// Unique identifier that groups similar candidates
     pub foundation: String,
+    /// 1 = RTP or 2 = RTCP, normally
     pub component: u8,
+    ///UDP in this case.
     pub transport: String,
+    /// number for sort candidates.
     pub priority: u32,
+    /// IP + port.
     pub address: SocketAddr,
+    /// a type of candidate.
     pub cand_type: CandidateType,
+    /// this is for reflexive.
     pub related_address: Option<SocketAddr>,
+    /// socket to establish the connection
     pub socket: Option<UdpSocket>,
 }
 
-//TODO: por ahora se harcodea valores
+/// Create a valid candidate.
+///
+/// # Arguments
+/// Same properties of a candidate.
+///
+/// # Return
+/// A new candidate.
 impl Candidate {
     pub fn new(
         foundation: String,

@@ -5,21 +5,36 @@ use std::io::Error;
 use std::net::SocketAddr;
 use crate::ice::gathering_service::gather_host_candidates;
 
+///Role for an agent
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IceRole {
+    /// It's the role in which the final decision is made on which candidate pair will be used for the connection.
     Controlling,
+    /// It's the role that accepts the nominated pair.
     Controlled,
 }
 
+/// It's responsible for orchestrating the flow of gathering, checks, nomination, etc.
 #[derive(Debug)]
 pub struct IceAgent {
+    /// set of local candidates.
     pub local_candidates: Vec<Candidate>,
+    /// set of remote candidates.
     pub remote_candidates: Vec<Candidate>,
+    /// set of pairs of candidates.
     pub candidate_pairs: Vec<CandidatePair>,
+    /// role for the agent.
     pub role: IceRole,
 }
 
 impl IceAgent {
+    /// Create a valid ice agent.
+    ///
+    /// # Arguments
+    /// Same properties of ice agent.
+    ///
+    /// # Return
+    /// A new ice agent.
     pub fn new(role: IceRole) -> Self {
         IceAgent {
             local_candidates: Vec::new(),
@@ -37,7 +52,7 @@ impl IceAgent {
         self.remote_candidates.push(candidate);
     }
 
-    /// Recolecta candidatos locales, esta funcion sera asincrona en una implementacion futura.
+    /// Collects local candidates. This feature will be asynchronous in a future implementation.
     pub fn gather_candidates(&mut self) -> Result<&Vec<Candidate>, Error> {
         let candidates = gather_host_candidates();
         for c in candidates {
@@ -46,13 +61,13 @@ impl IceAgent {
         Ok(&self.local_candidates)
     }
 
-    /// Forma pares de candidatos locales y remotos para iniciar las verificaciones.
+    /// Pair local and remote candidates to initiate nominations.
     pub fn form_candidate_pairs(&mut self) {
         todo!()
     }
 
-    /// Ejecuta las verificaciones de conectividad entre los pares de candidatos.
-    /// Selecciona el mejor par de candidatos al finalizar.
+    /// Runs connectivity checks between candidate pairs.
+    /// Selects the best candidate pair.
     pub async fn run_connectivity_checks(&mut self) {
         todo!()
     }
