@@ -1,9 +1,10 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
 use super::candidate_type::CandidateType;
+use crate::ice::gathering_service::gather_host_candidates;
+use rand::{Rng, rngs::OsRng};
 use std::io::Error;
 use std::net::SocketAddr;
-use crate::ice::gathering_service::gather_host_candidates;
 
 ///Role for an agent
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub struct IceAgent {
     pub candidate_pairs: Vec<CandidatePair>,
     /// role for the agent.
     pub role: IceRole,
+    ufrag: String,
+    pwd: String,
 }
 
 impl IceAgent {
@@ -36,11 +39,14 @@ impl IceAgent {
     /// # Return
     /// A new ice agent.
     pub fn new(role: IceRole) -> Self {
-        IceAgent {
-            local_candidates: Vec::new(),
-            remote_candidates: Vec::new(),
-            candidate_pairs: Vec::new(),
+        let (ufrag, pwd) = Self::fresh_credentials();
+        Self {
+            local_candidates: vec![],
+            remote_candidates: vec![],
+            candidate_pairs: vec![],
             role,
+            ufrag,
+            pwd,
         }
     }
 
@@ -70,6 +76,25 @@ impl IceAgent {
     /// Selects the best candidate pair.
     pub async fn run_connectivity_checks(&mut self) {
         todo!()
+    }
+
+    pub(crate) fn local_credentials(&self) -> (String, String) {
+        (self.ufrag.clone(), self.pwd.clone())
+    }
+
+    fn gen_token(len: usize) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut s = String::with_capacity(len);
+        for _ in 0..len {
+            let idx = OsRng.gen_range(0..ALPHABET.len());
+            s.push(ALPHABET[idx] as char);
+        }
+        s
+    }
+
+    fn fresh_credentials() -> (String, String) {
+        // ICE: ufrag >= 4 chars; pwd >= 22 chars
+        (Self::gen_token(8), Self::gen_token(24))
     }
 }
 
