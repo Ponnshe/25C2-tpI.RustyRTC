@@ -1,10 +1,8 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
-use super::candidate_type::CandidateType;
 use crate::ice::gathering_service::gather_host_candidates;
 use rand::{Rng, rngs::OsRng};
 use std::io::Error;
-use std::net::SocketAddr;
 
 ///Role for an agent
 #[derive(Debug, Clone, PartialEq, Eq)]

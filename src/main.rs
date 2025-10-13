@@ -1,18 +1,10 @@
-use std::{
-    env, fs,
-    io::{self, BufRead, Write},
-    net::SocketAddr,
-    path::Path,
-    str::FromStr,
-    thread,
-    time::Duration,
-};
+use std::{env, fs, net::SocketAddr, path::Path, thread, time::Duration};
 
 use rustyrtc::connection_manager::ConnectionManager;
 use rustyrtc::sdp::sdpc::Sdp;
 
-const OFFER_FILE: &str = "../tests/connection_manager/offer.txt";
-const ANSWER_FILE: &str = "../tests/connection_manager/answer.txt";
+const OFFER_FILE: &str = "offer.txt";
+const ANSWER_FILE: &str = "answer.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -56,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_mut(0)
         .expect("Debe haber al menos un candidato remoto");
 
-    let mut socket = local_candidate
+    let socket = local_candidate
         .socket
         .take()
         .expect("Socket local no inicializado");
@@ -67,33 +59,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Local: {}", socket.local_addr()?);
     println!("Peer:  {}", socket.peer_addr()?);
 
-    let stdin = io::stdin();
-    let mut input_lines = stdin.lock().lines();
-    let mut buf = [0u8; 1500];
+    // Clone the socket for the sending thread (same underlying FD/port)
+    let send_sock = socket.try_clone()?;
 
-    // Let A kick things off with the first send
-    if mode == "A" {
-        print!("> ");
-        io::stdout().flush()?;
-        if let Some(Ok(msg)) = input_lines.next() {
-            socket.send(msg.as_bytes())?;
+    // identify the side
+    let tag = if mode == "A" { "A" } else { "B" };
+
+    // Periodic sender (every 1s)
+    thread::spawn(move || {
+        let mut seq: u64 = 0;
+        loop {
+            let msg = format!("{tag}:{seq}");
+            if let Err(e) = send_sock.send(msg.as_bytes()) {
+                eprintln!("[SEND ERROR] {e}");
+                break;
+            }
+            seq += 1;
+            thread::sleep(Duration::from_secs(1));
         }
-    }
+    });
 
-    // Both sides now identical: recv, then prompt/send.
+    // Receive loop (blocking)
+    let mut buf = [0u8; 1500];
     loop {
         let n = socket.recv(&mut buf)?;
-        let received = String::from_utf8_lossy(&buf[..n]);
-        println!("\n[RECV] {}", received);
-
-        print!("> ");
-        io::stdout().flush()?;
-        if let Some(Ok(msg)) = input_lines.next() {
-            socket.send(msg.as_bytes())?;
-        }
+        println!("[RECV] {}", String::from_utf8_lossy(&buf[..n]));
     }
-    // Nunca se llega aquí
-    // Ok(())
 }
 
 /// Espera hasta que un archivo exista
