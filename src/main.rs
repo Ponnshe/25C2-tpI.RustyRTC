@@ -113,5 +113,4 @@ fn main() {
     let mut conn_manager = ConnectionManager::new();
     let sdp_offer = conn_manager.create_offer().unwrap();
     println!("{}", sdp_offer.encode());
->>>>>>> 33b4c160f9038eb2873d8d3ec3339974e6cbce05
 }
