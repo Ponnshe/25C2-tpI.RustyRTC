@@ -55,33 +55,3 @@ impl fmt::Display for ICEToSDP {
         Ok(())
     }
 }
-pub struct ICEToSDP {
-    candidate: Candidate,
-}
-
-impl ICEToSDP {
-    pub fn new(candidate: Candidate) -> Self {
-        Self { candidate }
-    }
-
-    pub fn set_candidate(&mut self, candidate: Candidate) {
-        self.candidate = candidate;
-    }
-
-    fn get_typ_as_sdp_string(&self) -> String {
-        match self.candidate.cand_type {
-            CandidateType::Host => "host".to_owned(),
-            CandidateType::PeerReflexive => "prflx".to_owned(),
-            CandidateType::Relayed => "relay".to_owned(),
-            CandidateType::ServerReflexive => "srflx".to_owned(),
-        }
-    }
-
-    fn get_related_addr_as_sdp_string(&self) -> Option<String> {
-        if let Some(s) = self.candidate.related_address {
-            return Some(format!("raddr {} rport {}", s.ip(), s.port()));
-        }
-        None
-    }
-}
-
