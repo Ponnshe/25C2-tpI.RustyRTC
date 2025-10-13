@@ -1,6 +1,7 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
 use super::candidate_type::CandidateType;
+use std::io::Error;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +37,7 @@ impl IceAgent {
     }
 
     /// Recolecta candidatos locales, esta funcion sera asincrona en una implementacion futura.
-    pub fn gather_candidates(&mut self) {
+    pub fn gather_candidates(&mut self) -> Result<Vec<Candidate>, Error> {
         todo!()
     }
 

@@ -1,6 +1,7 @@
 use std::env;
 use std::process;
 
+use rustyrtc::connection_manager::ConnectionManager;
 use rustyrtc::ice::gathering_service::gather_host_candidates;
 use rustyrtc::ice::signaling_mock::{
     load_remote_candidates_from_file, print_candidates_stdout, save_candidates_to_file,
@@ -23,30 +24,94 @@ fn print_usage() {
 }
 
 fn main() {
-    let candidates = gather_host_candidates();
+    // let args: Vec<String> = env::args().collect();
+    // let mode = args.get(1).map(|s| s.as_str()).unwrap_or("error");
 
-    if candidates.is_empty() {
-        println!("No se encontraron candidatos locales.");
-        return;
-    }
+    // match mode {
+    //     // Guarda los candidatos de A
+    //     "clientA" | "saveA" => {
+    //         let mut agent = IceAgent::new(IceRole::Controlling);
+    //         for c in gather_host_candidates() {
+    //             agent.add_local_candidate(c);
+    //         }
 
-    println!("Se encontraron {} candidatos.\n", candidates.len());
+    //         print_candidates_stdout(&agent);
 
-    for (i, c) in candidates.iter().enumerate() {
-        println!("Candidato #{} -> {:?}", i + 1, c.address);
-        println!(
-            "Candidato: {} | Foundation: {} | Priority: {}",
-            c.address, c.foundation, c.priority
-        );
+    //         if let Err(e) = save_candidates_to_file(&agent, FILE_A) {
+    //             eprintln!("Error guardando {}: {}", FILE_A, e);
+    //             process::exit(1);
+    //         }
+    //         println!("Archivo {} generado.", FILE_A);
+    //     }
 
-        match &c.socket {
-            Some(sock) => match sock.local_addr() {
-                Ok(addr) => println!("Socket activo en {:?}", addr),
-                Err(e) => println!("Error al obtener local_addr(): {}", e),
-            },
-            None => println!("Sin socket asociado (None)"),
-        }
-    }
+    //     // Guarda los candidatos de B
+    //     "clientB" | "saveB" => {
+    //         // (puede ser Controlled para diferenciar roles)
+    //         let mut agent = IceAgent::new(IceRole::Controlled);
+    //         for c in gather_host_candidates() {
+    //             agent.add_local_candidate(c);
+    //         }
 
-    println!("\nPrueba finalizada.");
+    //         print_candidates_stdout(&agent);
+
+    //         if let Err(e) = save_candidates_to_file(&agent, FILE_B) {
+    //             eprintln!("Error guardando {}: {}", FILE_B, e);
+    //             process::exit(1);
+    //         }
+    //         println!("Archivo {} generado.", FILE_B);
+    //     }
+
+    //     // Lee candidatos de A como "remotos"
+    //     "readA" => {
+    //         let mut agent = IceAgent::new(IceRole::Controlling);
+    //         for c in gather_host_candidates() {
+    //             agent.add_local_candidate(c);
+    //         }
+
+    //         match load_remote_candidates_from_file(&mut agent, FILE_A) {
+    //             Ok(()) => {
+    //                 println!("Remotos cargados desde {}", FILE_A);
+    //                 println!("Remotos:");
+    //                 for c in &agent.remote_candidates {
+    //                     println!(" - {}", c);
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 eprintln!("Error leyendo {}: {}", FILE_A, e);
+    //                 process::exit(1);
+    //             }
+    //         }
+    //     }
+
+    //     // Lee candidatos de B como "remotos"
+    //     "readB" => {
+    //         let mut agent = IceAgent::new(IceRole::Controlling);
+    //         for c in gather_host_candidates() {
+    //             agent.add_local_candidate(c);
+    //         }
+
+    //         match load_remote_candidates_from_file(&mut agent, FILE_B) {
+    //             Ok(()) => {
+    //                 println!("Remotos cargados desde {}", FILE_B);
+    //                 println!("Remotos:");
+    //                 for c in &agent.remote_candidates {
+    //                     println!(" - {}", c);
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 eprintln!("Error leyendo {}: {}", FILE_B, e);
+    //                 process::exit(1);
+    //             }
+    //         }
+    //     }
+
+    //     _ => {
+    //         print_usage();
+    //         process::exit(2);
+    //     }
+    // }
+    let mut conn_manager = ConnectionManager::new();
+    let sdp_offer = conn_manager.create_offer().unwrap();
+    println!("{}", sdp_offer.encode());
+>>>>>>> 33b4c160f9038eb2873d8d3ec3339974e6cbce05
 }

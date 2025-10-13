@@ -76,6 +76,38 @@ pub struct Sdp {
 }
 
 impl Sdp {
+    pub fn new(
+        version: u8,
+        origin: Origin,
+        session_name: String,
+        session_info: Option<String>,
+        uri: Option<String>,
+        emails: Vec<String>,
+        phones: Vec<String>,
+        connection: Option<Connection>,
+        bandwidth: Vec<Bandwidth>,
+        times: Vec<TimeDesc>,
+        attrs: Vec<Attribute>,
+        media: Vec<Media>,
+        extra_lines: Vec<String>,
+    ) -> Self {
+        Self {
+            version,
+            origin,
+            session_name,
+            session_info,
+            uri,
+            emails,
+            phones,
+            connection,
+            bandwidth,
+            times,
+            attrs,
+            media,
+            extra_lines,
+        }
+    }
+
     /// Parse a full SDP text into [`Sdp`].
     ///
     /// - Accepts `\n` or `\r\n` line endings; `\r` is stripped per line.
