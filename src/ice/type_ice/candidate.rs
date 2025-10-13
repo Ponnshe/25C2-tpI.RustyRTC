@@ -18,7 +18,7 @@ const TYPE_PREF_SHIFT: u32 = 24;
 const LOCAL_PREF_SHIFT: u32 = 8;
 const COMPONENT_OFFSET: u32 = 256;
 
-/// Represents a network address that a client can offer to connect. 
+/// Represents a network address that a client can offer to connect.
 #[derive(Debug)]
 pub struct Candidate {
     /// Unique identifier that groups similar candidates
@@ -57,21 +57,25 @@ impl Candidate {
         related_address: Option<SocketAddr>,
         socket: Option<UdpSocket>,
     ) -> Self {
-        let calculate_foundation = if foundation.is_empty() {
-            Self::calculate_foundation(&cand_type, transport, &address.ip().to_string())
+        let t = transport.to_ascii_lowercase();
+
+        let foundation = if foundation.is_empty() {
+            Self::calculate_foundation(&cand_type, &t, &address.ip().to_string())
         } else {
             foundation
         };
-        let calculated_priority = if priority == 0 {
+
+        let priority = if priority == 0 {
             Self::calculate_priority(&cand_type, MAX_LOCAL_PREF, component)
         } else {
             priority
         };
-        Candidate {
-            foundation: calculate_foundation,
+
+        Self {
+            foundation,
             component,
-            transport: transport.to_string(),
-            priority: calculated_priority,
+            transport: t,
+            priority,
             address,
             cand_type,
             related_address,
@@ -79,6 +83,24 @@ impl Candidate {
         }
     }
 
+    /// Convenience for host candidates
+    pub fn host(
+        address: SocketAddr,
+        transport: &str,
+        component: u8,
+        socket: Option<UdpSocket>,
+    ) -> Self {
+        Self::new(
+            String::new(),
+            component,
+            transport,
+            0, // let ctor compute
+            address,
+            CandidateType::Host,
+            None,
+            socket,
+        )
+    }
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"foundation":"{}","component":{},"transport":"{}","priority":{},"address":"{}","type":"{:?}"}}"#,
@@ -91,25 +113,29 @@ impl Candidate {
         )
     }
 
-    /// algorithm for calculating foundation, according to RFC 8445 §5.1.1.3
-    fn calculate_foundation(cand_type: &CandidateType, transport: &str, base_ip: &str) -> String {
+    // RFC 8445 §5.1.1.3 — foundation (any stable identifier OK)
+    fn calculate_foundation(
+        cand_type: &CandidateType,
+        transport_lc: &str,
+        base_ip: &str,
+    ) -> String {
         let mut hasher = DefaultHasher::new();
-        (format!("{:?}-{}-{}", cand_type, base_ip, transport)).hash(&mut hasher);
+        format!("{:?}-{}-{}", cand_type, transport_lc, base_ip).hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
 
-    /// algorithm for calculating foundation, according to RFC 8445 §5.1.2.1
+    // RFC 8445 §5.1.2.1 — 32-bit candidate priority
     fn calculate_priority(cand_type: &CandidateType, local_pref: u16, component_id: u8) -> u32 {
-        let type_pref: u32 = match cand_type {
+        let type_pref = match cand_type {
             CandidateType::Host => HOST_TYPE_PREF,
             CandidateType::ServerReflexive => SERVER_REFLEXIVE_TYPE_PREF,
             CandidateType::PeerReflexive => PEER_REFLEXIVE_TYPE_PREF,
             CandidateType::Relayed => RELAYED_TYPE_PREF,
         };
 
-        (1 << TYPE_PREF_SHIFT) * type_pref
-            + (1 << LOCAL_PREF_SHIFT) * local_pref as u32
-            + (COMPONENT_OFFSET - component_id as u32)
+        (type_pref << TYPE_PREF_SHIFT)
+            | ((local_pref as u32) << LOCAL_PREF_SHIFT)
+            | (COMPONENT_OFFSET - component_id as u32)
     }
 }
 
