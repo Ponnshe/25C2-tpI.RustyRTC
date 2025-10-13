@@ -70,36 +70,27 @@ impl ConnectionManager {
         Ok(sdp)
     }
 
+    /// Recibe una oferta SDP de un par remoto y genera una respuesta.
+    /// Parsea los candidatos remotos, recolecta los propios y crea la respuesta SDP.
+    pub fn receive_offer_and_create_answer(&mut self, offer: Sdp) -> Result<Sdp, String> {
+        todo!()
+    }
 
-const DEFAULT_PORT: u16 = 9;
-const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
-const DEFAULT_FMT: &str = "99";
-const DEFAULT_NET_TYPE: &str = "IN";
-const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
-const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
-const DEFAULT_CODEC: &str = "VP8 90000";
-const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
+    /// (Para el oferente) Recibe la respuesta SDP del par remoto.
+    /// Parsea los candidatos remotos de la respuesta para completar la negociacion.
+    pub fn receive_answer(&mut self, answer: Sdp) -> Result<(), String> {
+        todo!()
+    }
 
-/// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
-pub struct ConnectionManager {
-    ice_agent: IceAgent,
-    // Otros campos necesarios para gestionar la conexión.
-}
+    /// Ejecuta las verificaciones de conectividad (envía y recibe STUN).
+    /// Es `async` porque implica esperar I/O de red.
+    pub async fn start_connectivity_checks(&mut self) {
+        todo!()
+    }
 
-
-const DEFAULT_PORT: u16 = 9;
-const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
-const DEFAULT_FMT: &str = "99";
-const DEFAULT_NET_TYPE: &str = "IN";
-const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
-const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
-const DEFAULT_CODEC: &str = "VP8 90000";
-const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
-
-/// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
-pub struct ConnectionManager {
-    ice_agent: IceAgent,
-    // Otros campos necesarios para gestionar la conexión.
+    pub fn set_ice_agent(&mut self, ice_agent: IceAgent) {
+        self.ice_agent = ice_agent;
+    }
 }
 
 const DEFAULT_PORT: u16 = 9;
