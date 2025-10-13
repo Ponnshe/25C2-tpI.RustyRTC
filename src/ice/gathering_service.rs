@@ -1,77 +1,57 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 use crate::ice::type_ice::candidate::Candidate;
-use crate::ice::type_ice::candidate_type::CandidateType;
 
-/// Default gateway for all interfaces
-const BIND_IP: &str = "0.0.0.0";
-/// 0 = random port
-const BIND_PORT: u16 = 0;
-
-/// Destination IP and port used only to discover local interface
 const DISCOVERY_TARGET_IP: &str = "8.8.8.8";
 const DISCOVERY_TARGET_PORT: u16 = 80;
 
-const EMPTY_VALUE: &str = "";
-const ZERO_VALUE: u32 = 0;
-const DEFAULT_COMPONENT_ID: u8 = 1; // RTP
-/// Transmission protocol UDP
-const DEFAULT_TRANSPORT: &str = "UDP";
+const DEFAULT_COMPONENT_ID: u8 = 1; // RTP/Data, good enough for mock
+const TRANSPORT_UDP: &str = "udp"; // lowercase is safer across stacks
 
-/// Data for the loopback candidate (local testing)
-const LOOPBACK_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
-const LOOPBACK_PORT: u16 = 5000;
-
-/// Get local IP addresses of this machine (IPv4), filtering loopback
-/// and creates host candidates for each address found.
-///
-/// # Return
-/// Return a list of local candidates.
+/// Gathers a single IPv4 host candidate for the primary egress interface.
+/// (No deps, robust enough for LAN tests.)
 pub fn gather_host_candidates() -> Vec<Candidate> {
-    let mut candidates = Vec::new();
+    let mut out = Vec::new();
 
-    // Step 1: Discover outgoing local IP using temporary UDP socket
-    let bind_addr = format!("{}:{}", BIND_IP, BIND_PORT);
-    if let Ok(socket) = UdpSocket::bind(&bind_addr) {
-        let target_addr = format!("{}:{}", DISCOVERY_TARGET_IP, DISCOVERY_TARGET_PORT);
-        if socket.connect(&target_addr).is_ok() {
-            if let Ok(local_addr) = socket.local_addr() {
-                let ip = local_addr.ip();
-                if !ip.is_loopback() && ip.is_ipv4() {
-                    let candidate = Candidate::new(
-                        EMPTY_VALUE.to_string(),
-                        DEFAULT_COMPONENT_ID,
-                        DEFAULT_TRANSPORT,
-                        ZERO_VALUE,
-                        SocketAddr::new(ip, local_addr.port()),
-                        CandidateType::Host,
-                        None,
-                        Some(socket),
-                    );
-                    candidates.push(candidate);
-                }
-            }
-        }
-    }
+    // Discover primary local IPv4 via a TEMP socket
+    let probe = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let _ = probe.connect((DISCOVERY_TARGET_IP, DISCOVERY_TARGET_PORT));
+    let local_ip = match probe.local_addr().map(|a| a.ip()) {
+        Ok(IpAddr::V4(ipv4)) if !ipv4.is_loopback() => IpAddr::V4(ipv4),
+        _ => return out,
+    };
+    drop(probe);
 
-    // Step 2: Add loopback (only for local testing)
-    if let Ok(loop_socket) =
-        UdpSocket::bind(SocketAddr::new(IpAddr::V4(LOOPBACK_IP), LOOPBACK_PORT))
-    {
-        let loopback_candidate = Candidate::new(
-            EMPTY_VALUE.to_string(),
+    // Fresh, unconnected socket bound to that interface
+    let sock = match UdpSocket::bind(SocketAddr::new(local_ip, 0)) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let addr = sock.local_addr().unwrap();
+
+    out.push(Candidate::host(
+        addr,
+        TRANSPORT_UDP,
+        DEFAULT_COMPONENT_ID,
+        Some(sock),
+    ));
+
+    //loopback for same-host demos only
+    #[cfg(feature = "loopback-candidate")]
+    if let Ok(loop_sock) = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)) {
+        let loop_addr = loop_sock.local_addr().unwrap();
+        out.push(Candidate::host(
+            loop_addr,
+            TRANSPORT_UDP,
             DEFAULT_COMPONENT_ID,
-            DEFAULT_TRANSPORT,
-            ZERO_VALUE,
-            loop_socket.local_addr().unwrap(),
-            CandidateType::Host,
-            None,
-            Some(loop_socket),
-        );
-        candidates.push(loopback_candidate);
+            Some(loop_sock),
+        ));
     }
 
-    candidates
+    out
 }
 
 #[cfg(test)]
