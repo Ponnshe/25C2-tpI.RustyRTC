@@ -93,14 +93,19 @@ impl ConnectionManager {
     }
 }
 
-const DEFAULT_PORT: u16 = 9;
-const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
-const DEFAULT_FMT: &str = "99";
-const DEFAULT_NET_TYPE: &str = "IN";
-const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
-const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
-const DEFAULT_CODEC: &str = "VP8 90000";
-const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
+fn mocked_media_spec_to_media_description() -> Result<SDPMedia, ConnectionError> {
+    let mut media_desc = SDPMedia::new_blank();
+    media_desc.set_kind(DEAULT_MEDIA_KIND);
+    let port_spec_sdp = SDPPortSpec::new(DEFAULT_PORT, None);
+    media_desc.set_port(port_spec_sdp);
+    media_desc.set_proto(DEAFULT_PROTO);
+    let fmts = vec![DEFAULT_FMT.to_owned()];
+    media_desc.set_fmts(fmts);
+    let connection_sdp = SDPConnection::new(DEFAULT_NET_TYPE, DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR);
+    media_desc.set_connection(Some(connection_sdp));
+    media_desc.set_attrs(get_candidates_as_attributes());
+    Ok(media_desc)
+}
 
 fn get_candidates_as_attributes() -> Vec<SDPAttribute> {
     gathering_service::gather_host_candidates()
