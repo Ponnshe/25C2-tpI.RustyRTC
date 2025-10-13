@@ -44,63 +44,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- Configuración de sockets ---
-    let local_candidate = conn_manager.ice_agent.local_candidates.get_mut(0)
+    let local_candidate = conn_manager
+        .ice_agent
+        .local_candidates
+        .get_mut(0)
         .expect("Debe haber al menos un candidato local");
-    let remote_candidate = conn_manager.ice_agent.remote_candidates.get_mut(0)
+
+    let remote_candidate = conn_manager
+        .ice_agent
+        .remote_candidates
+        .get_mut(0)
         .expect("Debe haber al menos un candidato remoto");
 
-    let local_socket = local_candidate.socket.take().expect("Socket local no inicializado");
+    let mut socket = local_candidate
+        .socket
+        .take()
+        .expect("Socket local no inicializado");
 
-    println!("Local socket: {:?}", local_socket.local_addr()?);
     let remote_addr: SocketAddr = remote_candidate.address;
 
-    println!("Local: {}", local_socket.local_addr()?);
-    println!("Remote: {}", remote_addr);
+    socket.connect(remote_addr)?;
+    println!("Local: {}", socket.local_addr()?);
+    println!("Peer:  {}", socket.peer_addr()?);
 
     let stdin = io::stdin();
     let mut input_lines = stdin.lock().lines();
+    let mut buf = [0u8; 1500];
 
-    // --- Ping-Pong ---
+    // Let A kick things off with the first send
     if mode == "A" {
-        // A envía primero
         print!("> ");
         io::stdout().flush()?;
         if let Some(Ok(msg)) = input_lines.next() {
-            local_socket.send_to(msg.as_bytes(), remote_addr)?;
-        }
-
-        let mut buf = [0u8; 1024];
-        loop {
-            // Espera mensaje del otro
-            let (len, addr) = local_socket.recv_from(&mut buf)?;
-            let received = String::from_utf8_lossy(&buf[..len]);
-            println!("\n[RECV from {}] {}", addr, received);
-
-            // Envía respuesta
-            print!("> ");
-            io::stdout().flush()?;
-            if let Some(Ok(msg)) = input_lines.next() {
-                local_socket.send_to(msg.as_bytes(), remote_addr)?;
-            }
-        }
-    } else {
-        // B espera primero
-        let mut buf = [0u8; 1024];
-        loop {
-            // Espera mensaje del otro
-            let (len, addr) = local_socket.recv_from(&mut buf)?;
-            let received = String::from_utf8_lossy(&buf[..len]);
-            println!("\n[RECV from {}] {}", addr, received);
-
-            // Envía respuesta
-            print!("> ");
-            io::stdout().flush()?;
-            if let Some(Ok(msg)) = input_lines.next() {
-                local_socket.send_to(msg.as_bytes(), remote_addr)?;
-            }
+            socket.send(msg.as_bytes())?;
         }
     }
 
+    // Both sides now identical: recv, then prompt/send.
+    loop {
+        let n = socket.recv(&mut buf)?;
+        let received = String::from_utf8_lossy(&buf[..n]);
+        println!("\n[RECV] {}", received);
+
+        print!("> ");
+        io::stdout().flush()?;
+        if let Some(Ok(msg)) = input_lines.next() {
+            socket.send(msg.as_bytes())?;
+        }
+    }
     // Nunca se llega aquí
     // Ok(())
 }
