@@ -11,7 +11,6 @@
 //!
 //! **Input** accepts `\n` or `\r\n`; output always uses `\r\n` (CRLF).
 //! Unknown session-level lines are preserved in [`Sdp::extra_lines`].
-//!
 //! ### Examples
 //! ```ignore
 //! use crate::sdp::sdpc::Sdp;
@@ -329,6 +328,10 @@ impl Sdp {
             m.fmt_lines(&mut out); // writes m=/i=/c=/b=/a=/extras with CRLFs
         }
         out
+    }
+
+    pub fn media(&self) -> &Vec<Media> {
+        &self.media
     }
 
     /// Crea un nuevo mensaje SDP de oferta vacío con los campos obligatorios.

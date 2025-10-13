@@ -6,16 +6,14 @@ use std::path::Path;
 use crate::ice::type_ice::candidate::Candidate;
 use crate::ice::type_ice::candidate_type::CandidateType;
 use crate::ice::type_ice::ice_agent::IceAgent;
+use crate::sdp::sdpc::Sdp;
 
 /// Guarda los candidatos locales del agente en un archivo JSON (uno por línea)
-pub fn save_candidates_to_file(agent: &IceAgent, file_path: &str) -> io::Result<()> {
+pub fn save_sdp_to_file(sdp: &Sdp, file_path: &str) -> io::Result<()> {
     let path = Path::new(file_path);
     let mut file = File::create(&path)?;
 
-    for c in &agent.local_candidates {
-        let json_line = c.to_json();
-        writeln!(file, "{}", json_line)?;
-    }
+    writeln!(file, "{}", sdp.encode())?;
 
     Ok(())
 }

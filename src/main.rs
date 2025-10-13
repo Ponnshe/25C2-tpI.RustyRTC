@@ -1,116 +1,113 @@
-use std::env;
-use std::process;
+use std::{
+    env, fs,
+    io::{self, BufRead, Write},
+    net::SocketAddr,
+    path::Path,
+    str::FromStr,
+    thread,
+    time::Duration,
+};
 
 use rustyrtc::connection_manager::ConnectionManager;
-use rustyrtc::ice::gathering_service::gather_host_candidates;
-use rustyrtc::ice::signaling_mock::{
-    load_remote_candidates_from_file, print_candidates_stdout, save_candidates_to_file,
-};
-use rustyrtc::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use rustyrtc::sdp::sdpc::Sdp;
 
-const FILE_A: &str = "candidates_A.json";
-const FILE_B: &str = "candidates_B.json";
+const OFFER_FILE: &str = "offer.txt";
+const ANSWER_FILE: &str = "answer.txt";
 
-fn print_usage() {
-    eprintln!(
-        "Uso:
-  cargo run -- clientA       # genera {fa}
-  cargo run -- clientB       # genera {fb}
-  cargo run -- readA         # lee {fa} y lo carga como 'remotos'
-  cargo run -- readB         # lee {fb} y lo carga como 'remotos'",
-        fa = FILE_A,
-        fb = FILE_B
-    );
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().collect();
+    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("error");
+
+    if mode != "A" && mode != "B" {
+        eprintln!("Uso: cargo run -- A|B");
+        return Ok(());
+    }
+
+    let mut conn_manager = ConnectionManager::new();
+
+    if mode == "A" {
+        // Peer A genera offer
+        let offer_sdp = conn_manager.create_offer()?;
+        fs::write(OFFER_FILE, offer_sdp.encode())?;
+        println!("[A] Oferta generada, esperando answer...");
+        wait_for_file(ANSWER_FILE);
+        let answer_str = fs::read_to_string(ANSWER_FILE)?;
+        conn_manager.receive_answer(Sdp::parse(&answer_str)?)?;
+        println!("[A] Answer procesada, conexión lista.");
+    } else {
+        // Peer B espera offer
+        wait_for_file(OFFER_FILE);
+        let offer_str = fs::read_to_string(OFFER_FILE)?;
+        let answer_sdp = conn_manager.receive_offer_and_create_answer(&offer_str)?;
+        fs::write(ANSWER_FILE, answer_sdp.encode())?;
+        println!("[B] Offer procesada y answer escrita.");
+    }
+
+    // --- Configuración de sockets ---
+    let local_candidate = conn_manager.ice_agent.local_candidates.get_mut(0)
+        .expect("Debe haber al menos un candidato local");
+    let remote_candidate = conn_manager.ice_agent.remote_candidates.get_mut(0)
+        .expect("Debe haber al menos un candidato remoto");
+
+    let local_socket = local_candidate.socket.take().expect("Socket local no inicializado");
+
+    println!("Local socket: {:?}", local_socket.local_addr()?);
+    let remote_addr: SocketAddr = remote_candidate.address;
+
+    println!("Local: {}", local_socket.local_addr()?);
+    println!("Remote: {}", remote_addr);
+
+    let stdin = io::stdin();
+    let mut input_lines = stdin.lock().lines();
+
+    // --- Ping-Pong ---
+    if mode == "A" {
+        // A envía primero
+        print!("> ");
+        io::stdout().flush()?;
+        if let Some(Ok(msg)) = input_lines.next() {
+            local_socket.send_to(msg.as_bytes(), remote_addr)?;
+        }
+
+        let mut buf = [0u8; 1024];
+        loop {
+            // Espera mensaje del otro
+            let (len, addr) = local_socket.recv_from(&mut buf)?;
+            let received = String::from_utf8_lossy(&buf[..len]);
+            println!("\n[RECV from {}] {}", addr, received);
+
+            // Envía respuesta
+            print!("> ");
+            io::stdout().flush()?;
+            if let Some(Ok(msg)) = input_lines.next() {
+                local_socket.send_to(msg.as_bytes(), remote_addr)?;
+            }
+        }
+    } else {
+        // B espera primero
+        let mut buf = [0u8; 1024];
+        loop {
+            // Espera mensaje del otro
+            let (len, addr) = local_socket.recv_from(&mut buf)?;
+            let received = String::from_utf8_lossy(&buf[..len]);
+            println!("\n[RECV from {}] {}", addr, received);
+
+            // Envía respuesta
+            print!("> ");
+            io::stdout().flush()?;
+            if let Some(Ok(msg)) = input_lines.next() {
+                local_socket.send_to(msg.as_bytes(), remote_addr)?;
+            }
+        }
+    }
+
+    // Nunca se llega aquí
+    // Ok(())
 }
 
-fn main() {
-    // let args: Vec<String> = env::args().collect();
-    // let mode = args.get(1).map(|s| s.as_str()).unwrap_or("error");
-
-    // match mode {
-    //     // Guarda los candidatos de A
-    //     "clientA" | "saveA" => {
-    //         let mut agent = IceAgent::new(IceRole::Controlling);
-    //         for c in gather_host_candidates() {
-    //             agent.add_local_candidate(c);
-    //         }
-
-    //         print_candidates_stdout(&agent);
-
-    //         if let Err(e) = save_candidates_to_file(&agent, FILE_A) {
-    //             eprintln!("Error guardando {}: {}", FILE_A, e);
-    //             process::exit(1);
-    //         }
-    //         println!("Archivo {} generado.", FILE_A);
-    //     }
-
-    //     // Guarda los candidatos de B
-    //     "clientB" | "saveB" => {
-    //         // (puede ser Controlled para diferenciar roles)
-    //         let mut agent = IceAgent::new(IceRole::Controlled);
-    //         for c in gather_host_candidates() {
-    //             agent.add_local_candidate(c);
-    //         }
-
-    //         print_candidates_stdout(&agent);
-
-    //         if let Err(e) = save_candidates_to_file(&agent, FILE_B) {
-    //             eprintln!("Error guardando {}: {}", FILE_B, e);
-    //             process::exit(1);
-    //         }
-    //         println!("Archivo {} generado.", FILE_B);
-    //     }
-
-    //     // Lee candidatos de A como "remotos"
-    //     "readA" => {
-    //         let mut agent = IceAgent::new(IceRole::Controlling);
-    //         for c in gather_host_candidates() {
-    //             agent.add_local_candidate(c);
-    //         }
-
-    //         match load_remote_candidates_from_file(&mut agent, FILE_A) {
-    //             Ok(()) => {
-    //                 println!("Remotos cargados desde {}", FILE_A);
-    //                 println!("Remotos:");
-    //                 for c in &agent.remote_candidates {
-    //                     println!(" - {}", c);
-    //                 }
-    //             }
-    //             Err(e) => {
-    //                 eprintln!("Error leyendo {}: {}", FILE_A, e);
-    //                 process::exit(1);
-    //             }
-    //         }
-    //     }
-
-    //     // Lee candidatos de B como "remotos"
-    //     "readB" => {
-    //         let mut agent = IceAgent::new(IceRole::Controlling);
-    //         for c in gather_host_candidates() {
-    //             agent.add_local_candidate(c);
-    //         }
-
-    //         match load_remote_candidates_from_file(&mut agent, FILE_B) {
-    //             Ok(()) => {
-    //                 println!("Remotos cargados desde {}", FILE_B);
-    //                 println!("Remotos:");
-    //                 for c in &agent.remote_candidates {
-    //                     println!(" - {}", c);
-    //                 }
-    //             }
-    //             Err(e) => {
-    //                 eprintln!("Error leyendo {}: {}", FILE_B, e);
-    //                 process::exit(1);
-    //             }
-    //         }
-    //     }
-
-    //     _ => {
-    //         print_usage();
-    //         process::exit(2);
-    //     }
-    // }
-    let mut conn_manager = ConnectionManager::new();
-    let sdp_offer = conn_manager.create_offer().unwrap();
-    println!("{}", sdp_offer.encode());
+/// Espera hasta que un archivo exista
+fn wait_for_file(path: &str) {
+    while !Path::new(path).exists() {
+        thread::sleep(Duration::from_millis(50));
+    }
 }

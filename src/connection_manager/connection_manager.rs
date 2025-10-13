@@ -1,5 +1,9 @@
-use super::{connection_error::ConnectionError, ice_candidate_to_sdp::ICEToSDP};
+use std::str::FromStr;
+
+use super::{connection_error::ConnectionError, ice_and_sdp::ICEAndSDP};
 use crate::ice::gathering_service;
+use crate::ice::type_ice::candidate_type::CandidateType;
+use crate::ice::type_ice::candidate::Candidate;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
@@ -22,7 +26,7 @@ const DEAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Application;
 
 /// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
 pub struct ConnectionManager {
-    ice_agent: IceAgent,
+    pub ice_agent: IceAgent,
     // Otros campos necesarios para gestionar la conexión.
 }
 
@@ -50,7 +54,7 @@ impl ConnectionManager {
         let bandwidth = Vec::new();
         let times: Vec<SDPTimeDesc> = vec![SDPTimeDesc::new_blank()];
         let attrs = Vec::new();
-        let media: Vec<SDPMedia> = vec![mocked_media_spec_to_media_description()?];
+        let media: Vec<SDPMedia> = vec![mocked_media_spec_to_media_description(self)?];
         let extra_lines = Vec::new();
         let sdp = Sdp::new(
             version,
@@ -72,14 +76,39 @@ impl ConnectionManager {
 
     /// Recibe una oferta SDP de un par remoto y genera una respuesta.
     /// Parsea los candidatos remotos, recolecta los propios y crea la respuesta SDP.
-    pub fn receive_offer_and_create_answer(&mut self, offer: Sdp) -> Result<Sdp, String> {
-        todo!()
+    pub fn receive_offer_and_create_answer(&mut self, offer: &str) -> Result<Sdp, ConnectionError> {
+        let sdp_offer = Sdp::parse(offer).map_err(|e| ConnectionError::Sdp(e))?;
+
+        // TODO pasar esto a un modulo aparte que se encargue de manejar media y sus atributos
+        for m in sdp_offer.media() {
+            for a in m.attrs() {
+                if a.key() == "candidate" {
+                    let value = a.value().ok_or(ConnectionError::IceAgent)?;
+                    let ice_and_sdp: ICEAndSDP = value.parse().map_err(|_| ConnectionError::IceAgent)?;
+                    self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
+                }
+            }
+        }
+
+        let sdp_answer = self.create_offer()?;
+        Ok(sdp_answer)
     }
 
     /// (Para el oferente) Recibe la respuesta SDP del par remoto.
     /// Parsea los candidatos remotos de la respuesta para completar la negociacion.
-    pub fn receive_answer(&mut self, answer: Sdp) -> Result<(), String> {
-        todo!()
+    pub fn receive_answer(&mut self, answer: Sdp) -> Result<(), ConnectionError> {
+        // TODO Mismo caso que arriba
+        for m in answer.media() {
+            for a in m.attrs() {
+                if a.key() == "candidate" {
+                    let value = a.value().ok_or(ConnectionError::IceAgent)?;
+                    let ice_and_sdp: ICEAndSDP = value.parse().map_err(|_| ConnectionError::IceAgent)?;
+                    self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Ejecuta las verificaciones de conectividad (envía y recibe STUN).
@@ -93,7 +122,7 @@ impl ConnectionManager {
     }
 }
 
-fn mocked_media_spec_to_media_description() -> Result<SDPMedia, ConnectionError> {
+fn mocked_media_spec_to_media_description(conn_manager: &mut ConnectionManager) -> Result<SDPMedia, ConnectionError> {
     let mut media_desc = SDPMedia::new_blank();
     media_desc.set_kind(DEAULT_MEDIA_KIND);
     let port_spec_sdp = SDPPortSpec::new(DEFAULT_PORT, None);
@@ -103,16 +132,19 @@ fn mocked_media_spec_to_media_description() -> Result<SDPMedia, ConnectionError>
     media_desc.set_fmts(fmts);
     let connection_sdp = SDPConnection::new(DEFAULT_NET_TYPE, DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR);
     media_desc.set_connection(Some(connection_sdp));
-    media_desc.set_attrs(get_candidates_as_attributes());
+    media_desc.set_attrs(get_local_candidates_as_attributes(conn_manager));
     Ok(media_desc)
 }
 
-fn get_candidates_as_attributes() -> Vec<SDPAttribute> {
+fn get_local_candidates_as_attributes(conn_manager: &mut ConnectionManager) -> Vec<SDPAttribute> {
+    // TODO reemplazar el gathering por el de ICE agent
     gathering_service::gather_host_candidates()
         .into_iter()
         .map(|c| {
-            let ice_cand_to_sdp = ICEToSDP::new(c);
-            SDPAttribute::new("candidate", ice_cand_to_sdp.to_string())
+            let ice_cand_to_sdp = ICEAndSDP::new(c);
+            let attr = SDPAttribute::new("candidate", ice_cand_to_sdp.to_string());
+            conn_manager.ice_agent.add_local_candidate(ice_cand_to_sdp.candidate());
+            attr
         })
         .collect::<Vec<SDPAttribute>>()
 }

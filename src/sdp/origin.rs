@@ -35,7 +35,7 @@ pub struct Origin {
     session_version: u64,
     net_type: String,
     addr_type: AddrType,
-    unicast_address: String,
+    unicast_address: Option<String>,
 }
 
 impl Origin {
@@ -59,7 +59,7 @@ impl Origin {
         session_version: u64,
         net_type: impl Into<String>,
         addr_type: AddrType,
-        unicast_address: impl Into<String>,
+        unicast_address: impl Into<Option<String>>,
     ) -> Self {
         Self {
             username: username.into(),
@@ -88,7 +88,7 @@ impl Origin {
             session_version: session_id,
             net_type: "IN".to_string(),
             addr_type: AddrType::IP4,
-            unicast_address: String::new(),
+            unicast_address: None,
         }
     }
 
@@ -120,8 +120,8 @@ impl Origin {
     }
 
     /// Returns the origin unicast address.
-    pub fn unicast_address(&self) -> &str {
-        &self.unicast_address
+    pub fn unicast_address(&self) -> Option<&str> {
+        self.unicast_address.as_deref()
     }
 
     // ---------------- Setters ----------------
@@ -153,7 +153,7 @@ impl Origin {
 
     /// Sets the origin unicast address.
     pub fn set_unicast_address<U: Into<String>>(&mut self, unicast_address: U) {
-        self.unicast_address = unicast_address.into();
+        self.unicast_address = Some(unicast_address.into());
     }
 }
 
@@ -161,19 +161,31 @@ impl FromStr for Origin {
     type Err = SdpError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // username sess-id sess-version nettype addrtype unicast
         let parts: Vec<_> = s.split_whitespace().collect();
-        if parts.len() != 6 {
+
+        if parts.len() < 5 {
             return Err(SdpError::Invalid("o="));
         }
-        Ok(Self::new(
-            parts[0].to_owned(),
-            parts[1].parse::<u64>()?,
-            parts[2].parse::<u64>()?,
-            parts[3].to_owned(),
-            parts[4].parse().map_err(|()| SdpError::AddrType)?,
-            parts[5].to_owned(),
-        ))
+
+        let username = parts[0].to_owned();
+        let session_id = parts[1].parse::<u64>()?;
+        let session_version = parts[2].parse::<u64>()?;
+        let net_type = parts[3].to_owned();
+        let addr_type = parts[4].parse().map_err(|()| SdpError::AddrType)?;
+        let unicast_address = if parts.len() >= 6 {
+            Some(parts[5].to_owned())
+        } else {
+            None
+        };
+
+        Ok(Self {
+            username,
+            session_id,
+            session_version,
+            net_type,
+            addr_type,
+            unicast_address,
+        })
     }
 }
 
@@ -187,7 +199,7 @@ impl fmt::Display for Origin {
             self.session_version(),
             self.net_type(),
             self.addr_type(),
-            self.unicast_address()
+            self.unicast_address.as_deref().map_or(String::new(), |s| format!(" {}", s))
         )
     }
 }
