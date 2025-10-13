@@ -2,9 +2,9 @@ use crate::ice::type_ice::candidate::Candidate;
 use crate::ice::type_ice::candidate_type::CandidateType;
 use std::fmt;
 
-use std::str::FromStr;
 use std::net::{IpAddr, SocketAddr};
 use std::num::ParseIntError;
+use std::str::FromStr;
 
 pub struct ICEAndSDP {
     candidate: Candidate,
@@ -38,7 +38,6 @@ impl ICEAndSDP {
         }
         None
     }
-
 }
 
 impl fmt::Display for ICEAndSDP {
@@ -70,35 +69,56 @@ impl FromStr for ICEAndSDP {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split_whitespace().collect();
+        let s = s.trim();
+        let s = s.strip_prefix("candidate:").unwrap_or(s);
 
+        let parts: Vec<&str> = s.split_whitespace().collect();
         if parts.len() < 8 {
-            return Err(format!("Invalid candidate string: '{}'", s));
+            return Err(format!("Invalid candidate string: '{s}'"));
         }
 
-        // Parse sequentially, assuming correct order
         let foundation = parts[0].to_string();
-        let component: u8 = parts[1].parse::<u8>().map_err(|_| "Invalid component")?;
+        let component: u8 = parts[1].parse().map_err(|_| "Invalid component")?;
         let transport = parts[2].to_string();
+
         let priority: u32 = parts[3].parse::<u32>().map_err(|_| "Invalid priority")?;
+
         let ip: IpAddr = parts[4].parse().map_err(|_| "Invalid IP address")?;
         let port: u16 = parts[5].parse::<u16>().map_err(|_| "Invalid port")?;
-        let cand_type = match parts[7] {
+
+        // Verify the "typ" token is where we expect
+        if parts.get(6) != Some(&"typ") {
+            return Err("Missing 'typ' token in candidate".into());
+        }
+        let cand_type = match parts.get(7).copied().ok_or("Missing candidate type")? {
             "host" => CandidateType::Host,
             "srflx" => CandidateType::ServerReflexive,
             "prflx" => CandidateType::PeerReflexive,
             "relay" => CandidateType::Relayed,
-            _ => return Err(format!("Unknown candidate type: {}", parts[7])),
+            other => return Err(format!("Unknown candidate type: {other}")),
         };
 
-        // Optional related address parsing
         let mut related_address = None;
-        if parts.len() > 8 {
-            // expecting: "raddr <ip> rport <port>"
-            if parts.get(8) == Some(&"raddr") && parts.get(10) == Some(&"rport") {
-                let rel_ip: IpAddr = parts[9].parse().map_err(|_| "Invalid raddr IP")?;
-                let rel_port: u16 = parts[11].parse().map_err(|_| "Invalid rport value")?;
-                related_address = Some(SocketAddr::new(rel_ip, rel_port));
+        let mut i = 8;
+        while i + 1 < parts.len() {
+            match parts[i] {
+                "raddr" if i + 1 < parts.len() => {
+                    let rel_ip: IpAddr = parts[i + 1].parse().map_err(|_| "Invalid raddr IP")?;
+                    // we'll fill port once/if we see rport
+                    related_address = Some(SocketAddr::new(rel_ip, 0));
+                    i += 2;
+                }
+                "rport" if i + 1 < parts.len() => {
+                    let rel_port: u16 = parts[i + 1].parse().map_err(|_| "Invalid rport value")?;
+                    if let Some(sa) = related_address {
+                        related_address = Some(SocketAddr::new(sa.ip(), rel_port));
+                    } else {
+                        // rport before raddr: create with 0.0.0.0/ip unspecified if you want,
+                        // or just ignore until raddr arrives; simplest is to require raddr first.
+                    }
+                    i += 2;
+                }
+                _ => i += 1,
             }
         }
 
