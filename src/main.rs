@@ -11,8 +11,8 @@ use std::{
 use rustyrtc::connection_manager::ConnectionManager;
 use rustyrtc::sdp::sdpc::Sdp;
 
-const OFFER_FILE: &str = "offer.txt";
-const ANSWER_FILE: &str = "answer.txt";
+const OFFER_FILE: &str = "../tests/connection_manager/offer.txt";
+const ANSWER_FILE: &str = "../tests/connection_manager/answer.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
