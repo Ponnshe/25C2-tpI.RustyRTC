@@ -5,7 +5,6 @@ use crate::ice::type_ice::candidate::Candidate;
 const ERROR_MSG: &str = "ERROR";
 const WHITESPACE: &str = " ";
 const QUOTE: &str = "\"";
-const EOM: &str = "\n";
 const SOCKET_CREATE_ERROR: &str = "Error creating test socket";
 const BIND_SOCKET_ERROR: &str = "Error binding main socket";
 const ADDRESS_MAIN_SOCKET_ERROR: &str = "Error getting address of main socket";
@@ -23,6 +22,9 @@ const TRANSPORT_UDP: &str = "udp"; // lowercase is safer across stacks
 
 /// Gathers a single IPv4 host candidate for the primary egress interface.
 /// (No deps, robust enough for LAN tests.)
+///
+/// # Return
+/// Return a list of local candidates.
 pub fn gather_host_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
 
@@ -122,14 +124,43 @@ fn gather_loopback_candidate() -> Option<Candidate> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
     fn test_gather_host_return_candidates() {
+        const EXPECTED_ERROR_MSG: &str = "Not found local candidates";
         let candidates = gather_host_candidates();
         assert!(
             !candidates.is_empty(),
-            "No se encontraron candidatos locales"
+            "{EXPECTED_ERROR_MSG}"
         );
     }
+
+    #[test]
+    fn test_discover_local_candidates_valid_ip_ok() {
+        const EXPECTED_ERROR_MSG: &str = "Expected a valid IPv4 address but got an error";
+        let result = discover_local_ipv4();
+        assert!(
+            result.is_ok(),
+            "{EXPECTED_ERROR_MSG}"
+        );
+    }
+
+    #[cfg(feature = "loopback-candidate")]
+    #[test]
+    fn test_gather_loopback_candidate_ok() {
+        const EXPECTED_ERROR_MSG: &str = "Should return a valid loopback candidate";
+        let cand = gather_loopback_candidate();
+        assert!(cand.is_some(), "{EXPECTED_ERROR_MSG}");
+    }
+
+    #[cfg(not(feature = "loopback-candidate"))]
+    #[test]
+    fn test_gather_loopback_candidate_returns_none_when_feature_disabled() {
+        const EXPECTED_ERROR_MSG: &str = "Should return None a valid loopback candidate";
+        let cand = gather_loopback_candidate();
+        assert!(cand.is_none(), "Should return None without the loopback-candidate feature");
+    }
+
 }
