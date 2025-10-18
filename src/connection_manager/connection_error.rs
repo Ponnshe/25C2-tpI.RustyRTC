@@ -7,7 +7,6 @@ pub enum ConnectionError {
     Sdp(SdpError),
 }
 
-
 impl fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

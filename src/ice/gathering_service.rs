@@ -40,7 +40,12 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
     // Fresh, unconnected socket bound to that interface
     match create_main_socket(local_ip) {
         Ok((addr, sock)) => {
-            out.push(Candidate::host(addr, TRANSPORT_UDP, DEFAULT_COMPONENT_ID, Some(sock)));
+            out.push(Candidate::host(
+                addr,
+                TRANSPORT_UDP,
+                DEFAULT_COMPONENT_ID,
+                Some(sock),
+            ));
         }
         Err(e) => {
             eprintln!("{}", e);
@@ -63,8 +68,7 @@ fn error_message(msg: &str) -> String {
 
 /// Discover the primary IPv4 local IP using a temporary socket.
 fn discover_local_ipv4() -> Result<IpAddr, String> {
-    let probe = UdpSocket::bind(DEFAULT_GATEWAY)
-        .map_err(|_| error_message(SOCKET_CREATE_ERROR))?;
+    let probe = UdpSocket::bind(DEFAULT_GATEWAY).map_err(|_| error_message(SOCKET_CREATE_ERROR))?;
 
     let _ = probe.connect((DISCOVERY_TARGET_IP, DISCOVERY_TARGET_PORT));
 
@@ -131,20 +135,14 @@ mod tests {
     fn test_gather_host_return_candidates() {
         const EXPECTED_ERROR_MSG: &str = "Not found local candidates";
         let candidates = gather_host_candidates();
-        assert!(
-            !candidates.is_empty(),
-            "{EXPECTED_ERROR_MSG}"
-        );
+        assert!(!candidates.is_empty(), "{EXPECTED_ERROR_MSG}");
     }
 
     #[test]
     fn test_discover_local_candidates_valid_ip_ok() {
         const EXPECTED_ERROR_MSG: &str = "Expected a valid IPv4 address but got an error";
         let result = discover_local_ipv4();
-        assert!(
-            result.is_ok(),
-            "{EXPECTED_ERROR_MSG}"
-        );
+        assert!(result.is_ok(), "{EXPECTED_ERROR_MSG}");
     }
 
     #[cfg(feature = "loopback-candidate")]
@@ -160,7 +158,9 @@ mod tests {
     fn test_gather_loopback_candidate_returns_none_when_feature_disabled() {
         const EXPECTED_ERROR_MSG: &str = "Should return None a valid loopback candidate";
         let cand = gather_loopback_candidate();
-        assert!(cand.is_none(), "Should return None without the loopback-candidate feature");
+        assert!(
+            cand.is_none(),
+            "Should return None without the loopback-candidate feature"
+        );
     }
-
 }

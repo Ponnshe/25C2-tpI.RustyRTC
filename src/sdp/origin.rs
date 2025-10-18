@@ -199,7 +199,9 @@ impl fmt::Display for Origin {
             self.session_version(),
             self.net_type(),
             self.addr_type(),
-            self.unicast_address.as_deref().map_or(String::new(), |s| format!(" {}", s))
+            self.unicast_address
+                .as_deref()
+                .map_or(String::new(), |s| format!(" {}", s))
         )
     }
 }
