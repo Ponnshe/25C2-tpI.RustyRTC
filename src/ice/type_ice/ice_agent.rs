@@ -100,6 +100,8 @@ impl IceAgent {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use std::net::SocketAddr;
+    use crate::ice::type_ice::candidate_type::CandidateType;
 
     #[test]
     fn test_create_host_candidate_ok() {
