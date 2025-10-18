@@ -1,5 +1,5 @@
-use std::num::ParseIntError;
 use std::fmt;
+use std::num::ParseIntError;
 
 #[derive(Debug)]
 pub enum SdpError {
