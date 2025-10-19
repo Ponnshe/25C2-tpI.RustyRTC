@@ -1,14 +1,6 @@
 use super::ice_agent::IceRole;
 use crate::ice::type_ice::candidate::Candidate;
 
-/// Contains a pair, local and remote Candidate.
-/// Also a priority, to sort candidates.
-#[derive(Debug)]
-pub struct CandidatePair {
-    pub local: Candidate,
-    pub remote: Candidate,
-    pub priority: u64,
-}
 
 /// Constants used in the pair priority formula (RFC 8445 §6.1.2.3)
 // 2^32 multiplier
@@ -18,6 +10,30 @@ const PRIORITY_DOUBLE_MULTIPLIER: u64 = 2;
 // added if G > D
 const TIE_BREAK_FLAG_ONE: u64 = 1;
 const TIE_BREAK_FLAG_ZERO: u64 = 0;
+
+/// Represents the ICE connectivity check state for a CandidatePair.
+/// (RFC 8445 §6.1.2.5)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidatePairState {
+    /// The pair has been created but not yet checked.
+    Waiting,
+    /// A connectivity check is currently in progress.
+    InProgress,
+    /// A successful connectivity check has completed.
+    Succeeded,
+    /// The connectivity check failed (timeout or no response).
+    Failed,
+}
+
+/// Contains a pair, local and remote Candidate.
+/// Also a priority, to sort candidates.
+#[derive(Debug)]
+pub struct CandidatePair {
+    pub local: Candidate,
+    pub remote: Candidate,
+    pub priority: u64,
+    pub state: CandidatePairState
+}
 
 /// Create a pair of candidates.
 ///
@@ -34,6 +50,8 @@ impl CandidatePair {
             local,
             remote,
             priority,
+            //Default state waiting, by RFC 8445 §6.1.2.5
+            state: CandidatePairState::Waiting,
         }
     }
 
@@ -62,6 +80,19 @@ impl CandidatePair {
         };
 
         (1u64 << PRIORITY_BITS_SHIFT) * min_val + PRIORITY_DOUBLE_MULTIPLIER * max_val + tie_break
+    }
+
+    /// Updates the current pair state.
+    pub fn set_state(&mut self, new_state: CandidatePairState) {
+        self.state = new_state;
+    }
+
+    //print the state of each pair
+    pub fn debug_state(&self) {
+        println!(
+            "[PAIR] local={}, remote={}, priority={}, state={:?}",
+            self.local.address, self.remote.address, self.priority, self.state
+        );
     }
 }
 
@@ -138,5 +169,26 @@ mod tests {
         let prio = CandidatePair::calculate_pair_priority(&local, &remote, &IceRole::Controlling);
         assert!(prio > 0, "{EXPECTED_ERROR_MSG1}");
         assert!(prio <= u64::MAX, "{EXPECTED_ERROR_MSG2}");
+    }
+
+    #[test]
+    fn test_initialize_candidate_pair_in_waiting_state_ok() {
+        let local = mock_candidate(100);
+        let remote = mock_candidate(120);
+        let pair = CandidatePair::new(local, remote, 12345);
+        assert_eq!(pair.state, CandidatePairState::Waiting);
+    }
+
+    #[test]
+    fn test_updates_state_in_candidate_pair_ok() {
+        let local = mock_candidate(100);
+        let remote = mock_candidate(120);
+        let mut pair = CandidatePair::new(local, remote, 12345);
+
+        pair.set_state(CandidatePairState::InProgress);
+        assert_eq!(pair.state, CandidatePairState::InProgress);
+
+        pair.set_state(CandidatePairState::Succeeded);
+        assert_eq!(pair.state, CandidatePairState::Succeeded);
     }
 }
