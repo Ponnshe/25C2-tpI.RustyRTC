@@ -27,7 +27,7 @@ pub fn print_candidates_stdout(agent: &IceAgent) {
 }
 
 /// Carga candidatos remotos desde un archivo JSON y los agrega al agente ICE
-pub fn load_remote_candidates_from_file(agent: &mut IceAgent, file_path: &str) -> io::Result<()> {
+/*pub fn load_remote_candidates_from_file(agent: &mut IceAgent, file_path: &str) -> io::Result<()> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
 
@@ -55,11 +55,11 @@ pub fn load_remote_candidates_from_file(agent: &mut IceAgent, file_path: &str) -
     }
 
     Ok(())
-}
+}*/
 
 /// Parseo básico de una línea JSON -> Candidate
 /// TODO: modelar errores
-fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
+/*fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
     use std::net::UdpSocket;
     let json = line.trim();
 
@@ -108,7 +108,7 @@ fn parse_candidate_json_line(line: &str) -> Result<Candidate, String> {
     Ok(Candidate::new(
         foundation, component, &transport, priority, address, cand_type, None, socket,
     ))
-}
+}*/
 
 /// Extrae un valor string o numérico de un JSON
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
