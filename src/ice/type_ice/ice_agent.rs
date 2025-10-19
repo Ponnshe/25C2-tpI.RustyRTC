@@ -188,6 +188,18 @@ impl IceAgent {
         // ICE: ufrag >= 4 chars; pwd >= 22 chars
         (Self::gen_token(8), Self::gen_token(24))
     }
+
+    //print every state of candidates pair
+    pub fn print_pair_states(&self) {
+        if self.candidate_pairs.is_empty() {
+            println!("No candidate pairs available.");
+            return;
+        }
+        println!("=== Candidate Pair States ===");
+        for pair in &self.candidate_pairs {
+            pair.debug_state();
+        }
+    }
 }
 
 #[cfg(test)]
