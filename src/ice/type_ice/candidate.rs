@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
 
 /// Preference type by candidate type (according to WebRTC conventions)
 const HOST_TYPE_PREF: u32 = 126;
@@ -19,7 +20,7 @@ const LOCAL_PREF_SHIFT: u32 = 8;
 const COMPONENT_OFFSET: u32 = 256;
 
 /// Represents a network address that a client can offer to connect.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Candidate {
     /// Unique identifier that groups similar candidates
     pub foundation: String,
@@ -36,7 +37,7 @@ pub struct Candidate {
     /// this is for reflexive.
     pub related_address: Option<SocketAddr>,
     /// socket to establish the connection
-    pub socket: Option<UdpSocket>,
+    pub socket: Option<Arc<UdpSocket>>,
 }
 
 /// Create a valid candidate.
@@ -55,7 +56,7 @@ impl Candidate {
         address: SocketAddr,
         cand_type: CandidateType,
         related_address: Option<SocketAddr>,
-        socket: Option<UdpSocket>,
+        socket: Option<Arc<UdpSocket>>,
     ) -> Self {
         let t = transport.to_ascii_lowercase();
 
@@ -88,7 +89,7 @@ impl Candidate {
         address: SocketAddr,
         transport: &str,
         component: u8,
-        socket: Option<UdpSocket>,
+        socket: Option<Arc<UdpSocket>>,
     ) -> Self {
         Self::new(
             String::new(),

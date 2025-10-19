@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::{net::{IpAddr, SocketAddr, UdpSocket}, sync::Arc};
 
 use crate::ice::type_ice::candidate::Candidate;
 
@@ -44,7 +44,7 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
                 addr,
                 TRANSPORT_UDP,
                 DEFAULT_COMPONENT_ID,
-                Some(sock),
+                Some(Arc::new(sock)),
             ));
         }
         Err(e) => {
@@ -107,7 +107,7 @@ fn gather_loopback_candidate() -> Option<Candidate> {
                 loop_addr,
                 TRANSPORT_UDP,
                 DEFAULT_COMPONENT_ID,
-                Some(loop_sock),
+                Some(Arc::new(loop_sock)),
             )),
             Err(_) => {
                 eprintln!("{}", error_message(GET_SOCKET_LOOPBACK_ERROR));
