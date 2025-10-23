@@ -282,6 +282,77 @@ impl IceAgent {
             pair.debug_state();
         }
     }
+
+    /// Updates the state of a candidate pair by index.
+    ///
+    /// # Arguments
+    /// * `pair_index` - index within `self.candidate_pairs`
+    /// * `new_state` - new [`CandidatePairState`] to assign
+    ///
+    /// # Behavior
+    /// - If the index is valid, updates the pair's state.
+    /// - If it's out of bounds, prints a warning.
+    pub fn update_pair_state(&mut self, pair_index: usize, new_state: CandidatePairState) {
+        if let Some(pair) = self.candidate_pairs.get_mut(pair_index) {
+            println!(
+                "Updating pair {} [{} → {:?}]",
+                pair_index, pair.local.address, new_state
+            );
+            pair.state = new_state;
+        } else {
+            eprintln!("Invalid pair index: {}", pair_index);
+        }
+    }
+
+    /// Prints a summary of all candidate pairs and their final states.
+    ///
+    /// Useful for debugging or for a DEMO.
+    pub fn print_connectivity_summary(&self) {
+        let total = self.candidate_pairs.len();
+        let succeeded = self
+            .candidate_pairs
+            .iter()
+            .filter(|p| matches!(p.state, CandidatePairState::Succeeded))
+            .count();
+        let failed = self
+            .candidate_pairs
+            .iter()
+            .filter(|p| matches!(p.state, CandidatePairState::Failed))
+            .count();
+        let waiting = self
+            .candidate_pairs
+            .iter()
+            .filter(|p| matches!(p.state, CandidatePairState::Waiting))
+            .count();
+        let in_progress = self
+            .candidate_pairs
+            .iter()
+            .filter(|p| matches!(p.state, CandidatePairState::InProgress))
+            .count();
+
+        println!("\n=== ICE Connectivity Summary ===");
+        println!("Total candidate pairs: {}", total);
+        println!("Succeeded: {}", succeeded);
+        println!("Failed: {}", failed);
+        println!("Waiting: {}", waiting);
+        println!("InProgress: {}", in_progress);
+        println!("==================================\n");
+
+        for (i, pair) in self.candidate_pairs.iter().enumerate() {
+            println!(
+                "PAIR #{} → [local={}, remote={}, state={:?}, priority={}]",
+                i, pair.local.address, pair.remote.address, pair.state, pair.priority
+            );
+        }
+    }
+
+    /// Returns all successfully validated candidate pairs.
+    pub fn get_valid_pairs(&self) -> Vec<&CandidatePair> {
+        self.candidate_pairs
+            .iter()
+            .filter(|p| matches!(p.state, CandidatePairState::Succeeded))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +389,85 @@ mod tests {
             None,
             Some(sock),
         )
+    }
+
+    fn mock_pair_with_state(state: CandidatePairState) -> CandidatePair {
+        let ip_address = "127.0.0.1";
+        let port_local = 5000;
+        let priority_local = 100;
+        let port_remote = 5001;
+        let priority_remote = 90;
+        let priority_pair = 12345;
+        let local = mock_candidate(priority_local, ip_address, port_local);
+        let remote = mock_candidate(priority_remote, ip_address, port_remote);
+        let mut pair = CandidatePair::new(local, remote, priority_pair);
+        pair.state = state;
+        pair
+    }
+
+    #[test]
+    fn test_update_pair_state_with_valid_index_ok() {
+        const EXPECTED_ERROR_MSG: &str = "The pair status was not updated correctly";
+        let index = 0;
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let pair = mock_pair_with_state(CandidatePairState::Waiting);
+        agent.candidate_pairs.push(pair);
+
+        agent.update_pair_state(index, CandidatePairState::Succeeded);
+
+        assert!(
+            matches!(agent.candidate_pairs[index].state, CandidatePairState::Succeeded),
+            "{EXPECTED_ERROR_MSG}"
+        );
+    }
+
+    #[test]
+    fn test_update_pair_state_with_invalid_index_error() {
+        const EXPECTED_ERROR_MSG1: &str = "The pair status was not updated correctly";
+        const EXPECTED_WARNING_MSG2: &str = "The size of candidate_pairs should not be altered.";
+        let invalid_index = 99;
+    
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let pair = mock_pair_with_state(CandidatePairState::Waiting);
+        agent.candidate_pairs.push(pair);
+    
+        agent.update_pair_state(invalid_index, CandidatePairState::Failed);
+    
+        assert!(
+            matches!(agent.candidate_pairs[0].state, CandidatePairState::Waiting),
+            "{EXPECTED_ERROR_MSG1}"
+        );
+    
+        assert_eq!(agent.candidate_pairs.len(), 1, "{EXPECTED_WARNING_MSG2}");
+    }
+
+    #[test]
+    fn test_update_empty_pair_state_error() {
+        let index = 99;
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        agent.update_pair_state(index, CandidatePairState::Failed);
+        
+        assert!(agent.candidate_pairs.is_empty());
+    }
+
+    #[test]
+    fn test_should_return_only_succeeded_valid_pair_ok() {
+        const EXPECTED_ERROR_MSG1: &str = "There should only be one Succeeded pair";
+        const EXPECTED_ERROR_MSG2: &str = "The returned pair is not in the Succeeded state";
+        let mut agent = IceAgent::new(IceRole::Controlled);
+
+        agent.candidate_pairs = vec![
+            mock_pair_with_state(CandidatePairState::Succeeded),
+            mock_pair_with_state(CandidatePairState::Failed),
+            mock_pair_with_state(CandidatePairState::Waiting),
+        ];
+
+        let valid = agent.get_valid_pairs();
+        assert_eq!(valid.len(), 1, "{EXPECTED_ERROR_MSG1}");
+        assert!(
+            matches!(valid[0].state, CandidatePairState::Succeeded),
+            "{EXPECTED_ERROR_MSG2}"
+        );
     }
 
     #[test]
