@@ -32,7 +32,8 @@ pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
     pub priority: u64,
-    pub state: CandidatePairState
+    pub state: CandidatePairState,
+    pub is_nominated: bool
 }
 
 /// Create a pair of candidates.
@@ -52,6 +53,18 @@ impl CandidatePair {
             priority,
             //Default state waiting, by RFC 8445 §6.1.2.5
             state: CandidatePairState::Waiting,
+            is_nominated: false
+        }
+    }
+
+    /// Lightweight clone: copies metadata but drops socket references.
+    pub fn clone_light(&self) -> Self {
+        CandidatePair {
+            local: self.local.clone_light(),
+            remote: self.remote.clone_light(),
+            priority: self.priority,
+            state: self.state.clone(),
+            is_nominated: self.is_nominated,
         }
     }
 
@@ -87,11 +100,16 @@ impl CandidatePair {
         self.state = new_state;
     }
 
-    //print the state of each pair
+    /// Prints a detailed summary of the candidate pair state.
+    /// Useful for debugging and local ICE connectivity visualization.
     pub fn debug_state(&self) {
         println!(
-            "[PAIR] local={}, remote={}, priority={}, state={:?}",
-            self.local.address, self.remote.address, self.priority, self.state
+            "[PAIR] local={}, remote={}, priority={}, state={:?}, nominated={}",
+            self.local.address,
+            self.remote.address,
+            self.priority,
+            self.state,
+            if self.is_nominated { "✅ true" } else { "false" }
         );
     }
 }
