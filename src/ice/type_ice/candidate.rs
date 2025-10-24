@@ -138,6 +138,20 @@ impl Candidate {
             | ((local_pref as u32) << LOCAL_PREF_SHIFT)
             | (COMPONENT_OFFSET - component_id as u32)
     }
+
+    /// Creates a shallow copy of a Candidate without cloning the underlying socket.
+    pub fn clone_light(&self) -> Candidate {
+        Candidate {
+            foundation: self.foundation.clone(),
+            component: self.component,
+            transport: self.transport.clone(),
+            priority: self.priority,
+            address: self.address,
+            cand_type: self.cand_type.clone(),
+            related_address: self.related_address,
+            socket: None,
+        }
+    }
 }
 
 impl fmt::Display for Candidate {

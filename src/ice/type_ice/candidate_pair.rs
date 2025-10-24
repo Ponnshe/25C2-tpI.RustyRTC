@@ -32,7 +32,8 @@ pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
     pub priority: u64,
-    pub state: CandidatePairState
+    pub state: CandidatePairState,
+    pub is_nominated: bool
 }
 
 /// Create a pair of candidates.
@@ -52,6 +53,7 @@ impl CandidatePair {
             priority,
             //Default state waiting, by RFC 8445 §6.1.2.5
             state: CandidatePairState::Waiting,
+            is_nominated: false
         }
     }
 
