@@ -57,6 +57,17 @@ impl CandidatePair {
         }
     }
 
+    /// Lightweight clone: copies metadata but drops socket references.
+    pub fn clone_light(&self) -> Self {
+        CandidatePair {
+            local: self.local.clone_light(),
+            remote: self.remote.clone_light(),
+            priority: self.priority,
+            state: self.state.clone(),
+            is_nominated: self.is_nominated,
+        }
+    }
+
     /// Calculates the priority for a candidate pair according to RFC 8445 §6.1.2.3.
     ///
     /// # Arguments
@@ -89,11 +100,16 @@ impl CandidatePair {
         self.state = new_state;
     }
 
-    //print the state of each pair
+    /// Prints a detailed summary of the candidate pair state.
+    /// Useful for debugging and local ICE connectivity visualization.
     pub fn debug_state(&self) {
         println!(
-            "[PAIR] local={}, remote={}, priority={}, state={:?}",
-            self.local.address, self.remote.address, self.priority, self.state
+            "[PAIR] local={}, remote={}, priority={}, state={:?}, nominated={}",
+            self.local.address,
+            self.remote.address,
+            self.priority,
+            self.state,
+            if self.is_nominated { "✅ true" } else { "false" }
         );
     }
 }

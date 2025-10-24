@@ -2,7 +2,7 @@ use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
 use crate::ice::{gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState};
 use rand::{Rng, rngs::OsRng};
-use std::{io::Error, time::{Duration, Instant}};
+use std::{io::Error, time::{Duration}};
 
 /// Error message formatting constants
 const ERROR_MSG: &str = "ERROR";
@@ -72,6 +72,42 @@ impl IceAgent {
             ufrag,
             pwd,
             nominated_pair: None,
+        }
+    }
+
+    /// Executes role-specific logic according to ICE role.
+    /// - Controlling → select the best valid pair (nomination).
+    /// - Controlled  → wait for nomination (mocked for local tests).
+    ///
+    /// This prepares both agents for the final ICE connection phase.
+    pub fn run_role_logic(&mut self) {
+        match self.role {
+            IceRole::Controlling => {
+                println!("Role: CONTROLLING — selecting the nominated pair...");
+                if let Some(pair) = self.select_valid_pair() {
+                    println!(
+                        "Nominated pair: [local={}, remote={}, prio={}]",
+                        pair.local.address, pair.remote.address, pair.priority
+                    );
+                } else {
+                    eprintln!("No valid pair available for nomination.");
+                }
+            }
+
+            IceRole::Controlled => {
+                println!("Role: CONTROLLED — waiting for controlling peer to nominate...");
+                // For now, we mock the reception of the nominated pair
+                if let Some(pair) = self.candidate_pairs.first_mut() {
+                    pair.is_nominated = true;
+                    self.nominated_pair = Some(pair.clone_light());
+                    println!(
+                        "Simulated nomination received: [local={}, remote={}, prio={}]",
+                        pair.local.address, pair.remote.address, pair.priority
+                    );
+                } else {
+                    eprintln!("No candidate pairs available to mark as nominated.");
+                }
+            }
         }
     }
 
@@ -397,6 +433,21 @@ mod tests {
         )
     }
 
+    fn mock_candidate_with_address(addr_str: &str) -> Candidate {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = addr_str.parse().unwrap();
+        Candidate::new(
+            "mock_foundation".into(),
+            1,
+            "udp",
+            100,
+            addr,
+            CandidateType::Host,
+            None,
+            None,
+        )
+    }
+
     fn mock_candidate_with_socket(ip: &str, port: u16) -> Candidate {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
         let sock = Arc::new(UdpSocket::bind(addr).unwrap());
@@ -424,6 +475,53 @@ mod tests {
         let mut pair = CandidatePair::new(local, remote, priority_pair);
         pair.state = state;
         pair
+    }
+
+    fn mock_pair_with_states(state: CandidatePairState) -> CandidatePair {
+        CandidatePair {
+            local: mock_candidate_with_address("192.168.0.1:5000"),
+            remote: mock_candidate_with_address("192.168.0.2:6000"),
+            priority: 100,
+            state,
+            is_nominated: false,
+        }
+    }
+
+    #[test]
+    fn test_agent_with_role_controlling_selects_nominated_pair_ok() {
+        const EXPECTED_ERROR_MSG: &str = "There must be a nominated pair in Controlling mode";
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut pair = mock_pair_with_states(CandidatePairState::Succeeded);
+        
+        pair.priority = 77;
+        agent.candidate_pairs = vec![pair];
+
+        agent.run_role_logic();
+
+        assert!(
+            agent.nominated_pair.is_some(),
+            "{EXPECTED_ERROR_MSG}"
+        );
+    }
+
+    #[test]
+    fn test_agent_with_role_controlled_marks_first_pair_as_nominated_ok() {
+        const EXPECTED_ERROR_MSG1: &str = "Must simulate nomination reception in Controlled mode";
+        const EXPECTED_ERROR_MSG2: &str = "The first pair should be marked as nominated";
+        let mut agent = IceAgent::new(IceRole::Controlled);
+        let p = mock_pair_with_states(CandidatePairState::Succeeded);
+        agent.candidate_pairs = vec![p];
+
+        agent.run_role_logic();
+
+        assert!(
+            agent.nominated_pair.is_some(),
+            "{EXPECTED_ERROR_MSG1}"
+        );
+        assert!(
+            agent.candidate_pairs[0].is_nominated,
+            "{EXPECTED_ERROR_MSG2}"
+        );
     }
 
     #[test]
@@ -478,6 +576,25 @@ mod tests {
             agent.nominated_pair.is_none(),
             "No debe haberse guardado un par nominado"
         );
+    }
+
+    #[test]
+    fn test_valid_pair_with_equal_priorities_ok() {
+        let mut agent = IceAgent::new(IceRole::Controlling);
+
+        let mut p1 = mock_pair_with_state(CandidatePairState::Succeeded);
+        p1.priority = 42;
+        let mut p2 = mock_pair_with_state(CandidatePairState::Succeeded);
+        p2.priority = 42;
+
+        agent.candidate_pairs = vec![p1, p2];
+
+        let result = agent.select_valid_pair();
+
+        assert!(result.is_some(), "Debe nominar al menos un par válido");
+        let nominated = result.unwrap();
+        assert!(nominated.is_nominated, "El par nominado debe marcarse como tal");
+        assert_eq!(nominated.priority, 42, "Debe respetar la prioridad igual");
     }
 
     #[test]
