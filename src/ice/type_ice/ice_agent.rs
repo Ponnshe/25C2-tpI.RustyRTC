@@ -491,7 +491,7 @@ impl IceAgent {
             } else {
                 println!("Received BINDING-REQUEST from {}", from_addr);
             }
-            
+
             let Some(local_sock) = &pair.local.socket else {
                 eprintln!("No socket para responder al BINDING-REQUEST: {}", pair.local.address);
                 return;
@@ -1171,5 +1171,81 @@ mod tests {
         );
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_nomination_flow_ok() {
+        use std::thread;
+        use std::time::Duration;
+
+        let ip_address = "127.0.0.1";
+        let port = 0; 
+
+        let mut controlling_agent = IceAgent::new(IceRole::Controlling);
+        let mut controlled_agent = IceAgent::new(IceRole::Controlled);
+
+        let controlling_local = mock_candidate_with_socket(ip_address, port);
+        let controlling_remote = mock_candidate_with_socket(ip_address, port); 
+        let controlled_local = mock_candidate_with_socket(ip_address, port); 
+        let controlled_remote = controlling_local.clone_light(); 
+
+        controlling_agent.local_candidates = vec![controlling_local.clone()];
+        controlling_agent.remote_candidates = vec![controlled_local.clone_light()]; 
+        controlled_agent.local_candidates = vec![controlled_local.clone()];
+        controlled_agent.remote_candidates = vec![controlling_remote.clone_light()]; 
+
+        controlling_agent.form_candidate_pairs();
+        controlled_agent.form_candidate_pairs(); 
+
+        assert!(!controlling_agent.candidate_pairs.is_empty(), "Controlling agent should form pairs");
+        assert!(!controlled_agent.candidate_pairs.is_empty(), "Controlled agent should form pairs");
+
+        let controlling_socket = controlling_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
+        let controlled_socket = controlled_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
+        let controlled_remote_addr = controlled_agent.candidate_pairs[0].remote.address;
+
+        let controlled_handle = thread::spawn(move || {
+            let mut buf = [0u8; 128];
+            loop {
+                match controlled_socket.recv_from(&mut buf) {
+                    Ok((size, src)) => {
+                        let request = &buf[..size];
+                        if request == BINDING_REQUEST || request == NOMINATION_REQUEST {
+                            println!("[Controlled Echo] Received request from {}, sending BINDING_RESPONSE", src);
+                            controlled_socket.send_to(BINDING_RESPONSE, src).expect("Controlled failed to send response");
+                            if request == NOMINATION_REQUEST {
+                                println!("[Controlled Echo] Received NOMINATION_REQUEST, stopping echo.");
+                                break; 
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                        thread::sleep(Duration::from_millis(50));
+                    },
+                    Err(e) => {
+                        eprintln!("[Controlled Echo] Error receiving: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        controlling_agent.start_checks();
+
+        thread::sleep(Duration::from_millis(100)); 
+        let mut buf_controlling = [0u8; 128];
+        controlling_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        match controlling_socket.recv_from(&mut buf_controlling) {
+            Ok((bytes, src)) => {
+                controlling_agent.handle_incoming_packet(&buf_controlling[..bytes], src);
+            }
+            Err(e) => panic!("Controlling agent failed to receive BINDING_RESPONSE: {}", e),
+        }
+
+        assert!(controlling_agent.nominated_pair.is_some(), "Controlling agent should have nominated a pair");
+        assert!(controlling_agent.candidate_pairs[0].is_nominated, "Controlling agent's pair should be marked nominated");
+
+        thread::sleep(Duration::from_millis(100)); 
+ 
     }
 }
