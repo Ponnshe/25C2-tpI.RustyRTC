@@ -1,4 +1,7 @@
-use super::{connection_error::ConnectionError, ice_and_sdp::ICEAndSDP};
+use super::{
+    connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
+    outbound_sdp::OutboundSdp, signaling_state::SignalingState,
+};
 use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::sdp::addr_type::AddrType as SDPAddrType;
@@ -21,21 +24,6 @@ const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 
 // ----------------- New: signaling model -----------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalingState {
-    Stable,
-    HaveLocalOffer,
-    HaveRemoteOffer,
-    Closed,
-}
-
-#[derive(Debug)]
-pub enum OutboundSdp {
-    Offer(Sdp),
-    Answer(Sdp),
-    None,
-}
-
 // ----------------- ConnectionManager --------------------
 
 pub struct ConnectionManager {
@@ -43,6 +31,7 @@ pub struct ConnectionManager {
     signaling: SignalingState,
     local_description: Option<Sdp>,
     remote_description: Option<Sdp>,
+    ice_phase: IcePhase,
 }
 
 impl ConnectionManager {
@@ -53,6 +42,7 @@ impl ConnectionManager {
             signaling: SignalingState::Stable,
             local_description: None,
             remote_description: None,
+            ice_phase: IcePhase::Idle,
         }
     }
 
@@ -72,10 +62,10 @@ impl ConnectionManager {
             SignalingState::HaveRemoteOffer => {
                 // We owe an answer; refuse to start a new offer.
                 Err(ConnectionError::Negotiation(
-                    "cannot create offer while have-remote-offer",
+                    "cannot create offer while have-remote-offer".into(),
                 ))
             }
-            SignalingState::Closed => Err(ConnectionError::Negotiation("connection closed")),
+            SignalingState::Closed => Err(ConnectionError::Negotiation("connection closed".into())),
         }
     }
 
@@ -85,48 +75,48 @@ impl ConnectionManager {
     /// - If HaveRemoteOffer: receiving another SDP is unexpected (unless you add rollbacks/pranswers).
     pub fn apply_remote_sdp(&mut self, remote: &str) -> Result<OutboundSdp, ConnectionError> {
         let sdp = Sdp::parse(remote).map_err(ConnectionError::Sdp)?;
+        let out = {
+            match self.signaling {
+                SignalingState::Stable => {
+                    // Treat as remote offer.
+                    self.extract_and_store_remote_candidates(&sdp)?;
+                    self.remote_description = Some(sdp);
+                    self.signaling = SignalingState::HaveRemoteOffer;
 
-        match self.signaling {
-            SignalingState::Stable => {
-                // Treat as remote offer.
-                self.extract_and_store_remote_candidates(&sdp)?;
-                self.remote_description = Some(sdp);
-                self.signaling = SignalingState::HaveRemoteOffer;
-
-                // Build and send local answer.
-                let answer = self.build_local_sdp()?;
-                self.local_description = Some(answer.clone());
-                // After setting local answer + remote offer we are back to Stable
-                self.signaling = SignalingState::Stable;
-                Ok(OutboundSdp::Answer(answer))
-            }
-
-            SignalingState::HaveLocalOffer => {
-                // Expecting an answer. If we got a new offer, that's glare → rollback.
-                if is_probably_offer(&sdp) {
-                    // --- Glare handling: rollback our local offer and accept their offer. ---
-                    self.rollback_to_stable();
-                    // Re-run as if we were Stable
-                    return self.apply_remote_sdp(remote);
+                    // Build and send local answer.
+                    let answer = self.build_local_sdp()?;
+                    self.local_description = Some(answer.clone());
+                    self.signaling = SignalingState::Stable; // back to stable
+                    Ok(OutboundSdp::Answer(answer))
                 }
-
-                // Treat as answer
-                self.extract_and_store_remote_candidates(&sdp)?;
-                self.remote_description = Some(sdp);
-                self.signaling = SignalingState::Stable;
-                Ok(OutboundSdp::None)
+                SignalingState::HaveLocalOffer => {
+                    // Glare handling (optional)
+                    if is_probably_offer(&sdp) {
+                        self.rollback_to_stable();
+                        return self.apply_remote_sdp(remote);
+                    }
+                    // Treat as answer
+                    self.extract_and_store_remote_candidates(&sdp)?;
+                    self.remote_description = Some(sdp);
+                    self.signaling = SignalingState::Stable;
+                    Ok(OutboundSdp::None)
+                }
+                SignalingState::HaveRemoteOffer => Err(ConnectionError::Negotiation(
+                    "unexpected SDP while have-remote-offer (answer was not sent yet)".into(),
+                )),
+                SignalingState::Closed => {
+                    Err(ConnectionError::Negotiation("connection closed".into()))
+                }
             }
+        };
 
-            SignalingState::HaveRemoteOffer => {
-                // We have not sent our answer yet (in this design we answer immediately),
-                // so getting an additional SDP here is an app-level error.
-                Err(ConnectionError::Negotiation(
-                    "unexpected SDP while have-remote-offer (answer was not sent yet)",
-                ))
+        if out.is_ok() {
+            if let Err(e) = self.maybe_start_ice() {
+                // Log instead of swallowing silently; you can use tracing/log here.
+                eprintln!("ICE start failed: {e}");
             }
-
-            SignalingState::Closed => Err(ConnectionError::Negotiation("connection closed")),
         }
+        out
     }
 
     /// Optional: separate method if you ever need to apply only candidates from a remote trickle.
@@ -197,6 +187,55 @@ impl ConnectionManager {
             }
         }
         Ok(())
+    }
+    // Call this at the end of any path that leaves you with both local+remote descriptions.
+    fn maybe_start_ice(&mut self) -> Result<(), ConnectionError> {
+        let ready = self.local_description.is_some()
+            && self.remote_description.is_some()
+            && matches!(self.signaling, SignalingState::Stable);
+        if !ready {
+            return Ok(());
+        }
+        self.start_connectivity_checks()
+    }
+
+    /// Runs ICE pipeline to nomination (blocking version for clarity).
+    pub fn start_connectivity_checks(&mut self) -> Result<(), ConnectionError> {
+        // 0) Ensure we have descriptions (creds/candidates exchanged)
+        if self.local_description.is_none() || self.remote_description.is_none() {
+            return Err(ConnectionError::Negotiation(
+                "SDP not complete for ICE".into(),
+            ));
+        }
+
+        // 1) Gathering (no-op if you already added locals when building SDP)
+        self.ice_phase = IcePhase::Gathering;
+        if self.ice_agent.local_candidates.is_empty() {
+            self.ice_agent
+                .gather_candidates()
+                .map_err(|_| ConnectionError::IceAgent)?;
+        }
+
+        // 2) Form all pairs
+        self.ice_phase = IcePhase::Checking;
+        self.ice_agent.form_candidate_pairs();
+
+        // 3) Connectivity checks (your simulated UDP flow)
+        self.ice_agent.run_connectivity_checks();
+
+        // 4) Nomination:
+        //    - Controlling -> select & mark nominated
+        //    - Controlled  -> wait for nomination (your `run_role_logic` simulates it)
+        self.ice_agent.run_role_logic();
+
+        if self.ice_agent.nominated_pair.is_some() {
+            self.ice_phase = IcePhase::Nominated;
+            Ok(())
+        } else {
+            Err(ConnectionError::Negotiation(
+                "no nominated pair after checks".into(),
+            ))
+        }
     }
 }
 

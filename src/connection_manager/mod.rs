@@ -1,5 +1,8 @@
 pub mod connection_manager;
+pub mod ice_phase;
+pub mod outbound_sdp;
+pub mod signaling_state;
 pub use connection_manager::ConnectionManager;
 pub mod connection_error;
-pub use connection_manager::OutboundSdp;
+pub use outbound_sdp::OutboundSdp;
 pub mod ice_and_sdp;
