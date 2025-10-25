@@ -17,28 +17,138 @@ const DEFAULT_FMT: &str = "99";
 const DEFAULT_NET_TYPE: &str = "IN";
 const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
 const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
-const DEFAULT_CODEC: &str = "VP8 90000";
 const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 
-/// Gestiona el proceso completo de una conexión P2P, coordinando ICE y SDP.
+// ----------------- New: signaling model -----------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalingState {
+    Stable,
+    HaveLocalOffer,
+    HaveRemoteOffer,
+    Closed,
+}
+
+#[derive(Debug)]
+pub enum OutboundSdp {
+    Offer(Sdp),
+    Answer(Sdp),
+    None,
+}
+
+// ----------------- ConnectionManager --------------------
+
 pub struct ConnectionManager {
     pub ice_agent: IceAgent,
-    // Otros campos necesarios para gestionar la conexión.
+    signaling: SignalingState,
+    local_description: Option<Sdp>,
+    remote_description: Option<Sdp>,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
         let ice_agent = IceAgent::new(IceRole::Controlling);
         Self {
-            ice_agent: ice_agent,
+            ice_agent,
+            signaling: SignalingState::Stable,
+            local_description: None,
+            remote_description: None,
         }
     }
 
-    /// Crea un nuevo gestor de conexiones.
+    /// UI calls this to start (re)negotiation. Returns an SDP **Offer** to send.
+    pub fn negotiate(&mut self) -> Result<OutboundSdp, ConnectionError> {
+        match self.signaling {
+            SignalingState::Stable => {
+                let offer = self.build_local_sdp()?; // same builder for offer/answer
+                self.local_description = Some(offer.clone());
+                self.signaling = SignalingState::HaveLocalOffer;
+                Ok(OutboundSdp::Offer(offer))
+            }
+            SignalingState::HaveLocalOffer => {
+                // Already negotiating; nothing to do.
+                Ok(OutboundSdp::None)
+            }
+            SignalingState::HaveRemoteOffer => {
+                // We owe an answer; refuse to start a new offer.
+                Err(ConnectionError::Negotiation(
+                    "cannot create offer while have-remote-offer",
+                ))
+            }
+            SignalingState::Closed => Err(ConnectionError::Negotiation("connection closed")),
+        }
+    }
 
-    /// Inicia el proceso de conexion generando una oferta SDP.
-    /// Internamente, recolecta candidatos ICE y los añade a la oferta.
-    pub fn create_offer(&mut self) -> Result<Sdp, ConnectionError> {
+    /// UI passes *any* remote SDP here (offer or answer). We decide what it is by state.
+    /// - If Stable: treat it as **Offer**, store it, generate **Answer** and return it.
+    /// - If HaveLocalOffer: treat it as **Answer**, store it, return None.
+    /// - If HaveRemoteOffer: receiving another SDP is unexpected (unless you add rollbacks/pranswers).
+    pub fn apply_remote_sdp(&mut self, remote: &str) -> Result<OutboundSdp, ConnectionError> {
+        let sdp = Sdp::parse(remote).map_err(ConnectionError::Sdp)?;
+
+        match self.signaling {
+            SignalingState::Stable => {
+                // Treat as remote offer.
+                self.extract_and_store_remote_candidates(&sdp)?;
+                self.remote_description = Some(sdp);
+                self.signaling = SignalingState::HaveRemoteOffer;
+
+                // Build and send local answer.
+                let answer = self.build_local_sdp()?;
+                self.local_description = Some(answer.clone());
+                // After setting local answer + remote offer we are back to Stable
+                self.signaling = SignalingState::Stable;
+                Ok(OutboundSdp::Answer(answer))
+            }
+
+            SignalingState::HaveLocalOffer => {
+                // Expecting an answer. If we got a new offer, that's glare → rollback.
+                if is_probably_offer(&sdp) {
+                    // --- Glare handling: rollback our local offer and accept their offer. ---
+                    self.rollback_to_stable();
+                    // Re-run as if we were Stable
+                    return self.apply_remote_sdp(remote);
+                }
+
+                // Treat as answer
+                self.extract_and_store_remote_candidates(&sdp)?;
+                self.remote_description = Some(sdp);
+                self.signaling = SignalingState::Stable;
+                Ok(OutboundSdp::None)
+            }
+
+            SignalingState::HaveRemoteOffer => {
+                // We have not sent our answer yet (in this design we answer immediately),
+                // so getting an additional SDP here is an app-level error.
+                Err(ConnectionError::Negotiation(
+                    "unexpected SDP while have-remote-offer (answer was not sent yet)",
+                ))
+            }
+
+            SignalingState::Closed => Err(ConnectionError::Negotiation("connection closed")),
+        }
+    }
+
+    /// Optional: separate method if you ever need to apply only candidates from a remote trickle.
+    pub fn apply_remote_trickle_candidate(
+        &mut self,
+        cand_attr_line: &str,
+    ) -> Result<(), ConnectionError> {
+        let ice_and_sdp: ICEAndSDP = cand_attr_line
+            .parse()
+            .map_err(|_| ConnectionError::IceAgent)?;
+        self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
+        Ok(())
+    }
+
+    pub fn set_ice_agent(&mut self, ice_agent: IceAgent) {
+        self.ice_agent = ice_agent;
+    }
+
+    // ----------------- Helpers -----------------
+
+    /// Build a local SDP (used for both offer and answer in this simple model).
+    fn build_local_sdp(&mut self) -> Result<Sdp, ConnectionError> {
         let version: u8 = 0;
         let origin = SDPOrigin::new_blank();
         let session_name = "demo_session".to_owned();
@@ -52,7 +162,7 @@ impl ConnectionManager {
         let attrs = Vec::new();
         let media: Vec<SDPMedia> = vec![get_mocked_media_description(self)?];
         let extra_lines = Vec::new();
-        let sdp = Sdp::new(
+        Ok(Sdp::new(
             version,
             origin,
             session_name,
@@ -66,17 +176,17 @@ impl ConnectionManager {
             attrs,
             media,
             extra_lines,
-        );
-        Ok(sdp)
+        ))
     }
 
-    /// Recibe una oferta SDP de un par remoto y genera una respuesta.
-    /// Parsea los candidatos remotos, recolecta los propios y crea la respuesta SDP.
-    pub fn receive_offer_and_create_answer(&mut self, offer: &str) -> Result<Sdp, ConnectionError> {
-        let sdp_offer = Sdp::parse(offer).map_err(|e| ConnectionError::Sdp(e))?;
+    fn rollback_to_stable(&mut self) {
+        // Drop the local offer; keep remote side clear.
+        self.local_description = None;
+        self.signaling = SignalingState::Stable;
+    }
 
-        // TODO: pasar esto a un modulo aparte que se encargue de manejar media y sus atributos
-        for m in sdp_offer.media() {
+    fn extract_and_store_remote_candidates(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
+        for m in remote.media() {
             for a in m.attrs() {
                 if a.key() == "candidate" {
                     let value = a.value().ok_or(ConnectionError::IceAgent)?;
@@ -86,39 +196,18 @@ impl ConnectionManager {
                 }
             }
         }
-
-        let sdp_answer = self.create_offer()?;
-        Ok(sdp_answer)
-    }
-
-    /// (Para el oferente) Recibe la respuesta SDP del par remoto.
-    /// Parsea los candidatos remotos de la respuesta para completar la negociacion.
-    pub fn receive_answer(&mut self, answer: Sdp) -> Result<(), ConnectionError> {
-        // TODO Mismo caso que arriba
-        for m in answer.media() {
-            for a in m.attrs() {
-                if a.key() == "candidate" {
-                    let value = a.value().ok_or(ConnectionError::IceAgent)?;
-                    let ice_and_sdp: ICEAndSDP =
-                        value.parse().map_err(|_| ConnectionError::IceAgent)?;
-                    self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
-                }
-            }
-        }
-
         Ok(())
     }
-
-    /// Ejecuta las verificaciones de conectividad (envía y recibe STUN).
-    /// Es `async` porque implica esperar I/O de red.
-    pub async fn start_connectivity_checks(&mut self) {
-        todo!()
-    }
-
-    pub fn set_ice_agent(&mut self, ice_agent: IceAgent) {
-        self.ice_agent = ice_agent;
-    }
 }
+
+// Heuristic to decide if an SDP looks like an "offer" when we need to disambiguate during glare.
+// In strict O/A, "offer vs answer" is *context*, not content; this is best-effort only.
+fn is_probably_offer(_sdp: &Sdp) -> bool {
+    // Keep simple for now; you can refine (e.g., look at a=setup:actpass vs passive/active, or dtls role).
+    false
+}
+
+// ----------------- Your existing helpers (unchanged) -----------------
 
 fn get_mocked_media_description(
     conn_manager: &mut ConnectionManager,
@@ -133,9 +222,10 @@ fn get_mocked_media_description(
     let connection_sdp = SDPConnection::new(DEFAULT_NET_TYPE, DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR);
     media_desc.set_connection(Some(connection_sdp));
     let mut attrs = get_local_candidates_as_attributes(conn_manager);
-    let (ufrag, pwd) = conn_manager.ice_agent.local_credentials(); // or (mock_ufrag(), mock_pwd())
+    let (ufrag, pwd) = conn_manager.ice_agent.local_credentials();
     attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
     attrs.push(SDPAttribute::new("ice-pwd", pwd));
+    // Codec lines, mux
     attrs.push(SDPAttribute::new("rtpmap", Some("96 VP8/90000".to_owned())));
     attrs.push(SDPAttribute::new("rtcp-mux", Some("".to_owned())));
     media_desc.set_attrs(attrs);
@@ -143,7 +233,6 @@ fn get_mocked_media_description(
 }
 
 fn get_local_candidates_as_attributes(conn_manager: &mut ConnectionManager) -> Vec<SDPAttribute> {
-    // TODO reemplazar el gathering por el de ICE agent
     gathering_service::gather_host_candidates()
         .into_iter()
         .map(|c| {

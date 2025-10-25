@@ -3,7 +3,6 @@ use crate::ice::type_ice::candidate_type::CandidateType;
 use std::fmt;
 
 use std::net::{IpAddr, SocketAddr};
-use std::num::ParseIntError;
 use std::str::FromStr;
 
 pub struct ICEAndSDP {
