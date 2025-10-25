@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::{
     net::{IpAddr, SocketAddr, UdpSocket},
     sync::Arc,
@@ -102,7 +103,6 @@ fn create_main_socket(local_ip: IpAddr) -> Result<(SocketAddr, UdpSocket), Strin
 }
 
 //loopback for same-host demos only
-#[cfg(feature = "loopback-candidate")]
 fn gather_loopback_candidate() -> Option<Candidate> {
     match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)) {
         Ok(loop_sock) => match loop_sock.local_addr() {
@@ -124,11 +124,6 @@ fn gather_loopback_candidate() -> Option<Candidate> {
     }
 }
 
-#[cfg(not(feature = "loopback-candidate"))]
-fn gather_loopback_candidate() -> Option<Candidate> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -148,22 +143,10 @@ mod tests {
         assert!(result.is_ok(), "{EXPECTED_ERROR_MSG}");
     }
 
-    #[cfg(feature = "loopback-candidate")]
     #[test]
     fn test_gather_loopback_candidate_ok() {
         const EXPECTED_ERROR_MSG: &str = "Should return a valid loopback candidate";
         let cand = gather_loopback_candidate();
         assert!(cand.is_some(), "{EXPECTED_ERROR_MSG}");
-    }
-
-    #[cfg(not(feature = "loopback-candidate"))]
-    #[test]
-    fn test_gather_loopback_candidate_returns_none_when_feature_disabled() {
-        const EXPECTED_ERROR_MSG: &str = "Should return None a valid loopback candidate";
-        let cand = gather_loopback_candidate();
-        assert!(
-            cand.is_none(),
-            "Should return None without the loopback-candidate feature"
-        );
     }
 }
