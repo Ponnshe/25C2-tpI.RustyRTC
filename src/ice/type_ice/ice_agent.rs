@@ -245,18 +245,9 @@ impl IceAgent {
             }
 
             IceRole::Controlled => {
-                println!("Role: CONTROLLED — waiting for controlling peer to nominate...");
-                // For now, we mock the reception of the nominated pair
-                if let Some(pair) = self.candidate_pairs.first_mut() {
-                    pair.is_nominated = true;
-                    self.nominated_pair = Some(pair.clone_light());
-                    println!(
-                        "Simulated nomination received: [local={}, remote={}, prio={}]",
-                        pair.local.address, pair.remote.address, pair.priority
-                    );
-                } else {
-                    eprintln!("No candidate pairs available to mark as nominated.");
-                }
+                println!("Role: CONTROLLED — Waiting for nomination from controlling peer...");
+                // El agente controlado es PASIVO. No hace nada, solo espera
+                // la nominación, que será manejada por un evento de red (en un paso futuro).
             }
         }
     }
@@ -781,26 +772,6 @@ mod tests {
         assert!(
             agent.nominated_pair.is_some(),
             "{EXPECTED_ERROR_MSG}"
-        );
-    }
-
-    #[test]
-    fn test_agent_with_role_controlled_marks_first_pair_as_nominated_ok() {
-        const EXPECTED_ERROR_MSG1: &str = "Must simulate nomination reception in Controlled mode";
-        const EXPECTED_ERROR_MSG2: &str = "The first pair should be marked as nominated";
-        let mut agent = IceAgent::new(IceRole::Controlled);
-        let p = mock_pair_with_states(CandidatePairState::Succeeded);
-        agent.candidate_pairs = vec![p];
-
-        agent.run_role_logic();
-
-        assert!(
-            agent.nominated_pair.is_some(),
-            "{EXPECTED_ERROR_MSG1}"
-        );
-        assert!(
-            agent.candidate_pairs[0].is_nominated,
-            "{EXPECTED_ERROR_MSG2}"
         );
     }
 
