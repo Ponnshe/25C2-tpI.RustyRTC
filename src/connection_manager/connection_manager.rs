@@ -22,8 +22,6 @@ const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
 const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
 const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 
-// ----------------- New: signaling model -----------------
-
 // ----------------- ConnectionManager --------------------
 
 pub struct ConnectionManager {
@@ -119,7 +117,7 @@ impl ConnectionManager {
         out
     }
 
-    /// Optional: separate method if you ever need to apply only candidates from a remote trickle.
+    /// separate method if we ever need to apply only candidates from a remote trickle.
     pub fn apply_remote_trickle_candidate(
         &mut self,
         cand_attr_line: &str,
@@ -178,11 +176,24 @@ impl ConnectionManager {
     fn extract_and_store_remote_candidates(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
         for m in remote.media() {
             for a in m.attrs() {
-                if a.key() == "candidate" {
-                    let value = a.value().ok_or(ConnectionError::IceAgent)?;
-                    let ice_and_sdp: ICEAndSDP =
-                        value.parse().map_err(|_| ConnectionError::IceAgent)?;
-                    self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
+                match a.key() {
+                    "candidate" => {
+                        let value = a.value().ok_or(ConnectionError::IceAgent)?;
+                        let ice_and_sdp: ICEAndSDP =
+                            value.parse().map_err(|_| ConnectionError::IceAgent)?;
+                        self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
+                    }
+                    "ice-ufrag" => {
+                        if let Some(_v) = a.value() {
+                            // self.ice_agent.set_remote_ufrag(v.to_string()); // add this setter
+                        }
+                    }
+                    "ice-pwd" => {
+                        if let Some(_v) = a.value() {
+                            // self.ice_agent.set_remote_pwd(v.to_string()); // add this setter
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -242,11 +253,11 @@ impl ConnectionManager {
 // Heuristic to decide if an SDP looks like an "offer" when we need to disambiguate during glare.
 // In strict O/A, "offer vs answer" is *context*, not content; this is best-effort only.
 fn is_probably_offer(_sdp: &Sdp) -> bool {
-    // Keep simple for now; you can refine (e.g., look at a=setup:actpass vs passive/active, or dtls role).
+    // Keep simple for now; we can refine (e.g., look at a=setup:actpass vs passive/active, or dtls role).
     false
 }
 
-// ----------------- Your existing helpers (unchanged) -----------------
+// -----------------  helpers -----------------
 
 fn get_mocked_media_description(
     conn_manager: &mut ConnectionManager,
