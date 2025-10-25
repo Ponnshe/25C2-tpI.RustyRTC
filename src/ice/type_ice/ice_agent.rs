@@ -4,6 +4,7 @@ use crate::ice::{gathering_service::gather_host_candidates, type_ice::candidate_
 use rand::{Rng, rngs::OsRng};
 
 use std::{io::Error, net::UdpSocket, time::Duration};
+use std::sync::Arc;
 
 /// Error message formatting constants
 const ERROR_MSG: &str = "ERROR";
@@ -93,7 +94,7 @@ impl IceAgent {
         }
 
         // Open local socket 
-        let socket = match self.open_udp_channel() {
+        let socket = match self.get_data_channel_socket() {
             Ok(sock) => sock,
             Err(e) => return Err(format!("Failed to open UDP channel: {}", e)),
         };
@@ -178,43 +179,43 @@ impl IceAgent {
         }
     }
 
-    /// Opens a UDP socket using the local address of the nominated pair.
+
+    /// Returns a clone of the Arc'd UDP socket associated with the local candidate of the nominated pair.
     /// # Description
-    /// This function prepares the UDP data channel by binding to the local
-    /// address of the nominated candidate pair.
+    /// This function provides access to the already bound UDP socket intended for the data channel.
+    /// It does NOT bind a new socket.
     ///
     /// # Returns
-    /// * `Ok(UdpSocket)` — Socket bound successfully to the nominated pair’s local address.
+    /// * `Ok(Arc<UdpSocket>)` — A clone of the socket Arc from the nominated local candidate.
     ///
     /// # Error
-    /// `Err(String)` — If no nominated pair exists or binding fails.
-    pub fn open_udp_channel(&self) -> Result<UdpSocket, String> {
+    /// * `Err(String)` — If no nominated pair exists, the pair is not 'Succeeded', or the local candidate lacks a socket.
+    pub fn get_data_channel_socket(&self) -> Result<Arc<UdpSocket>, String> {
         // Ensure we have a nominated pair
-        let pair = match &self.nominated_pair {
-            Some(p) => p,
-            None => return Err(String::from("No nominated pair available to open UDP channel.")),
-        };
+        let pair = self.nominated_pair.as_ref().ok_or_else(|| {
+            String::from("No nominated pair available to get UDP channel socket.")
+        })?;
 
-        // Check the pair is in valid state before opening the channel
+        // Check the pair is in valid state
         if !matches!(pair.state, CandidatePairState::Succeeded) {
             return Err(format!(
-                "Cannot open UDP channel — pair not in Succeeded state (current: {:?})",
+                "Cannot get UDP channel socket — pair not in Succeeded state (current: {:?})",
                 pair.state
             ));
         }
 
-        // Attempt to bind the UDP socket to the local candidate address
-        match UdpSocket::bind(pair.local.address) {
-            Ok(socket) => {
+        // Attempt to get the existing socket from the local candidate
+        match &pair.local.socket {
+            Some(socket_arc) => {
                 println!(
-                    "UDP channel opened successfully on {} (remote = {})",
+                    "Retrieved existing UDP socket bound to {} (remote = {})",
                     pair.local.address, pair.remote.address
                 );
-                Ok(socket)
+                Ok(socket_arc.clone()) // Devolvemos un clon del Arc
             }
-            Err(e) => Err(format!(
-                "Failed to bind UDP socket on {}: {}",
-                pair.local.address, e
+            None => Err(format!(
+                "Nominated local candidate {} has no associated socket.",
+                pair.local.address
             )),
         }
     }
@@ -678,15 +679,22 @@ mod tests {
     }
 
     #[test]
-    fn test_open_udp_channel_between_pairs_ok() {
-        const EXPECTED_ERROR_MSG: &str = "Should bind successfully when pair is Succeeded";
+    fn test_get_data_channel_socket_ok() {
+        const EXPECTED_ERROR_MSG: &str = "Should retrieve socket successfully when pair is Succeeded"; 
 
         let mut agent = IceAgent::new(IceRole::Controlling);
-        let mut pair = mock_pair_with_state(CandidatePairState::Succeeded);
-        pair.is_nominated = true;
+
+        let local_candidate = mock_candidate_with_socket("127.0.0.1", 0);
+        let remote_candidate = mock_candidate_with_socket("127.0.0.1", 0); 
+        let local_addr = local_candidate.address; 
+
+        let mut pair = CandidatePair::new(local_candidate, remote_candidate, 100);
+        pair.state = CandidatePairState::Succeeded;
+        pair.is_nominated = true; 
+
         agent.nominated_pair = Some(pair);
 
-        let result = agent.open_udp_channel();
+        let result = agent.get_data_channel_socket();
 
         assert!(
             result.is_ok(),
@@ -694,15 +702,18 @@ mod tests {
             EXPECTED_ERROR_MSG,
             result.err()
         );
+
+        let socket_arc = result.unwrap();
+        assert_eq!(socket_arc.local_addr().unwrap(), local_addr, "The retrieved socket has the wrong local address");
     }
 
     #[test]
-    fn test_open_udp_channel_without_existing_nominated_pair_error() {
+    fn test_get_data_channel_socket_without_nominated_pair_error() {
         const EXPECTED_ERROR_MSG: &str = "Should return error when no nominated pair exists";
 
         let agent = IceAgent::new(IceRole::Controlling);
 
-        let result = agent.open_udp_channel();
+        let result = agent.get_data_channel_socket();
 
         assert!(
             result.is_err(),
@@ -712,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_udp_channel_with_pair_in_not_succeeded_state_error() {
+    fn test_get_data_channel_socket_with_pair_not_succeeded_error() {
         const EXPECTED_ERROR_MSG: &str =
             "Should not allow binding if pair is not in Succeeded state";
 
@@ -721,7 +732,7 @@ mod tests {
         pair.is_nominated = true;
         agent.nominated_pair = Some(pair);
 
-        let result = agent.open_udp_channel();
+        let result = agent.get_data_channel_socket();
 
         assert!(
             result.is_err(),
