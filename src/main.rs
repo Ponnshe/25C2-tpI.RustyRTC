@@ -8,7 +8,7 @@ const ANSWER_FILE: &str = "answer.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("error");
+    let mode = args.get(1).map_or("error", std::string::String::as_str);
 
     if mode != "A" && mode != "B" {
         eprintln!("Uso: cargo run -- A|B");
