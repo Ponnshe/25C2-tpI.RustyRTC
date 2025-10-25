@@ -643,21 +643,34 @@ mod tests {
 
     #[test]
     fn test_send_message_without_nominated_pair_error() {
-        let agent = IceAgent::new(IceRole::Controlling);
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        const EXPECTED_ERROR_MSG: &str = "Should fail if no nominated peer is configured";
+        let ip_address = "127.0.0.1:0";
+        let msg = "hola ICE";
+        
 
-        let result = agent.send_test_message(&socket, "hola ICE");
+        let agent = IceAgent::new(IceRole::Controlling);
+        let socket = UdpSocket::bind(ip_address).unwrap();
+
+        let result = agent.send_test_message(&socket, msg);
 
         assert!(
             result.is_err(),
-            "Debe fallar si no hay par nominado configurado"
+            "{EXPECTED_ERROR_MSG}"
         );
     }
 
     #[test]
     fn test_send_and_receive_message_ok() {
-        let socket_a = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let socket_b = UdpSocket::bind("127.0.0.1:0").unwrap();
+        const BINDING_ACK: &str = "BINDING-ACK";
+        const ERROR_MSG1: &str = "The message sending must be completed correctly";
+        const ERROR_MSG2: &str = "You should receive a response message correctly";
+        const ERROR_MSG3: &str = "You should receive the expected ACK message";
+        const BINDING_DATA_MSG: &str = "BINDING-DATA";
+        let msg_send = "hola ICE";
+        let ip_address = "127.0.0.1:0";
+
+        let socket_a = UdpSocket::bind(ip_address).unwrap();
+        let socket_b = UdpSocket::bind(ip_address).unwrap();
 
         std::thread::spawn({
             let socket_b_clone = socket_b.try_clone().unwrap();
@@ -665,7 +678,7 @@ mod tests {
                 let mut buf = [0u8; 512];
                 if let Ok((size, src)) = socket_b_clone.recv_from(&mut buf) {
                     let msg = String::from_utf8_lossy(&buf[..size]);
-                    if msg.contains("BINDING-DATA") {
+                    if msg.contains(BINDING_DATA_MSG) {
                         let _ = socket_b_clone.send_to(b"BINDING-ACK", src);
                     }
                 }
@@ -700,17 +713,17 @@ mod tests {
         };
         agent.nominated_pair = Some(pair);
 
-        let send_result = agent.send_test_message(&socket_a, "hola ICE");
-        assert!(send_result.is_ok(), "El envío debe completarse correctamente");
+        let send_result = agent.send_test_message(&socket_a, msg_send);
+        assert!(send_result.is_ok(), "{ERROR_MSG1}");
 
         let recv_result = IceAgent::receive_test_message(&socket_a);
         assert!(
             recv_result.is_ok(),
-            "Debe recibir mensaje de respuesta correctamente"
+            "{ERROR_MSG2}"
         );
-
+        
         let msg = recv_result.unwrap();
-        assert_eq!(msg, "BINDING-ACK", "Debe recibir el mensaje ACK esperado");
+        assert_eq!(msg, BINDING_ACK, "{ERROR_MSG3}");
     }
 
     #[test]
