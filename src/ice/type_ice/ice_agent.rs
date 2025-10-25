@@ -6,6 +6,8 @@ use rand::{Rng, rngs::OsRng};
 use std::{io::Error, net::UdpSocket, time::Duration};
 use std::sync::Arc;
 
+const NOMINATION_REQUEST: &[u8] = b"NOMINATE-BINDING-REQUEST";
+
 /// Error message formatting constants
 const ERROR_MSG: &str = "ERROR";
 const WHITESPACE: &str = " ";
@@ -452,15 +454,48 @@ impl IceAgent {
             if !matches!(pair.state, CandidatePairState::Succeeded) {
                 pair.state = CandidatePairState::Succeeded;
                 println!("Par actualizado a Succeeded: [local={}, remote={}]", pair.local.address, pair.remote.address);
-            }
-        } else if packet == BINDING_REQUEST {
-            println!("Received BINDING-REQUEST from {}", from_addr);
 
+                if self.role == IceRole::Controlling {
+                    let should_nominate = match &self.nominated_pair {
+                        None => true, 
+                        Some(current_nominated) => pair.priority > current_nominated.priority, 
+                    };
+
+                    if should_nominate {
+                        println!("Nominating pair: [local={}, remote={}]", pair.local.address, pair.remote.address);
+                        pair.is_nominated = true;
+                        self.nominated_pair = Some(pair.clone_light());
+
+                        if let Some(local_sock) = &pair.local.socket {
+                            if let Err(e) = local_sock.send_to(NOMINATION_REQUEST, pair.remote.address) {
+                                eprintln!("Error sending NOMINATION_REQUEST to {}: {}", pair.remote.address, e);
+                            } else {
+                                println!("Sent NOMINATION_REQUEST to {}", pair.remote.address);
+                            }
+                        } else {
+                            eprintln!("Cannot nominate: No local socket for pair.");
+                        }
+                    }
+                }
+            }
+        } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST { 
+
+            if self.role == IceRole::Controlled && packet == NOMINATION_REQUEST {
+                println!("Received NOMINATION_REQUEST from {}", from_addr);
+                if self.nominated_pair.as_ref().map_or(true, |np| np.local.address != pair.local.address || np.remote.address != pair.remote.address) {
+                    pair.is_nominated = true;
+                    pair.state = CandidatePairState::Succeeded; 
+                    self.nominated_pair = Some(pair.clone_light()); 
+                    println!("Pair nominated by peer: [local={}, remote={}]", pair.local.address, pair.remote.address);
+                }
+            } else {
+                println!("Received BINDING-REQUEST from {}", from_addr);
+            }
+            
             let Some(local_sock) = &pair.local.socket else {
                 eprintln!("No socket para responder al BINDING-REQUEST: {}", pair.local.address);
                 return;
             };
-
             if let Err(e) = local_sock.send_to(BINDING_RESPONSE, from_addr) {
                 eprintln!("Error enviando BINDING-RESPONSE a {}: {}", from_addr, e);
             } else {
