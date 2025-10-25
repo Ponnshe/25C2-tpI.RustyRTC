@@ -2,15 +2,13 @@ use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
 use crate::ice::{gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState};
 use rand::{Rng, rngs::OsRng};
+
 use std::{io::Error, net::UdpSocket, time::Duration};
 
 /// Error message formatting constants
 const ERROR_MSG: &str = "ERROR";
 const WHITESPACE: &str = " ";
 const QUOTE: &str = "\"";
-
-/// Timeout (en ms) para cada intento de conexión (simulación local)
-const CHECK_TIMEOUT_MS: u64 = 1000;
 
 /// Mensajes simulados para los checks
 const BINDING_REQUEST: &[u8] = b"BINDING-REQUEST";
@@ -411,93 +409,68 @@ impl IceAgent {
         count
     }
 
-    /// Runs simulated connectivity checks between all candidate pairs (blocking version).
-    /// - Changes state from `Waiting` → `InProgress`.
-    /// - Sends a mock "BINDING-REQUEST" via UDP (simulated).
-    /// - Marks the pair as `Succeeded` or `Failed` depending on result or timeout.
-    ///
-    /// # Arguments
-    /// * `self` - Self entity.
-    /// 
-    /// # Errors
-    /// 
-    pub fn run_connectivity_checks(&mut self) {
+
+    /// Inicia los 'connectivity checks' para todos los pares en estado 'Waiting'.
+    /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
+    /// Cambia el estado de los pares a 'InProgress'.
+    pub fn start_checks(&mut self) {
+        println!("ICE: Iniciando 'connectivity checks'...");
         for pair in self.candidate_pairs.iter_mut() {
-            pair.state = CandidatePairState::InProgress;
+            if !matches!(pair.state, CandidatePairState::Waiting) {
+                continue;
+            }
 
-            let success = IceAgent::try_connect_pair(pair);
-
-            pair.state = if success {
-                println!(
-                    "Connectivity check succeeded: [local={}, remote={}]",
-                    pair.local.address, pair.remote.address
-                );
-                CandidatePairState::Succeeded
-            } else {
-                eprintln!(
-                    "Connectivity check failed: [local={}, remote={}]",
-                    pair.local.address, pair.remote.address
-                );
-                CandidatePairState::Failed
+            let Some(local_sock) = &pair.local.socket else {
+                eprintln!("No socket for local candidate: {}", pair.local.address);
+                pair.state = CandidatePairState::Failed;
+                continue;
             };
+
+            if let Err(e) = local_sock.send_to(BINDING_REQUEST, pair.remote.address) {
+                eprintln!(
+                    "Send failed from {} → {}: {}",
+                    pair.local.address, pair.remote.address, e
+                );
+                pair.state = CandidatePairState::Failed;
+            } else {
+                pair.state = CandidatePairState::InProgress;
+            }
         }
     }
 
-    /// Tries to connect a single candidate pair (simulated local check).
+    /// Maneja un paquete UDP entrante recibido por el ConnectionManager.
+    /// Esta función es el corazón del ICE reactivo.
     ///
-    /// # Behavior
-    /// - If either candidate lacks a socket, fails immediately.
-    /// - Sends `"BINDING-REQUEST"` via UDP from local to remote.
-    /// - Waits a short timeout and assumes success if send succeeds.
-    ///
-    /// # Return
-    /// - `true` if the pair is reachable locally.
-    /// - `false` if send/recv failed or timed out.
-    fn try_connect_pair(pair: &mut CandidatePair) -> bool {
-        // Check that both sides have a socket
-        let Some(local_sock) = &pair.local.socket else {
-            eprintln!(
-                "No socket available for local candidate: {}",
-                pair.local.address
-            );
-            return false;
+    /// # Arguments
+    /// * `packet` - Los bytes del paquete recibido.
+    /// * `from_addr` - El SocketAddr de donde vino el paquete.
+    pub fn handle_incoming_packet(&mut self, packet: &[u8], from_addr: std::net::SocketAddr) {
+        let Some(pair) = self.candidate_pairs.iter_mut().find(|p| p.remote.address == from_addr) else {
+            eprintln!("Paquete recibido de un 'remote' desconocido: {}", from_addr);
+            return;
         };
 
-        // Attempt to send "BINDING-REQUEST"
-        if let Err(e) = local_sock.send_to(BINDING_REQUEST, pair.remote.address) {
-            eprintln!(
-                "Send failed from {} → {}: {}",
-                pair.local.address, pair.remote.address, e
-            );
-            return false;
-        }
-
-        // Simulate short wait (round-trip latency)
-        std::thread::sleep(Duration::from_millis(CHECK_TIMEOUT_MS / 10));
-
-        // Optional: Try to read a response (for future STUN integration)
-        let mut buf = [0u8; 64];
-        match local_sock.set_read_timeout(Some(Duration::from_millis(CHECK_TIMEOUT_MS))) {
-            Ok(_) => match local_sock.recv_from(&mut buf) {
-                Ok((bytes_read, src)) => {
-                    let response = &buf[..bytes_read];
-                    if response == BINDING_RESPONSE {
-                        println!("Received BINDING-RESPONSE from {}", src);
-                        true 
-                    } else {
-                        eprintln!("Received invalid response from {}: {:?}", src, response);
-                        false
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Connectivity check recv failed: {}", e);
-                    false 
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to set read_timeout: {}", e);
-                false
+        if packet == BINDING_RESPONSE {
+            println!("Received BINDING-RESPONSE from {}", from_addr);
+            if !matches!(pair.state, CandidatePairState::Succeeded) {
+                pair.state = CandidatePairState::Succeeded;
+                println!("Par actualizado a Succeeded: [local={}, remote={}]", pair.local.address, pair.remote.address);
             }
+        } else if packet == BINDING_REQUEST {
+            println!("Received BINDING-REQUEST from {}", from_addr);
+
+            let Some(local_sock) = &pair.local.socket else {
+                eprintln!("No socket para responder al BINDING-REQUEST: {}", pair.local.address);
+                return;
+            };
+
+            if let Err(e) = local_sock.send_to(BINDING_RESPONSE, from_addr) {
+                eprintln!("Error enviando BINDING-RESPONSE a {}: {}", from_addr, e);
+            } else {
+                println!("Enviado BINDING-RESPONSE a {}", from_addr);
+            }
+        } else {
+            eprintln!("Paquete desconocido de {}: {:?}", from_addr, packet);
         }
     }
 
@@ -922,39 +895,6 @@ mod tests {
         );
     }
 
-#[test]
-    fn test_run_connectivity_checks_all_succeed_ok() {
-        use std::thread;
-
-        const EXPECTED_ERROR_MSG: &str = "At least one candidate pair should succeed locally";
-        let ip_address = "127.0.0.1";
-        let port = 0;
-
-        let mut agent = IceAgent::new(IceRole::Controlling);
-        let local = mock_candidate_with_socket(ip_address, port);
-        let remote = mock_candidate_with_socket(ip_address, port);
-
-        agent.local_candidates = vec![local];
-        agent.remote_candidates = vec![remote];
-        agent.form_candidate_pairs();
-
-        let remote_sock = agent.candidate_pairs[0].remote.socket.as_ref().unwrap().clone();
-        let handle = thread::spawn(move || {
-            let mut buf = [0u8; 64];
-            if let Ok((_, src)) = remote_sock.recv_from(&mut buf) {
-                remote_sock.send_to(BINDING_RESPONSE, src).unwrap();
-            }
-        });
-
-        agent.run_connectivity_checks();
-        handle.join().unwrap();
-
-        assert!(
-            agent.candidate_pairs.iter().any(|p| matches!(p.state, CandidatePairState::Succeeded)),
-            "{EXPECTED_ERROR_MSG}"
-        );
-    }
-
     #[test]
     fn test_run_connectivity_checks_local_candidate_without_socket_error() {
         const EXPECTED_ERROR_MSG: &str = "Pair, with local candidate without socket must fail";
@@ -982,39 +922,12 @@ mod tests {
         agent.remote_candidates = vec![remote];
         agent.form_candidate_pairs();
 
-        agent.run_connectivity_checks();
+        agent.start_checks();
 
         assert!(
             agent.candidate_pairs.iter().all(|p| matches!(p.state, CandidatePairState::Failed)),
             "{EXPECTED_ERROR_MSG}"
         );
-    }
-
-    #[test]
-    fn test_try_connect_pair_succees_ok() {
-        use std::thread;
-
-        const EXPECTED_ERROR_MSG: &str = "Expected real local success for connectivity pair";
-        let ip_address = "127.0.0.1";
-        let port = 0;
-        let local = mock_candidate_with_socket(ip_address, port);
-        let remote = mock_candidate_with_socket(ip_address, port);
-
-        let mut pair = CandidatePair::new(local, remote, 100);
-
-        let remote_sock = pair.remote.socket.as_ref().unwrap().clone();
-        let handle = thread::spawn(move || {
-            let mut buf = [0u8; 64];
-            if let Ok((_, src)) = remote_sock.recv_from(&mut buf) {
-                remote_sock.send_to(BINDING_RESPONSE, src).unwrap();
-            }
-        });
-
-        let success = IceAgent::try_connect_pair(&mut pair);
-        handle.join().unwrap();
-
-        assert!(success, "{EXPECTED_ERROR_MSG}");
-        assert!(matches!(pair.state, CandidatePairState::Waiting));
     }
 
     #[test]
@@ -1175,5 +1088,51 @@ mod tests {
         );
         agent.add_remote_candidate(c);
         assert_eq!(agent.remote_candidates.len(), 1);
+    }
+
+    #[test]
+    fn test_reactive_checks_succeed_on_response() {
+        use std::thread;
+
+        let ip_address = "127.0.0.1";
+        let port = 0;
+
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let local = mock_candidate_with_socket(ip_address, port);
+        let remote = mock_candidate_with_socket(ip_address, port);
+
+
+        let remote_sock = remote.socket.as_ref().unwrap().clone();
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            if let Ok((_, src)) = remote_sock.recv_from(&mut buf) {
+                remote_sock.send_to(BINDING_RESPONSE, src).unwrap();
+            }
+        });
+
+        agent.local_candidates = vec![local];
+        agent.remote_candidates = vec![remote];
+        agent.form_candidate_pairs();
+
+        agent.start_checks();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut buf = [0u8; 64];
+        let local_sock = agent.candidate_pairs[0].local.socket.as_ref().unwrap();
+        local_sock.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+
+        if let Ok((bytes, src)) = local_sock.recv_from(&mut buf) {
+            agent.handle_incoming_packet(&buf[..bytes], src);
+        } else {
+            panic!("El test falló, no se recibió el BINDING-RESPONSE del 'eco'");
+        }
+
+        assert!(
+            matches!(agent.candidate_pairs[0].state, CandidatePairState::Succeeded),
+            "El par de candidatos debería estar en estado 'Succeeded' después de recibir una respuesta"
+        );
+
+        handle.join().unwrap();
     }
 }
