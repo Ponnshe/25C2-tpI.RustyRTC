@@ -14,10 +14,6 @@ const QUOTE: &str = "\"";
 const BINDING_REQUEST: &[u8] = b"BINDING-REQUEST";
 const BINDING_RESPONSE: &[u8] = b"BINDING-RESPONSE";
 
-/// Warnings and error messages
-const WARN_INVALID_PRIORITY: &str = "Invalid candidate pair priority.";
-const WARN_MAX_LIMIT_REACHED: &str = "Maximum candidate pair limit reached.";
-
 /// Configuration constants
 const MAX_PAIR_LIMIT: usize = 100; // reasonable upper bound to avoid combinatorial explosion
 const MIN_PRIORITY_THRESHOLD: u64 = 1; // pairs below this value are ignored
@@ -624,13 +620,9 @@ mod tests {
 
     #[test]
     fn test_send_and_receive_message_ok() {
-        const EXPECTED_ACK: &str = "BINDING-DATA hola ICE";
-
-        // Creamos un socket local y otro remoto en 127.0.0.1
         let socket_a = UdpSocket::bind("127.0.0.1:0").unwrap();
         let socket_b = UdpSocket::bind("127.0.0.1:0").unwrap();
 
-        // socket_b escuchará y responderá
         std::thread::spawn({
             let socket_b_clone = socket_b.try_clone().unwrap();
             move || {
@@ -644,9 +636,8 @@ mod tests {
             }
         });
 
-        // Simulamos agente con par nominado
         let mut agent = IceAgent::new(IceRole::Controlling);
-        let mut pair = CandidatePair {
+        let pair = CandidatePair {
             local: Candidate::new(
                 "f1".into(),
                 1,
