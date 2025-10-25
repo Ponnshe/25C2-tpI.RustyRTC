@@ -109,7 +109,7 @@ impl CandidatePair {
             self.remote.address,
             self.priority,
             self.state,
-            if self.is_nominated { "✅ true" } else { "false" }
+            if self.is_nominated { "true" } else { "false" }
         );
     }
 }

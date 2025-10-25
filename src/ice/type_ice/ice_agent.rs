@@ -2,7 +2,7 @@ use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
 use crate::ice::{gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState};
 use rand::{Rng, rngs::OsRng};
-use std::{io::Error, time::{Duration}};
+use std::{io::Error, net::UdpSocket, time::Duration};
 
 /// Error message formatting constants
 const ERROR_MSG: &str = "ERROR";
@@ -72,6 +72,156 @@ impl IceAgent {
             ufrag,
             pwd,
             nominated_pair: None,
+        }
+    }
+
+    /// Start the ICE data channel simulating a local P2P communication.
+    /// 
+    /// Flow:
+    /// 1. Verifies that a nominated pair (`nominated_pair`) exists.
+    /// 2. Opens the local socket with `open_udp_channel()`.
+    /// 3. Sends a test message "BINDING-DATA hello ICE".
+    /// 4. Waits for a "BINDING-ACK" response.
+    /// 
+    /// #Returns
+    /// Ok(()) - sucessful message if all the flow was correct
+    /// 
+    /// #Error
+    /// Err(String) - If any error occurs in any of the steps
+    pub fn start_data_channel(&mut self) -> Result<(), String> {
+        println!("🔹 Starting ICE data channel...");
+
+        // Validate the existence of a nominated pair
+        if self.nominated_pair.is_none() {
+            return Err(String::from(
+                "Cannot start data channel: no nominated pair available.",
+            ));
+        }
+
+        // Open local socket 
+        let socket = match self.open_udp_channel() {
+            Ok(sock) => sock,
+            Err(e) => return Err(format!("Failed to open UDP channel: {}", e)),
+        };
+
+        // Send test message
+        if let Err(e) = self.send_test_message(&socket, "hola ICE") {
+            return Err(format!("Failed to send test message: {}", e));
+        }
+
+        // Waiting answer
+        match IceAgent::receive_test_message(&socket) {
+            Ok(msg) if msg.contains("BINDING-ACK") => {
+                println!("ICE Data Channel established successfully!");
+                Ok(())
+            }
+            Ok(msg) => Err(format!(
+                "Unexpected message received instead of ACK: {}",
+                msg
+            )),
+            Err(e) => Err(format!("Failed to receive ACK: {}", e)),
+        }
+    }
+
+    /// Sends a test message (e.g. "BINDING-DATA hola ICE") to the remote candidate.
+    ///
+    /// # Arguments
+    /// * `socket` - Reference to a bound UDP socket.
+    /// * `msg` - The message to send.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the message was sent successfully.
+    /// 
+    /// #Error
+    /// * `Err(String)` if there was no nominated pair or sending failed.
+    pub fn send_test_message(&self, socket: &UdpSocket, msg: &str) -> Result<(), String> {
+        let pair = match &self.nominated_pair {
+            Some(p) => p,
+            None => return Err(String::from("Cannot send message: no nominated pair available")),
+        };
+
+        let remote_addr = pair.remote.address;
+        let payload = format!("BINDING-DATA {}", msg);
+
+        match socket.send_to(payload.as_bytes(), remote_addr) {
+            Ok(sent) => {
+                println!(
+                    "[SEND] Sent {} bytes → {} ({})",
+                    sent, remote_addr, payload
+                );
+                Ok(())
+            }
+            Err(e) => Err(format!(
+                "Failed to send UDP message to {}: {}",
+                remote_addr, e
+            )),
+        }
+    }
+
+    /// Waits for a response message ("BINDING-ACK") from the remote peer.
+    ///
+    /// # Arguments
+    /// * `socket` - UDP socket to listen on.
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The received message.
+    /// 
+    /// # Error
+    /// * `Err(String)` - Timeout or read error.
+    pub fn receive_test_message(socket: &UdpSocket) -> Result<String, String> {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .map_err(|e| format!("Failed to set timeout: {}", e))?;
+
+        let mut buf = [0u8; 512];
+        match socket.recv_from(&mut buf) {
+            Ok((size, src)) => {
+                let msg = String::from_utf8_lossy(&buf[..size]).to_string();
+                println!("[RECV] From {} → \"{}\"", src, msg);
+                Ok(msg)
+            }
+            Err(e) => Err(format!("Timeout or error while receiving UDP message: {}", e)),
+        }
+    }
+
+    /// Opens a UDP socket using the local address of the nominated pair.
+    /// # Description
+    /// This function prepares the UDP data channel by binding to the local
+    /// address of the nominated candidate pair.
+    ///
+    /// # Returns
+    /// * `Ok(UdpSocket)` — Socket bound successfully to the nominated pair’s local address.
+    ///
+    /// # Error
+    /// `Err(String)` — If no nominated pair exists or binding fails.
+    pub fn open_udp_channel(&self) -> Result<UdpSocket, String> {
+        // Ensure we have a nominated pair
+        let pair = match &self.nominated_pair {
+            Some(p) => p,
+            None => return Err(String::from("No nominated pair available to open UDP channel.")),
+        };
+
+        // Check the pair is in valid state before opening the channel
+        if !matches!(pair.state, CandidatePairState::Succeeded) {
+            return Err(format!(
+                "Cannot open UDP channel — pair not in Succeeded state (current: {:?})",
+                pair.state
+            ));
+        }
+
+        // Attempt to bind the UDP socket to the local candidate address
+        match UdpSocket::bind(pair.local.address) {
+            Ok(socket) => {
+                println!(
+                    "UDP channel opened successfully on {} (remote = {})",
+                    pair.local.address, pair.remote.address
+                );
+                Ok(socket)
+            }
+            Err(e) => Err(format!(
+                "Failed to bind UDP socket on {}: {}",
+                pair.local.address, e
+            )),
         }
     }
 
@@ -434,7 +584,6 @@ mod tests {
     }
 
     fn mock_candidate_with_address(addr_str: &str) -> Candidate {
-        use std::net::SocketAddr;
         let addr: SocketAddr = addr_str.parse().unwrap();
         Candidate::new(
             "mock_foundation".into(),
@@ -485,6 +634,137 @@ mod tests {
             state,
             is_nominated: false,
         }
+    }
+
+    #[test]
+    fn test_send_message_without_nominated_pair_error() {
+        let agent = IceAgent::new(IceRole::Controlling);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        let result = agent.send_test_message(&socket, "hola ICE");
+
+        assert!(
+            result.is_err(),
+            "Debe fallar si no hay par nominado configurado"
+        );
+    }
+
+    #[test]
+    fn test_send_and_receive_message_ok() {
+        const EXPECTED_ACK: &str = "BINDING-DATA hola ICE";
+
+        // Creamos un socket local y otro remoto en 127.0.0.1
+        let socket_a = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket_b = UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        // socket_b escuchará y responderá
+        std::thread::spawn({
+            let socket_b_clone = socket_b.try_clone().unwrap();
+            move || {
+                let mut buf = [0u8; 512];
+                if let Ok((size, src)) = socket_b_clone.recv_from(&mut buf) {
+                    let msg = String::from_utf8_lossy(&buf[..size]);
+                    if msg.contains("BINDING-DATA") {
+                        let _ = socket_b_clone.send_to(b"BINDING-ACK", src);
+                    }
+                }
+            }
+        });
+
+        // Simulamos agente con par nominado
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut pair = CandidatePair {
+            local: Candidate::new(
+                "f1".into(),
+                1,
+                "udp",
+                100,
+                socket_a.local_addr().unwrap(),
+                CandidateType::Host,
+                None,
+                None,
+            ),
+            remote: Candidate::new(
+                "f2".into(),
+                1,
+                "udp",
+                90,
+                socket_b.local_addr().unwrap(),
+                CandidateType::Host,
+                None,
+                None,
+            ),
+            priority: 1234,
+            state: CandidatePairState::Succeeded,
+            is_nominated: true,
+        };
+        agent.nominated_pair = Some(pair);
+
+        let send_result = agent.send_test_message(&socket_a, "hola ICE");
+        assert!(send_result.is_ok(), "El envío debe completarse correctamente");
+
+        let recv_result = IceAgent::receive_test_message(&socket_a);
+        assert!(
+            recv_result.is_ok(),
+            "Debe recibir mensaje de respuesta correctamente"
+        );
+
+        let msg = recv_result.unwrap();
+        assert_eq!(msg, "BINDING-ACK", "Debe recibir el mensaje ACK esperado");
+    }
+
+    #[test]
+    fn test_open_udp_channel_between_pairs_ok() {
+        const EXPECTED_ERROR_MSG: &str = "Should bind successfully when pair is Succeeded";
+
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut pair = mock_pair_with_state(CandidatePairState::Succeeded);
+        pair.is_nominated = true;
+        agent.nominated_pair = Some(pair);
+
+        let result = agent.open_udp_channel();
+
+        assert!(
+            result.is_ok(),
+            "{} (error: {:?})",
+            EXPECTED_ERROR_MSG,
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_open_udp_channel_without_existing_nominated_pair_error() {
+        const EXPECTED_ERROR_MSG: &str = "Should return error when no nominated pair exists";
+
+        let agent = IceAgent::new(IceRole::Controlling);
+
+        let result = agent.open_udp_channel();
+
+        assert!(
+            result.is_err(),
+            "{} (got Ok instead)",
+            EXPECTED_ERROR_MSG
+        );
+    }
+
+    #[test]
+    fn test_open_udp_channel_with_pair_in_not_succeeded_state_error() {
+        const EXPECTED_ERROR_MSG: &str =
+            "Should not allow binding if pair is not in Succeeded state";
+
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut pair = mock_pair_with_state(CandidatePairState::Failed);
+        pair.is_nominated = true;
+        agent.nominated_pair = Some(pair);
+
+        let result = agent.open_udp_channel();
+
+        assert!(
+            result.is_err(),
+            "{} (expected Err, got {:?})",
+            EXPECTED_ERROR_MSG,
+            result
+        );
     }
 
     #[test]
