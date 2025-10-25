@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 /// Indicates the bandwidth of the session or of a specific media stream.
 /// - `bwtype`: bandwidth type (for example `"AS"` for Application-Specific).
 /// - `bandwidth`: bandwidth value in kbps.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bandwidth {
     bwtype: String,
     bandwidth: u64,

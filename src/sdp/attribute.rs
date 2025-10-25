@@ -4,7 +4,7 @@ use std::{fmt, str::FromStr};
 ///
 /// An attribute consists of a key and an optional value.
 /// Common examples: `"rtpmap"`, `"fmtp"`, `"rtcp-mux"`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attribute {
     key: String,
     value: Option<String>,

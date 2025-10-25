@@ -3,7 +3,7 @@ use crate::sdp::sdp_error::SdpError;
 use std::str::FromStr;
 /// Represents a time block (`t=`) in SDP (Session Description Protocol),
 /// including repetitions (`r=`) and time zones (`z=`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TimeDesc {
     start: u64,           // start time in NTP seconds, usually 0
     stop: u64,            // end time in NTP seconds, usually 0

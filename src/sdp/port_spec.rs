@@ -4,7 +4,7 @@ use std::{fmt, str::FromStr};
 ///
 /// Includes the base port and an optional number for hierarchical encoding,
 /// although it is rarely used in WebRTC.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PortSpec {
     base: u16,        // base port
     num: Option<u16>, // optional number of ports

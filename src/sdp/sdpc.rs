@@ -44,7 +44,7 @@ use crate::sdp::time_desc::TimeDesc;
 ///   inside an `m=` section; otherwise they apply at the **session** level.
 /// - `r=` and `z=` are attached to the **last** `t=` block.
 /// - Any unknown session-level lines are preserved verbatim in [`extra_lines`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sdp {
     /// `v=` — SDP version (per spec this is always `0`).
     pub version: u8,
@@ -332,20 +332,6 @@ impl Sdp {
 
     pub fn media(&self) -> &Vec<Media> {
         &self.media
-    }
-
-    /// Crea un nuevo mensaje SDP de oferta vacío con los campos obligatorios.
-    pub fn new_offer() -> Self {
-        todo!()
-    }
-    /// Añade un candidato ICE a este mensaje SDP.
-    pub fn add_candidate(&mut self, candidate: &Candidate) {
-        todo!()
-    }
-
-    /// Extrae todos los candidatos ICE de este mensaje SDP.
-    pub fn get_candidates(&self) -> Vec<Candidate> {
-        todo!()
     }
 }
 /// Split an SDP line into `(prefix, rhs)` by the first `=`, e.g. `"a=foo"` → `("a", "foo")`.

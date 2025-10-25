@@ -6,7 +6,7 @@ use std::{fmt, str::FromStr};
 ///
 /// This structure corresponds to the `c=` line in SDP (Session Description Protocol),
 /// indicating network type, address type, and the unicast or multicast connection address.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Connection {
     /// Network type, usually `"IN"` (Internet)
     net_type: String,

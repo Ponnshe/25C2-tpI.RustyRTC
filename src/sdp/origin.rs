@@ -28,7 +28,7 @@ fn ntp_seconds() -> u64 {
 /// - `net_type`: network type (usually `"IN"` for Internet).
 /// - `addr_type`: address type (IPv4 or IPv6).
 /// - `unicast_address`: origin unicast address (host IP).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Origin {
     username: String,
     session_id: u64,
@@ -199,7 +199,9 @@ impl fmt::Display for Origin {
             self.session_version(),
             self.net_type(),
             self.addr_type(),
-            self.unicast_address.as_deref().map_or(String::new(), |s| format!(" {}", s))
+            self.unicast_address
+                .as_deref()
+                .map_or(String::new(), |s| format!(" {}", s))
         )
     }
 }

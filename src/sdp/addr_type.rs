@@ -1,5 +1,5 @@
 use std::fmt;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AddrType {
     IP4,
     IP6,

@@ -10,7 +10,7 @@ use std::{fmt, str::FromStr};
 ///
 /// The standard values are `Audio`, `Video`, `Text`, `Application`, and `Message`.
 /// For non-standard media, use `Other(String)`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MediaKind {
     Audio,
     Video,
@@ -58,7 +58,7 @@ impl FromStr for MediaKind {
 /// Contains all the information associated with a specific medium, including
 /// port, protocol, formats, attributes, and extra lines that may be needed
 /// for round-trip parsing.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Media {
     /// Media type (`Audio`, `Video`, etc.)
     kind: MediaKind,
