@@ -1,4 +1,7 @@
-use std::{net::{IpAddr, SocketAddr, UdpSocket}, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr, UdpSocket},
+    sync::Arc,
+};
 
 use crate::ice::type_ice::candidate::Candidate;
 

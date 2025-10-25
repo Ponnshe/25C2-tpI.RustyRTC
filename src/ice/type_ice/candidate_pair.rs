@@ -1,7 +1,6 @@
 use super::ice_agent::IceRole;
 use crate::ice::type_ice::candidate::Candidate;
 
-
 /// Constants used in the pair priority formula (RFC 8445 §6.1.2.3)
 // 2^32 multiplier
 const PRIORITY_BITS_SHIFT: u64 = 32;
@@ -33,7 +32,7 @@ pub struct CandidatePair {
     pub remote: Candidate,
     pub priority: u64,
     pub state: CandidatePairState,
-    pub is_nominated: bool
+    pub is_nominated: bool,
 }
 
 /// Create a pair of candidates.
@@ -53,7 +52,7 @@ impl CandidatePair {
             priority,
             //Default state waiting, by RFC 8445 §6.1.2.5
             state: CandidatePairState::Waiting,
-            is_nominated: false
+            is_nominated: false,
         }
     }
 
@@ -172,7 +171,10 @@ mod tests {
         let prio_controlled =
             CandidatePair::calculate_pair_priority(&local, &remote, &IceRole::Controlled);
 
-        assert!((prio_controlling as i128 - prio_controlled as i128).abs() <= 1, "{EXPECTED_ERROR_MSG}");
+        assert!(
+            (prio_controlling as i128 - prio_controlled as i128).abs() <= 1,
+            "{EXPECTED_ERROR_MSG}"
+        );
     }
 
     #[test]

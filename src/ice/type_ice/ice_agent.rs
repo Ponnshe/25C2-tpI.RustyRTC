@@ -1,6 +1,8 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
-use crate::ice::{gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState};
+use crate::ice::{
+    gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
+};
 use rand::{Rng, rngs::OsRng};
 use std::{io::Error, net::UdpSocket, time::Duration};
 
@@ -51,7 +53,7 @@ pub struct IceAgent {
     pub role: IceRole,
     ufrag: String,
     pwd: String,
-    pub nominated_pair: Option<CandidatePair>
+    pub nominated_pair: Option<CandidatePair>,
 }
 
 impl IceAgent {
@@ -70,22 +72,24 @@ impl IceAgent {
             candidate_pairs: vec![],
             role,
             ufrag,
+            // TODO: Aniadir remote_frag y remote_ufrag para STUN. Crear setters y
+            // usarlos en connection manager
             pwd,
             nominated_pair: None,
         }
     }
 
     /// Start the ICE data channel simulating a local P2P communication.
-    /// 
+    ///
     /// Flow:
     /// 1. Verifies that a nominated pair (`nominated_pair`) exists.
     /// 2. Opens the local socket with `open_udp_channel()`.
     /// 3. Sends a test message "BINDING-DATA hello ICE".
     /// 4. Waits for a "BINDING-ACK" response.
-    /// 
+    ///
     /// #Returns
     /// Ok(()) - sucessful message if all the flow was correct
-    /// 
+    ///
     /// #Error
     /// Err(String) - If any error occurs in any of the steps
     pub fn start_data_channel(&mut self) -> Result<(), String> {
@@ -98,7 +102,7 @@ impl IceAgent {
             ));
         }
 
-        // Open local socket 
+        // Open local socket
         let socket = match self.open_udp_channel() {
             Ok(sock) => sock,
             Err(e) => return Err(format!("Failed to open UDP channel: {}", e)),
@@ -131,13 +135,17 @@ impl IceAgent {
     ///
     /// # Returns
     /// * `Ok(())` if the message was sent successfully.
-    /// 
+    ///
     /// #Error
     /// * `Err(String)` if there was no nominated pair or sending failed.
     pub fn send_test_message(&self, socket: &UdpSocket, msg: &str) -> Result<(), String> {
         let pair = match &self.nominated_pair {
             Some(p) => p,
-            None => return Err(String::from("Cannot send message: no nominated pair available")),
+            None => {
+                return Err(String::from(
+                    "Cannot send message: no nominated pair available",
+                ));
+            }
         };
 
         let remote_addr = pair.remote.address;
@@ -145,10 +153,7 @@ impl IceAgent {
 
         match socket.send_to(payload.as_bytes(), remote_addr) {
             Ok(sent) => {
-                println!(
-                    "[SEND] Sent {} bytes → {} ({})",
-                    sent, remote_addr, payload
-                );
+                println!("[SEND] Sent {} bytes → {} ({})", sent, remote_addr, payload);
                 Ok(())
             }
             Err(e) => Err(format!(
@@ -165,7 +170,7 @@ impl IceAgent {
     ///
     /// # Returns
     /// * `Ok(String)` - The received message.
-    /// 
+    ///
     /// # Error
     /// * `Err(String)` - Timeout or read error.
     pub fn receive_test_message(socket: &UdpSocket) -> Result<String, String> {
@@ -180,7 +185,10 @@ impl IceAgent {
                 println!("[RECV] From {} → \"{}\"", src, msg);
                 Ok(msg)
             }
-            Err(e) => Err(format!("Timeout or error while receiving UDP message: {}", e)),
+            Err(e) => Err(format!(
+                "Timeout or error while receiving UDP message: {}",
+                e
+            )),
         }
     }
 
@@ -198,7 +206,11 @@ impl IceAgent {
         // Ensure we have a nominated pair
         let pair = match &self.nominated_pair {
             Some(p) => p,
-            None => return Err(String::from("No nominated pair available to open UDP channel.")),
+            None => {
+                return Err(String::from(
+                    "No nominated pair available to open UDP channel.",
+                ));
+            }
         };
 
         // Check the pair is in valid state before opening the channel
@@ -270,7 +282,7 @@ impl IceAgent {
     /// the nominated pair, if found.
     ///
     /// #Errors
-    /// 
+    ///
     pub fn select_valid_pair(&mut self) -> Option<&CandidatePair> {
         // Filter indices of succeeded pairs
         let succeeded_indices: Vec<usize> = self
@@ -285,22 +297,22 @@ impl IceAgent {
                 }
             })
             .collect();
-    
+
         if succeeded_indices.is_empty() {
             eprintln!("WARN: No succeeded pairs available for nomination.");
             return None;
         }
-    
+
         // Find index of the highest-priority succeeded pair
         let best_index = succeeded_indices
             .into_iter()
             .max_by_key(|&i| self.candidate_pairs[i].priority);
-    
+
         match best_index {
             Some(idx) => {
                 let pair = &mut self.candidate_pairs[idx];
                 pair.is_nominated = true;
-    
+
                 // Store reference safely
                 self.nominated_pair = Some(CandidatePair {
                     local: pair.local.clone_light(),
@@ -309,7 +321,7 @@ impl IceAgent {
                     state: pair.state.clone(),
                     is_nominated: true,
                 });
-    
+
                 // Return immutable reference
                 self.candidate_pairs.get(idx)
             }
@@ -318,7 +330,7 @@ impl IceAgent {
                 None
             }
         }
-    }    
+    }
 
     pub fn add_local_candidate(&mut self, candidate: Candidate) {
         self.local_candidates.push(candidate);
@@ -337,23 +349,21 @@ impl IceAgent {
         Ok(&self.local_candidates)
     }
 
-
-
     /// Builds all possible candidate pairs between local and remote candidates.
     /// According to RFC 8445 §6.1.2.3:
     /// - Each local candidate is paired with each remote candidate.
     /// - The pair’s priority is calculated based on the agent's role (controlling or controlled).
     /// - Pairs with invalid priority values are ignored.
     /// - The resulting list is sorted by descending priority.
-    /// 
+    ///
     /// # Arguments
     /// * `self` - Self entity.
     ///
     /// # Returns
     /// The number of valid pairs generated.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     pub fn form_candidate_pairs(&mut self) -> usize {
         let mut pairs = Vec::new();
 
@@ -396,11 +406,7 @@ impl IceAgent {
                     continue;
                 }
 
-                pairs.push(CandidatePair::new(
-                    local.clone(),
-                    remote.clone(),
-                    priority,
-                ));
+                pairs.push(CandidatePair::new(local.clone(), remote.clone(), priority));
 
                 if pairs.len() >= MAX_PAIR_LIMIT {
                     eprintln!(
@@ -427,9 +433,9 @@ impl IceAgent {
     ///
     /// # Arguments
     /// * `self` - Self entity.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     pub fn run_connectivity_checks(&mut self) {
         for pair in self.candidate_pairs.iter_mut() {
             pair.state = CandidatePairState::InProgress;
@@ -567,7 +573,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::ice::type_ice::candidate_type::CandidateType;
-    use std::{net::{SocketAddr, UdpSocket}, sync::Arc};
+    use std::{
+        net::{SocketAddr, UdpSocket},
+        sync::Arc,
+    };
 
     fn mock_candidate(priority: u32, ip: &str, port: u16) -> Candidate {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
@@ -673,7 +682,7 @@ mod tests {
 
         // Simulamos agente con par nominado
         let mut agent = IceAgent::new(IceRole::Controlling);
-        let mut pair = CandidatePair {
+        let pair = CandidatePair {
             local: Candidate::new(
                 "f1".into(),
                 1,
@@ -701,7 +710,10 @@ mod tests {
         agent.nominated_pair = Some(pair);
 
         let send_result = agent.send_test_message(&socket_a, "hola ICE");
-        assert!(send_result.is_ok(), "El envío debe completarse correctamente");
+        assert!(
+            send_result.is_ok(),
+            "El envío debe completarse correctamente"
+        );
 
         let recv_result = IceAgent::receive_test_message(&socket_a);
         assert!(
@@ -740,11 +752,7 @@ mod tests {
 
         let result = agent.open_udp_channel();
 
-        assert!(
-            result.is_err(),
-            "{} (got Ok instead)",
-            EXPECTED_ERROR_MSG
-        );
+        assert!(result.is_err(), "{} (got Ok instead)", EXPECTED_ERROR_MSG);
     }
 
     #[test]
@@ -772,16 +780,13 @@ mod tests {
         const EXPECTED_ERROR_MSG: &str = "There must be a nominated pair in Controlling mode";
         let mut agent = IceAgent::new(IceRole::Controlling);
         let mut pair = mock_pair_with_states(CandidatePairState::Succeeded);
-        
+
         pair.priority = 77;
         agent.candidate_pairs = vec![pair];
 
         agent.run_role_logic();
 
-        assert!(
-            agent.nominated_pair.is_some(),
-            "{EXPECTED_ERROR_MSG}"
-        );
+        assert!(agent.nominated_pair.is_some(), "{EXPECTED_ERROR_MSG}");
     }
 
     #[test]
@@ -794,10 +799,7 @@ mod tests {
 
         agent.run_role_logic();
 
-        assert!(
-            agent.nominated_pair.is_some(),
-            "{EXPECTED_ERROR_MSG1}"
-        );
+        assert!(agent.nominated_pair.is_some(), "{EXPECTED_ERROR_MSG1}");
         assert!(
             agent.candidate_pairs[0].is_nominated,
             "{EXPECTED_ERROR_MSG2}"
@@ -821,7 +823,10 @@ mod tests {
         assert!(selected.is_some(), "Debe seleccionar un par válido");
         let pair = selected.unwrap();
 
-        assert!(pair.is_nominated, "El par elegido debe marcarse como nominado");
+        assert!(
+            pair.is_nominated,
+            "El par elegido debe marcarse como nominado"
+        );
         assert_eq!(pair.priority, 100, "Debe elegir el par con mayor prioridad");
     }
 
@@ -831,7 +836,10 @@ mod tests {
 
         let result = agent.select_valid_pair();
 
-        assert!(result.is_none(), "No debe seleccionar nada si no hay pares.");
+        assert!(
+            result.is_none(),
+            "No debe seleccionar nada si no hay pares."
+        );
         assert!(
             agent.nominated_pair.is_none(),
             "El campo nominated_pair debe permanecer None."
@@ -873,7 +881,10 @@ mod tests {
 
         assert!(result.is_some(), "Debe nominar al menos un par válido");
         let nominated = result.unwrap();
-        assert!(nominated.is_nominated, "El par nominado debe marcarse como tal");
+        assert!(
+            nominated.is_nominated,
+            "El par nominado debe marcarse como tal"
+        );
         assert_eq!(nominated.priority, 42, "Debe respetar la prioridad igual");
     }
 
@@ -888,7 +899,10 @@ mod tests {
         agent.update_pair_state(index, CandidatePairState::Succeeded);
 
         assert!(
-            matches!(agent.candidate_pairs[index].state, CandidatePairState::Succeeded),
+            matches!(
+                agent.candidate_pairs[index].state,
+                CandidatePairState::Succeeded
+            ),
             "{EXPECTED_ERROR_MSG}"
         );
     }
@@ -898,18 +912,18 @@ mod tests {
         const EXPECTED_ERROR_MSG1: &str = "The pair status was not updated correctly";
         const EXPECTED_WARNING_MSG2: &str = "The size of candidate_pairs should not be altered.";
         let invalid_index = 99;
-    
+
         let mut agent = IceAgent::new(IceRole::Controlling);
         let pair = mock_pair_with_state(CandidatePairState::Waiting);
         agent.candidate_pairs.push(pair);
-    
+
         agent.update_pair_state(invalid_index, CandidatePairState::Failed);
-    
+
         assert!(
             matches!(agent.candidate_pairs[0].state, CandidatePairState::Waiting),
             "{EXPECTED_ERROR_MSG1}"
         );
-    
+
         assert_eq!(agent.candidate_pairs.len(), 1, "{EXPECTED_WARNING_MSG2}");
     }
 
@@ -918,7 +932,7 @@ mod tests {
         let index = 99;
         let mut agent = IceAgent::new(IceRole::Controlling);
         agent.update_pair_state(index, CandidatePairState::Failed);
-        
+
         assert!(agent.candidate_pairs.is_empty());
     }
 
@@ -959,7 +973,10 @@ mod tests {
         agent.run_connectivity_checks();
 
         assert!(
-            agent.candidate_pairs.iter().any(|p| matches!(p.state, CandidatePairState::Succeeded)),
+            agent
+                .candidate_pairs
+                .iter()
+                .any(|p| matches!(p.state, CandidatePairState::Succeeded)),
             "{EXPECTED_ERROR_MSG}"
         );
     }
@@ -994,7 +1011,10 @@ mod tests {
         agent.run_connectivity_checks();
 
         assert!(
-            agent.candidate_pairs.iter().all(|p| matches!(p.state, CandidatePairState::Failed)),
+            agent
+                .candidate_pairs
+                .iter()
+                .all(|p| matches!(p.state, CandidatePairState::Failed)),
             "{EXPECTED_ERROR_MSG}"
         );
     }
@@ -1052,10 +1072,7 @@ mod tests {
         agent.remote_candidates = vec![remote];
 
         let count = agent.form_candidate_pairs();
-        assert_eq!(
-            count, 0,
-            "No deben formarse pares entre IPv4 y IPv6"
-        );
+        assert_eq!(count, 0, "No deben formarse pares entre IPv4 y IPv6");
     }
 
     #[test]
@@ -1077,25 +1094,23 @@ mod tests {
     #[test]
     fn test_skip_candidates_with_zero_priority_pairs() {
         let mut agent = IceAgent::new(IceRole::Controlled);
-    
+
         let mut local = mock_candidate(1, "192.168.1.1", 5000);
         let mut remote = mock_candidate(1, "192.168.1.2", 5001);
-    
+
         local.priority = 0;
         remote.priority = 0;
-    
+
         agent.local_candidates = vec![local];
         agent.remote_candidates = vec![remote];
-    
+
         let count = agent.form_candidate_pairs();
-    
+
         assert_eq!(
-            count, 
-            0, 
+            count, 0,
             "Debería ignorar pares con prioridad 0 (ningún par válido generado)"
         );
     }
-    
 
     #[test]
     fn test_candidate_pairs_with_max_limit_ok() {
