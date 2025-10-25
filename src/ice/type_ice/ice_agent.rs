@@ -479,16 +479,25 @@ impl IceAgent {
         let mut buf = [0u8; 64];
         match local_sock.set_read_timeout(Some(Duration::from_millis(CHECK_TIMEOUT_MS))) {
             Ok(_) => match local_sock.recv_from(&mut buf) {
-                Ok((_, src)) => {
-                    println!("Received response from {}", src);
-                    true
+                Ok((bytes_read, src)) => {
+                    let response = &buf[..bytes_read];
+                    if response == BINDING_RESPONSE {
+                        println!("Received BINDING-RESPONSE from {}", src);
+                        true 
+                    } else {
+                        eprintln!("Received invalid response from {}: {:?}", src, response);
+                        false
+                    }
                 }
-                Err(_) => {
-                    // For now, we assume success after a successful send
-                    true
+                Err(e) => {
+                    eprintln!("Connectivity check recv failed: {}", e);
+                    false 
                 }
             },
-            Err(_) => false,
+            Err(e) => {
+                eprintln!("Failed to set read_timeout: {}", e);
+                false
+            }
         }
     }
 
@@ -913,8 +922,10 @@ mod tests {
         );
     }
 
-    #[test]
+#[test]
     fn test_run_connectivity_checks_all_succeed_ok() {
+        use std::thread;
+
         const EXPECTED_ERROR_MSG: &str = "At least one candidate pair should succeed locally";
         let ip_address = "127.0.0.1";
         let port = 0;
@@ -927,7 +938,16 @@ mod tests {
         agent.remote_candidates = vec![remote];
         agent.form_candidate_pairs();
 
+        let remote_sock = agent.candidate_pairs[0].remote.socket.as_ref().unwrap().clone();
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            if let Ok((_, src)) = remote_sock.recv_from(&mut buf) {
+                remote_sock.send_to(BINDING_RESPONSE, src).unwrap();
+            }
+        });
+
         agent.run_connectivity_checks();
+        handle.join().unwrap();
 
         assert!(
             agent.candidate_pairs.iter().any(|p| matches!(p.state, CandidatePairState::Succeeded)),
@@ -972,16 +992,29 @@ mod tests {
 
     #[test]
     fn test_try_connect_pair_succees_ok() {
-        const EXPECTED_ERROR_MSG: &str = "Expected simulated local success for connectivity pair";
+        use std::thread;
+
+        const EXPECTED_ERROR_MSG: &str = "Expected real local success for connectivity pair";
         let ip_address = "127.0.0.1";
         let port = 0;
         let local = mock_candidate_with_socket(ip_address, port);
         let remote = mock_candidate_with_socket(ip_address, port);
 
         let mut pair = CandidatePair::new(local, remote, 100);
+
+        let remote_sock = pair.remote.socket.as_ref().unwrap().clone();
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            if let Ok((_, src)) = remote_sock.recv_from(&mut buf) {
+                remote_sock.send_to(BINDING_RESPONSE, src).unwrap();
+            }
+        });
+
         let success = IceAgent::try_connect_pair(&mut pair);
+        handle.join().unwrap();
+
         assert!(success, "{EXPECTED_ERROR_MSG}");
-        assert!(matches!(pair.state, CandidatePairState::Waiting) || success);
+        assert!(matches!(pair.state, CandidatePairState::Waiting));
     }
 
     #[test]
