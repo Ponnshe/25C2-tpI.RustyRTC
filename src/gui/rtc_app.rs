@@ -1,4 +1,7 @@
-use crate::connection_manager::{ConnectionManager, OutboundSdp};
+use super::{conn_state::ConnState, gui_error::GuiError};
+use crate::connection_manager::{
+    ConnectionManager, OutboundSdp, connection_error::ConnectionError,
+};
 use eframe::{App, Frame, egui};
 use std::{
     collections::VecDeque,
@@ -10,19 +13,6 @@ use std::{
     thread,
     time::Duration,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnState {
-    Idle,
-    Connecting,
-    Running,
-    Stopped,
-}
-
-#[derive(Debug)]
-pub enum GuiError {
-    ConnectionError(String),
-}
 
 pub struct RtcApp {
     // Raw text areas for user I/O
@@ -73,7 +63,7 @@ impl RtcApp {
         match self
             .conn_manager
             .negotiate()
-            .map_err(|e| GuiError::ConnectionError(format!("negotiate: {e}")))?
+            .map_err(|e| GuiError::Connection(format!("negotiate: {e}").into()))?
         {
             OutboundSdp::Offer(offer) => {
                 self.local_sdp = offer.encode();
@@ -100,7 +90,7 @@ impl RtcApp {
         match self
             .conn_manager
             .apply_remote_sdp(sdp_str)
-            .map_err(|e| GuiError::ConnectionError(format!("apply_remote_sdp: {e}")))?
+            .map_err(|e| GuiError::Connection(format!("apply_remote_sdp: {e}").into()))?
         {
             OutboundSdp::Answer(answer) => {
                 // We received a remote OFFER while stable; we produced an ANSWER to send back.
@@ -126,46 +116,35 @@ impl RtcApp {
     }
 
     fn start_connection(&mut self) -> Result<(), GuiError> {
-        if !(self.has_remote && self.has_local) {
-            return Err(GuiError::ConnectionError("SDP not complete".into()));
-        }
-        if !matches!(self.conn_state, ConnState::Idle | ConnState::Stopped) {
-            return Ok(()); // already running/connecting
+        if self.conn_manager.ice_agent.nominated_pair.is_none() {
+            // Ensure ICE has run to completion (blocking call; or poll until ready if you spawned it)
+            self.conn_manager
+                .start_connectivity_checks()
+                .map_err(|e| GuiError::Connection(format!("ICE: {e}").into()))?;
         }
 
-        // ---- Socket plumbing (adapt to your structs) ----
-        let local_candidate = self
+        // Use ICE-selected 5-tuple:
+        let socket = self
             .conn_manager
             .ice_agent
-            .local_candidates
-            .get_mut(0)
-            .ok_or_else(|| GuiError::ConnectionError("No local candidate".into()))?;
+            .open_udp_channel()
+            .map_err(|_| ConnectionError::Network("UDP could not be opened".into()))?;
 
-        let remote_candidate = self
+        let pair = self
             .conn_manager
             .ice_agent
-            .remote_candidates
-            .get(0)
-            .ok_or_else(|| GuiError::ConnectionError("No remote candidate".into()))?;
+            .nominated_pair
+            .as_ref()
+            .expect("nominated_pair must exist");
 
-        // Move the socket out so threads own it
-        let socket = local_candidate
-            .socket
-            .take()
-            .ok_or_else(|| GuiError::ConnectionError("Local socket not initialized".into()))?;
+        let local_addr = socket.local_addr().map_err(|e| ConnectionError::Socket(e));
+        let peer_addr = pair.remote.address;
 
-        let remote_addr = remote_candidate.address;
-
-        socket
-            .connect(remote_addr)
-            .map_err(|e| GuiError::ConnectionError(format!("connect: {e}")))?;
-
-        let local_addr = socket
-            .local_addr()
-            .map_err(|e| GuiError::ConnectionError(format!("local_addr: {e}")))?;
-        let peer_addr = socket
-            .peer_addr()
-            .map_err(|e| GuiError::ConnectionError(format!("peer_addr: {e}")))?;
+        // (optional) first ping using your helper:
+        self.conn_manager
+            .ice_agent
+            .send_test_message(&socket, "hello from UI")
+            .map_err(|e| ConnectionError::Network(e))?;
 
         let tag = if self.i_am_offerer {
             "OFFERER"
@@ -185,10 +164,10 @@ impl RtcApp {
         // Sender thread (1 msg/sec)
         let send_sock = socket
             .try_clone()
-            .map_err(|e| GuiError::ConnectionError(format!("try_clone (send): {e}")))?;
+            .map_err(|e| GuiError::Connection(format!("try_clone (send): {e}").into()))?;
         thread::spawn(move || {
             let _ = tx.send(format!(
-                "[INFO] Connected. local={local_addr} peer={peer_addr}"
+                "[INFO] Connected. local={local_addr:?} peer={peer_addr}"
             ));
             let mut seq: u64 = 0;
             while run_send.load(std::sync::atomic::Ordering::SeqCst) {
