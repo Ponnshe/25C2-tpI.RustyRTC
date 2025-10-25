@@ -1192,34 +1192,34 @@ mod tests {
         use std::time::Duration;
 
         let ip_address = "127.0.0.1";
-        let port = 0; 
+        let port = 0;
 
         let mut controlling_agent = IceAgent::new(IceRole::Controlling);
         let mut controlled_agent = IceAgent::new(IceRole::Controlled);
 
         let controlling_local = mock_candidate_with_socket(ip_address, port);
-        let controlling_remote = mock_candidate_with_socket(ip_address, port); 
+        let controlled_remote_candidate = controlling_local.clone_light(); 
         let controlled_local = mock_candidate_with_socket(ip_address, port); 
-        let controlled_remote = controlling_local.clone_light(); 
 
         controlling_agent.local_candidates = vec![controlling_local.clone()];
         controlling_agent.remote_candidates = vec![controlled_local.clone_light()]; 
         controlled_agent.local_candidates = vec![controlled_local.clone()];
-        controlled_agent.remote_candidates = vec![controlling_remote.clone_light()]; 
+        controlled_agent.remote_candidates = vec![controlled_remote_candidate]; 
 
         controlling_agent.form_candidate_pairs();
-        controlled_agent.form_candidate_pairs(); 
+        controlled_agent.form_candidate_pairs();
 
         assert!(!controlling_agent.candidate_pairs.is_empty(), "Controlling agent should form pairs");
         assert!(!controlled_agent.candidate_pairs.is_empty(), "Controlled agent should form pairs");
 
         let controlling_socket = controlling_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
+        let controlling_local_addr = controlling_agent.candidate_pairs[0].local.address; 
         let controlled_socket = controlled_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
-        let controlled_remote_addr = controlled_agent.candidate_pairs[0].remote.address;
 
         let controlled_handle = thread::spawn(move || {
             let mut buf = [0u8; 128];
             loop {
+                controlled_socket.set_read_timeout(Some(Duration::from_millis(200))).expect("Failed to set read timeout on controlled socket");
                 match controlled_socket.recv_from(&mut buf) {
                     Ok((size, src)) => {
                         let request = &buf[..size];
@@ -1233,7 +1233,8 @@ mod tests {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                        thread::sleep(Duration::from_millis(50));
+                        println!("[Controlled Echo] Timeout waiting for request, stopping echo.");
+                        break;
                     },
                     Err(e) => {
                         eprintln!("[Controlled Echo] Error receiving: {}", e);
@@ -1245,7 +1246,7 @@ mod tests {
 
         controlling_agent.start_checks();
 
-        thread::sleep(Duration::from_millis(100)); 
+        thread::sleep(Duration::from_millis(50)); 
         let mut buf_controlling = [0u8; 128];
         controlling_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         match controlling_socket.recv_from(&mut buf_controlling) {
@@ -1258,7 +1259,14 @@ mod tests {
         assert!(controlling_agent.nominated_pair.is_some(), "Controlling agent should have nominated a pair");
         assert!(controlling_agent.candidate_pairs[0].is_nominated, "Controlling agent's pair should be marked nominated");
 
-        thread::sleep(Duration::from_millis(100)); 
- 
+        thread::sleep(Duration::from_millis(50)); 
+
+        controlled_agent.handle_incoming_packet(NOMINATION_REQUEST, controlling_local_addr); 
+        assert!(controlled_agent.nominated_pair.is_some(), "Controlled agent should have accepted nomination");
+        assert!(controlled_agent.candidate_pairs.iter().any(|p| p.is_nominated), "At least one pair should be nominated on controlled agent");
+        assert_eq!(controlled_agent.nominated_pair.as_ref().unwrap().local.address, controlled_agent.candidate_pairs[0].local.address, "Controlled nominated wrong pair (local mismatch)");
+        assert_eq!(controlled_agent.nominated_pair.as_ref().unwrap().remote.address, controlling_local_addr, "Controlled nominated wrong pair (remote mismatch)"); 
+
+        controlled_handle.join().expect("Controlled echo thread panicked");
     }
 }
