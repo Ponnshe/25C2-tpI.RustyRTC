@@ -1,5 +1,4 @@
-use crate::connection_manager::ConnectionManager;
-use crate::sdp::sdpc::Sdp;
+use crate::connection_manager::{ConnectionManager, OutboundSdp};
 use eframe::{App, Frame, egui};
 use std::{
     collections::VecDeque,
@@ -11,6 +10,7 @@ use std::{
     thread,
     time::Duration,
 };
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnState {
     Idle,
@@ -23,18 +23,16 @@ enum ConnState {
 pub enum GuiError {
     ConnectionError(String),
 }
-#[derive(Clone, Copy, PartialEq)]
-pub enum RemoteSdpKind {
-    Offer,
-    Answer,
-}
 
 pub struct RtcApp {
+    // Raw text areas for user I/O
     remote_sdp: String,
     local_sdp: String,
+
     status: String,
-    remote_kind: RemoteSdpKind,
     conn_manager: ConnectionManager,
+
+    // Flags for simple gating
     has_remote: bool,
     has_local: bool,
     i_am_offerer: bool, // useful tag for logs
@@ -56,7 +54,6 @@ impl RtcApp {
             remote_sdp: String::new(),
             local_sdp: String::new(),
             status: "Ready.".into(),
-            remote_kind: RemoteSdpKind::Offer,
             conn_manager: ConnectionManager::new(),
 
             has_remote: false,
@@ -71,43 +68,59 @@ impl RtcApp {
         }
     }
 
-    fn create_local_sdp(&mut self) -> Result<String, GuiError> {
-        let offer_sdp = self
+    /// Create (or re-)negotiate: UI calls into ConnectionManager which decides.
+    fn create_or_renegotiate_local_sdp(&mut self) -> Result<(), GuiError> {
+        match self
             .conn_manager
-            .create_offer()
-            .map_err(|e| GuiError::ConnectionError(format!("create_offer: {e}")))?;
-        self.has_local = true;
-        self.i_am_offerer = true;
-        Ok(offer_sdp.encode())
-    }
-
-    fn set_remote_sdp(&mut self, sdp_str: &str) -> Result<(), GuiError> {
-        let sdp = Sdp::parse(sdp_str)
-            .map_err(|e| GuiError::ConnectionError(format!("SDP parse error: {e}")))?;
-
-        match self.remote_kind {
-            RemoteSdpKind::Offer => {
-                // Remote is an OFFER → set it and create an ANSWER
-                let answer_sdp = self
-                    .conn_manager
-                    .receive_offer_and_create_answer(sdp_str)
-                    .map_err(|e| {
-                        GuiError::ConnectionError(format!("receive_offer_and_create_answer: {e}"))
-                    })?;
-                self.local_sdp = answer_sdp.encode();
+            .negotiate()
+            .map_err(|e| GuiError::ConnectionError(format!("negotiate: {e}")))?
+        {
+            OutboundSdp::Offer(offer) => {
+                self.local_sdp = offer.encode();
+                self.has_local = true;
+                self.i_am_offerer = true;
+                self.status = "Local OFFER created. Share it with the peer.".into();
+            }
+            OutboundSdp::Answer(ans) => {
+                // Unlikely path for negotiate(); still handle gracefully.
+                self.local_sdp = ans.encode();
                 self.has_local = true;
                 self.i_am_offerer = false;
-                self.status = "Remote OFFER set. Local ANSWER created.".into();
+                self.status = "Local ANSWER created.".into();
             }
-            RemoteSdpKind::Answer => {
-                // Remote is an ANSWER → just set it
-                self.conn_manager
-                    .receive_answer(sdp)
-                    .map_err(|e| GuiError::ConnectionError(format!("receive_answer: {e}")))?;
+            OutboundSdp::None => {
+                self.status = "Negotiation already in progress (have-local-offer).".into();
+            }
+        }
+        Ok(())
+    }
+
+    /// Paste any remote SDP (offer or answer). Manager decides and returns action.
+    fn set_remote_sdp(&mut self, sdp_str: &str) -> Result<(), GuiError> {
+        match self
+            .conn_manager
+            .apply_remote_sdp(sdp_str)
+            .map_err(|e| GuiError::ConnectionError(format!("apply_remote_sdp: {e}")))?
+        {
+            OutboundSdp::Answer(answer) => {
+                // We received a remote OFFER while stable; we produced an ANSWER to send back.
+                self.local_sdp = answer.encode();
+                self.has_local = true;
+                self.i_am_offerer = false;
+                self.status = "Remote OFFER set → Local ANSWER created. Share it back.".into();
+            }
+            OutboundSdp::Offer(offer) => {
+                // We normally won't produce an offer here, but handle defensively.
+                self.local_sdp = offer.encode();
+                self.has_local = true;
+                self.i_am_offerer = true;
+                self.status = "Local OFFER produced after remote SDP (edge case).".into();
+            }
+            OutboundSdp::None => {
+                // This is the typical path when we had a local offer and just received their ANSWER.
                 self.status = "Remote ANSWER set.".into();
             }
         }
-
         self.has_remote = true;
         Ok(())
     }
@@ -120,7 +133,7 @@ impl RtcApp {
             return Ok(()); // already running/connecting
         }
 
-        // ---- Socket plumbing (adapt this to your struct layout) ----
+        // ---- Socket plumbing (adapt to your structs) ----
         let local_candidate = self
             .conn_manager
             .ice_agent
@@ -159,7 +172,7 @@ impl RtcApp {
         } else {
             "ANSWERER"
         };
-        // ...
+
         let tx = self.log_tx.clone();
 
         // one clone per thread:
@@ -167,6 +180,7 @@ impl RtcApp {
         let run_recv = self.run_flag.clone();
 
         self.run_flag.store(true, Ordering::SeqCst);
+        self.conn_state = ConnState::Running;
 
         // Sender thread (1 msg/sec)
         let send_sock = socket
@@ -211,7 +225,6 @@ impl RtcApp {
                         if e.kind() == std::io::ErrorKind::WouldBlock
                             || e.kind() == std::io::ErrorKind::TimedOut =>
                     {
-                        // check the flag again
                         continue;
                     }
                     Err(e) => {
@@ -231,6 +244,7 @@ impl RtcApp {
         self.status = "Connection stopping…".into();
     }
 }
+
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         while let Ok(line) = self.log_rx.try_recv() {
@@ -245,19 +259,14 @@ impl App for RtcApp {
                 ui.heading("RoomRTC • SDP Messenger");
                 ui.add_space(10.);
             });
+
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Remote SDP is:");
-                ui.selectable_value(&mut self.remote_kind, RemoteSdpKind::Offer, "Offer");
-                ui.selectable_value(&mut self.remote_kind, RemoteSdpKind::Answer, "Answer");
-            });
-            ui.separator();
-            ui.label("1) Paste remote SDP (from WhatsApp/Email):");
+            ui.label("1) Paste remote SDP (offer or answer):");
             ui.add(
                 egui::TextEdit::multiline(&mut self.remote_sdp)
                     .desired_rows(15)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Paste remote offer/answer SDP here…")
+                    .hint_text("Paste remote SDP here…")
                     .lock_focus(true),
             );
             ui.horizontal(|ui| {
@@ -269,7 +278,7 @@ impl App for RtcApp {
                 {
                     let sdp = self.remote_sdp.trim().to_owned();
                     match self.set_remote_sdp(sdp.as_str()) {
-                        Ok(_) => self.status = "Remote SDP set.".to_owned(),
+                        Ok(_) => self.status = "Remote SDP processed.".to_owned(),
                         Err(e) => self.status = format!("Failed to set remote SDP: {e:?}"),
                     }
                 }
@@ -280,11 +289,14 @@ impl App for RtcApp {
             });
 
             ui.separator();
-            ui.label("2) Create local SDP and share it:");
+            ui.label("2) Create local SDP and share it (offer/renegotiation):");
             ui.horizontal(|ui| {
                 if ui.button("Create SDP message").clicked() {
-                    self.local_sdp = self.create_local_sdp().unwrap();
-                    self.status = "Local SDP generated.".to_owned();
+                    if let Err(e) = self.create_or_renegotiate_local_sdp() {
+                        self.status = format!("Failed to create local SDP: {e:?}");
+                    } else {
+                        self.status = "Local SDP generated.".to_owned();
+                    }
                 }
                 if ui.button("Copy to clipboard").clicked() {
                     ui.output_mut(|o| o.copied_text = self.local_sdp.clone());
@@ -295,15 +307,17 @@ impl App for RtcApp {
                 egui::TextEdit::multiline(&mut self.local_sdp)
                     .desired_rows(15)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Your local SDP will appear here…"),
+                    .hint_text("Your local SDP (Offer/Answer) will appear here…"),
             );
 
             ui.separator();
             ui.label(&self.status);
             ui.separator();
+
             let can_start = self.has_remote
                 && self.has_local
                 && matches!(self.conn_state, ConnState::Idle | ConnState::Stopped);
+
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(can_start, egui::Button::new("Start Connection"))
