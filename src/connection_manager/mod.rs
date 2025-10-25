@@ -6,3 +6,4 @@ pub use connection_manager::ConnectionManager;
 pub mod connection_error;
 pub use outbound_sdp::OutboundSdp;
 pub mod ice_and_sdp;
+pub mod ice_utils;

@@ -10,7 +10,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
-    thread,
     time::Duration,
 };
 
@@ -115,36 +114,31 @@ impl RtcApp {
         Ok(())
     }
 
+    // ...
+
     fn start_connection(&mut self) -> Result<(), GuiError> {
         if self.conn_manager.ice_agent.nominated_pair.is_none() {
-            // Ensure ICE has run to completion (blocking call; or poll until ready if you spawned it)
             self.conn_manager
                 .start_connectivity_checks()
                 .map_err(|e| GuiError::Connection(format!("ICE: {e}").into()))?;
         }
 
-        // Use ICE-selected 5-tuple:
-        let socket = self
+        let (socket, peer_addr) = self
             .conn_manager
             .ice_agent
-            .open_udp_channel()
-            .map_err(|_| ConnectionError::Network("UDP could not be opened".into()))?;
+            .nominated_socket_arc()
+            .map_err(|e| GuiError::Connection(format!("nominated socket: {e}").into()))?;
 
-        let pair = self
-            .conn_manager
-            .ice_agent
-            .nominated_pair
-            .as_ref()
-            .expect("nominated_pair must exist");
+        // "Connect" the UDP socket (sets default peer); method takes &self, works via Arc
+        socket
+            .connect(peer_addr)
+            .map_err(|e| GuiError::Connection(format!("socket.connect: {e}").into()))?;
 
-        let local_addr = socket.local_addr().map_err(|e| ConnectionError::Socket(e));
-        let peer_addr = pair.remote.address;
-
-        // (optional) first ping using your helper:
+        // optional ping (takes &UdpSocket so Arc works fine)
         self.conn_manager
             .ice_agent
             .send_test_message(&socket, "hello from UI")
-            .map_err(|e| ConnectionError::Network(e))?;
+            .map_err(|e| GuiError::Connection(format!("send_test_message: {e}").into()))?;
 
         let tag = if self.i_am_offerer {
             "OFFERER"
@@ -153,19 +147,16 @@ impl RtcApp {
         };
 
         let tx = self.log_tx.clone();
-
-        // one clone per thread:
-        let run_send = self.run_flag.clone();
-        let run_recv = self.run_flag.clone();
+        let run_send = Arc::clone(&self.run_flag);
+        let run_recv = Arc::clone(&self.run_flag);
 
         self.run_flag.store(true, Ordering::SeqCst);
         self.conn_state = ConnState::Running;
 
-        // Sender thread (1 msg/sec)
-        let send_sock = socket
-            .try_clone()
-            .map_err(|e| GuiError::Connection(format!("try_clone (send): {e}").into()))?;
-        thread::spawn(move || {
+        // Sender thread
+        let send_sock = Arc::clone(&socket);
+        std::thread::spawn(move || {
+            let local_addr = send_sock.local_addr();
             let _ = tx.send(format!(
                 "[INFO] Connected. local={local_addr:?} peer={peer_addr}"
             ));
@@ -183,19 +174,17 @@ impl RtcApp {
             let _ = tx.send("[INFO] Sender stopped.".into());
         });
 
-        // Receiver thread (blocking recv)
+        // Receiver thread
         let tx2 = self.log_tx.clone();
-
-        // optional: let the blocking recv wake up periodically after stop()
-        let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
-
+        let recv_sock = Arc::clone(&socket);
+        let _ = recv_sock.set_read_timeout(Some(Duration::from_millis(500)));
         std::thread::spawn(move || {
             let mut buf = [0u8; 1500];
             loop {
                 if !run_recv.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                match socket.recv(&mut buf) {
+                match recv_sock.recv(&mut buf) {
                     Ok(n) => {
                         let s = String::from_utf8_lossy(&buf[..n]).to_string();
                         let _ = tx2.send(format!("[RECV] {s}"));
@@ -214,6 +203,7 @@ impl RtcApp {
             }
             let _ = tx2.send("[INFO] Receiver stopped.".into());
         });
+
         Ok(())
     }
 

@@ -2,8 +2,11 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, signaling_state::SignalingState,
 };
-use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use crate::ice::{
+    gathering_service,
+    type_ice::ice_agent::IceRole::{Controlled, Controlling},
+};
 use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
@@ -51,6 +54,7 @@ impl ConnectionManager {
                 let offer = self.build_local_sdp()?; // same builder for offer/answer
                 self.local_description = Some(offer.clone());
                 self.signaling = SignalingState::HaveLocalOffer;
+                self.set_ice_role_from_signaling(true, /*remote_is_ice_lite=*/ false);
                 Ok(OutboundSdp::Offer(offer))
             }
             SignalingState::HaveLocalOffer => {
@@ -77,13 +81,17 @@ impl ConnectionManager {
             match self.signaling {
                 SignalingState::Stable => {
                     // Treat as remote offer.
-                    self.extract_and_store_remote_candidates(&sdp)?;
+                    let (remote_is_ice_lite, _ufrag, _pwd) =
+                        self.extract_and_store_remote_ice_meta(&sdp)?;
                     self.remote_description = Some(sdp);
                     self.signaling = SignalingState::HaveRemoteOffer;
 
                     // Build and send local answer.
                     let answer = self.build_local_sdp()?;
                     self.local_description = Some(answer.clone());
+                    // Answerer → Controlled (unless peer is ice-lite → we must be Controlling)
+                    self.set_ice_role_from_signaling(false, remote_is_ice_lite);
+
                     self.signaling = SignalingState::Stable; // back to stable
                     Ok(OutboundSdp::Answer(answer))
                 }
@@ -94,7 +102,9 @@ impl ConnectionManager {
                         return self.apply_remote_sdp(remote);
                     }
                     // Treat as answer
-                    self.extract_and_store_remote_candidates(&sdp)?;
+                    // It’s an ANSWER → parse ICE meta & candidates
+                    let (_remote_is_ice_lite, _ufrag, _pwd) =
+                        self.extract_and_store_remote_ice_meta(&sdp)?;
                     self.remote_description = Some(sdp);
                     self.signaling = SignalingState::Stable;
                     Ok(OutboundSdp::None)
@@ -110,7 +120,6 @@ impl ConnectionManager {
 
         if out.is_ok() {
             if let Err(e) = self.maybe_start_ice() {
-                // Log instead of swallowing silently; you can use tracing/log here.
                 eprintln!("ICE start failed: {e}");
             }
         }
@@ -173,7 +182,33 @@ impl ConnectionManager {
         self.signaling = SignalingState::Stable;
     }
 
-    fn extract_and_store_remote_candidates(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
+    fn extract_and_store_remote_ice_meta(
+        &mut self,
+        remote: &Sdp,
+    ) -> Result<(bool, Option<String>, Option<String>), ConnectionError> {
+        let mut remote_is_ice_lite = false;
+        let mut ufrag: Option<String> = None;
+        let mut pwd: Option<String> = None;
+
+        // Session-level attributes (important: ice-lite is usually here)
+        for a in remote.attrs() {
+            match a.key() {
+                "ice-lite" => remote_is_ice_lite = true,
+                "ice-ufrag" => {
+                    if let Some(v) = a.value() {
+                        ufrag = Some(v.to_owned());
+                    }
+                }
+                "ice-pwd" => {
+                    if let Some(v) = a.value() {
+                        pwd = Some(v.to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Media-level attributes (fallbacks + candidates)
         for m in remote.media() {
             for a in m.attrs() {
                 match a.key() {
@@ -184,21 +219,32 @@ impl ConnectionManager {
                         self.ice_agent.add_remote_candidate(ice_and_sdp.candidate());
                     }
                     "ice-ufrag" => {
-                        if let Some(_v) = a.value() {
-                            // self.ice_agent.set_remote_ufrag(v.to_string()); // add this setter
+                        if ufrag.is_none() {
+                            if let Some(v) = a.value() {
+                                ufrag = Some(v.to_owned());
+                            }
                         }
                     }
                     "ice-pwd" => {
-                        if let Some(_v) = a.value() {
-                            // self.ice_agent.set_remote_pwd(v.to_string()); // add this setter
+                        if pwd.is_none() {
+                            if let Some(v) = a.value() {
+                                pwd = Some(v.to_owned());
+                            }
                         }
                     }
+                    "ice-lite" => remote_is_ice_lite = true,
                     _ => {}
                 }
             }
         }
-        Ok(())
+
+        // store credentials on the agent when we add setters/fields
+        // if let Some(u) = &ufrag { self.ice_agent.set_remote_ufrag(u.clone()); }
+        // if let Some(p) = &pwd   { self.ice_agent.set_remote_pwd(p.clone()); }
+
+        Ok((remote_is_ice_lite, ufrag, pwd))
     }
+
     // Call this at the end of any path that leaves you with both local+remote descriptions.
     fn maybe_start_ice(&mut self) -> Result<(), ConnectionError> {
         let ready = self.local_description.is_some()
@@ -247,6 +293,16 @@ impl ConnectionManager {
                 "no nominated pair after checks".into(),
             ))
         }
+    }
+    fn set_ice_role_from_signaling(&mut self, we_are_offerer: bool, remote_is_ice_lite: bool) {
+        self.ice_agent.role = if remote_is_ice_lite {
+            // Full agent must be controlling against an ICE-Lite peer
+            Controlling
+        } else if we_are_offerer {
+            Controlling
+        } else {
+            Controlled
+        };
     }
 }
 

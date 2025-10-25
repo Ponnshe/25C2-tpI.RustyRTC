@@ -4,6 +4,8 @@ use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
 use rand::{Rng, rngs::OsRng};
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::{io::Error, net::UdpSocket, time::Duration};
 
 /// Error message formatting constants
@@ -565,6 +567,43 @@ impl IceAgent {
             .iter()
             .filter(|p| matches!(p.state, CandidatePairState::Succeeded))
             .collect()
+    }
+}
+
+impl IceAgent {
+    /// Get a handle to the nominated local socket (Arc) and its peer address.
+    pub fn nominated_socket_arc(&self) -> Result<(Arc<UdpSocket>, SocketAddr), String> {
+        let np = self
+            .nominated_pair
+            .as_ref()
+            .ok_or("No nominated pair available")?;
+
+        // Find the real pair in the working list
+        let pair = self
+            .candidate_pairs
+            .iter()
+            .find(|p| {
+                p.is_nominated
+                    && p.local.address == np.local.address
+                    && p.remote.address == np.remote.address
+            })
+            .ok_or("Nominated pair not found in candidate_pairs")?;
+
+        if !matches!(pair.state, CandidatePairState::Succeeded) {
+            return Err(format!(
+                "Nominated pair not in Succeeded state (current: {:?})",
+                pair.state
+            ));
+        }
+
+        let sock = pair
+            .local
+            .socket
+            .as_ref()
+            .ok_or("Nominated pair has no local socket")?;
+
+        // Return a cloned Arc (cheap); threads can clone it further.
+        Ok((Arc::clone(sock), pair.remote.address))
     }
 }
 

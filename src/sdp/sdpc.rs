@@ -28,7 +28,6 @@
 //! let text = sdp.encode(); // always CRLF
 //! ```
 
-use crate::ice::type_ice::candidate::Candidate;
 use crate::sdp::attribute::Attribute;
 use crate::sdp::bandwidth::Bandwidth;
 use crate::sdp::connection::Connection;
@@ -329,9 +328,14 @@ impl Sdp {
         }
         out
     }
-
+    /// Getter for media
     pub fn media(&self) -> &Vec<Media> {
         &self.media
+    }
+
+    /// Getter for session level attributes
+    pub fn attrs(&self) -> &[Attribute] {
+        &self.attrs
     }
 }
 /// Split an SDP line into `(prefix, rhs)` by the first `=`, e.g. `"a=foo"` → `("a", "foo")`.
