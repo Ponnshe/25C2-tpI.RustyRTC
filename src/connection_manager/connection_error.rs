@@ -10,6 +10,7 @@ pub enum ConnectionError {
     IceAgent,
     Negotiation(String),
     Sdp(SdpError),
+    ClosingProt(String),
 }
 
 impl fmt::Display for ConnectionError {
@@ -21,6 +22,7 @@ impl fmt::Display for ConnectionError {
             ConnectionError::Sdp(e) => write!(f, "SDP error: {e}"),
             ConnectionError::Network(msg) => write!(f, "Network error: {msg}"),
             ConnectionError::Socket(e) => write!(f, "Socket error: {e}"),
+            ConnectionError::ClosingProt(msg) => write!(f, "Closing protocol error: {msg}"),
         }
     }
 }
