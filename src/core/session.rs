@@ -1,0 +1,280 @@
+use std::{
+    io,
+    net::{self, UdpSocket},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::Sender,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use rand::{RngCore, rngs::OsRng};
+
+use crate::core::{
+    events::EngineEvent,
+    protocol::{self, AppMsg},
+};
+
+#[derive(Clone, Copy)]
+pub struct SessionConfig {
+    pub handshake_timeout: Duration,
+    pub resend_every: Duration,
+    pub close_timeout: Duration,
+    pub close_resend_every: Duration,
+}
+
+pub struct Session {
+    sock: Arc<UdpSocket>,
+    peer: net::SocketAddr,
+
+    run_flag: Arc<AtomicBool>,
+    established: Arc<AtomicBool>,
+
+    token_local: u64,
+    token_peer: Arc<AtomicU64>,
+
+    we_initiated_close: Arc<AtomicBool>,
+    peer_initiated_close: Arc<AtomicBool>,
+    close_done: Arc<AtomicBool>,
+
+    tx_evt: Sender<EngineEvent>,
+    cfg: SessionConfig,
+}
+
+impl Session {
+    pub fn new(
+        sock: Arc<UdpSocket>,
+        peer: std::net::SocketAddr,
+        tx_evt: Sender<EngineEvent>,
+        cfg: SessionConfig,
+    ) -> Self {
+        Self {
+            sock,
+            peer,
+            run_flag: Arc::new(AtomicBool::new(false)),
+            established: Arc::new(AtomicBool::new(false)),
+            token_local: 0,
+            token_peer: Arc::new(AtomicU64::new(0)),
+            we_initiated_close: Arc::new(AtomicBool::new(false)),
+            peer_initiated_close: Arc::new(AtomicBool::new(false)),
+            close_done: Arc::new(AtomicBool::new(false)),
+            tx_evt,
+            cfg,
+        }
+    }
+
+    pub fn start(&mut self) {
+        // fresh tokens/flags
+        self.token_local = OsRng.next_u64();
+        self.token_peer.store(0, Ordering::SeqCst);
+        self.established.store(false, Ordering::SeqCst);
+        self.we_initiated_close.store(false, Ordering::SeqCst);
+        self.peer_initiated_close.store(false, Ordering::SeqCst);
+        self.close_done.store(false, Ordering::SeqCst);
+
+        // socket setup & clear any stale data
+        let _ = self.sock.set_nonblocking(true);
+        let _ = self.sock.set_read_timeout(Some(Duration::from_millis(500)));
+        let mut junk = [0u8; 1500];
+        while let Ok(_) = self.sock.recv(&mut junk) {}
+
+        self.run_flag.store(true, Ordering::SeqCst);
+
+        // === Receiver (parse+respond) ===
+        let rx_run = Arc::clone(&self.run_flag);
+        let rx_sock = Arc::clone(&self.sock);
+        let rx_tok_peer = Arc::clone(&self.token_peer);
+        let rx_est = Arc::clone(&self.established);
+        let rx_close_done = Arc::clone(&self.close_done);
+        let rx_peer_init = Arc::clone(&self.peer_initiated_close);
+        let local_token = self.token_local;
+        let tx = self.tx_evt.clone();
+
+        thread::spawn(move || {
+            let mut buf = [0u8; 1500];
+            while rx_run.load(Ordering::SeqCst) {
+                match rx_sock.recv(&mut buf) {
+                    Ok(n) => match protocol::parse_app_msg(&buf[..n]) {
+                        AppMsg::Syn { token: their } => {
+                            let _ =
+                                tx.send(EngineEvent::Log(format!("[HS] recv SYN({their:016x})")));
+                            rx_tok_peer.store(their, Ordering::SeqCst);
+                            let synack = protocol::encode_synack(their, local_token);
+                            let _ = rx_sock.send(synack.as_bytes());
+                            let _ = tx.send(EngineEvent::Log(format!(
+                                "[HS] send SYN-ACK({their:016x},{local_token:016x})"
+                            )));
+                        }
+                        AppMsg::SynAck { your, mine } => {
+                            if your == local_token {
+                                rx_tok_peer.store(mine, Ordering::SeqCst);
+                                let ack = protocol::encode_ack(mine);
+                                let _ = rx_sock.send(ack.as_bytes());
+                                let _ = tx.send(EngineEvent::Log(format!(
+                                    "[HS] recv SYN-ACK ok → send ACK({mine:016x})"
+                                )));
+                            } else {
+                                // ignore glare/mismatch quietly to avoid log spam
+                            }
+                        }
+                        AppMsg::Ack { your } => {
+                            if your == local_token {
+                                rx_est.store(true, Ordering::SeqCst);
+                                let _ = tx.send(EngineEvent::Established);
+                                let _ = tx.send(EngineEvent::Log("[HS] ESTABLISHED".into()));
+                            }
+                        }
+                        AppMsg::Fin { token: their } => {
+                            rx_peer_init.store(true, Ordering::SeqCst);
+                            rx_est.store(false, Ordering::SeqCst);
+                            rx_tok_peer.store(their, Ordering::SeqCst);
+                            let finack = protocol::encode_finack(their, local_token);
+                            let _ = rx_sock.send(finack.as_bytes());
+                            let _ = tx.send(EngineEvent::Log(format!(
+                                "[CLOSE] recv FIN({their:016x}) → send FIN-ACK({their:016x},{local_token:016x})"
+                            )));
+                        }
+                        AppMsg::FinAck { your, mine } => {
+                            let peer_tok_now = rx_tok_peer.load(Ordering::SeqCst);
+                            if your == local_token {
+                                // they echoed our FIN → finish their side
+                                let finack2 = protocol::encode_finack2(mine);
+                                let _ = rx_sock.send(finack2.as_bytes());
+                                let _ = tx.send(EngineEvent::Log(format!(
+                                    "[CLOSE] recv FIN-ACK ok → send FIN-ACK2({mine:016x})"
+                                )));
+                            } else if peer_tok_now != 0 && your == peer_tok_now {
+                                // idempotent echo related to their-initiated close; ignore quietly
+                            } else {
+                                // unrelated; ignore
+                            }
+                        }
+                        AppMsg::FinAck2 { your } => {
+                            if your == local_token {
+                                rx_est.store(false, Ordering::SeqCst);
+                                rx_close_done.store(true, Ordering::SeqCst);
+                                let _ = tx.send(EngineEvent::Closing { graceful: true });
+                                let _ = tx.send(EngineEvent::Closed);
+                                let _ = tx.send(EngineEvent::Log(
+                                    "[CLOSE] graceful close complete".into(),
+                                ));
+                            }
+                        }
+                        AppMsg::Other(pkt) => {
+                            if rx_est.load(Ordering::SeqCst) {
+                                let s = String::from_utf8_lossy(&pkt).to_string();
+                                let _ = tx.send(EngineEvent::Payload(s));
+                            }
+                        }
+                    },
+                    Err(ref e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
+                        break;
+                    }
+                }
+            }
+        });
+
+        // === Handshake driver ===
+        let hs_run = Arc::clone(&self.run_flag);
+        let hs_est = Arc::clone(&self.established);
+        let hs_sock = Arc::clone(&self.sock);
+        let hs_peer_tok = Arc::clone(&self.token_peer);
+        let tx2 = self.tx_evt.clone();
+        let cfg = self.cfg;
+        let local_token2 = self.token_local;
+
+        thread::spawn(move || {
+            let _ = tx2.send(EngineEvent::Log(format!(
+                "[HS] start (local={local_token2:016x})"
+            )));
+            let started_at = Instant::now();
+            let mut last_tx = Instant::now() - cfg.resend_every;
+
+            while hs_run.load(Ordering::SeqCst) && !hs_est.load(Ordering::SeqCst) {
+                if started_at.elapsed() >= cfg.handshake_timeout {
+                    let _ = tx2.send(EngineEvent::Error("handshake timeout".into()));
+                    break;
+                }
+                if last_tx.elapsed() >= cfg.resend_every {
+                    let syn = protocol::encode_syn(local_token2);
+                    let _ = hs_sock.send(syn.as_bytes());
+                    let _ = tx2.send(EngineEvent::Log("[HS] send SYN".into()));
+
+                    let their = hs_peer_tok.load(Ordering::SeqCst);
+                    if their != 0 {
+                        let synack = protocol::encode_synack(their, local_token2);
+                        let ack = protocol::encode_ack(their);
+                        let _ = hs_sock.send(synack.as_bytes());
+                        let _ = hs_sock.send(ack.as_bytes());
+                        let _ = tx2.send(EngineEvent::Log("[HS] send SYN-ACK + ACK".into()));
+                    }
+                    last_tx = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+            let _ = tx2.send(EngineEvent::Log("[HS] driver done".into()));
+        });
+    }
+
+    pub fn send_payload(&self, bytes: &[u8]) -> io::Result<usize> {
+        if self.established.load(Ordering::SeqCst) {
+            self.sock.send(bytes)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub fn request_close(&mut self) {
+        self.we_initiated_close.store(true, Ordering::SeqCst);
+        self.established.store(false, Ordering::SeqCst);
+
+        let io_flag = Arc::clone(&self.run_flag);
+        let close_done = Arc::clone(&self.close_done);
+        let peer_tok = Arc::clone(&self.token_peer);
+        let tx = self.tx_evt.clone();
+        let sock = Arc::clone(&self.sock);
+        let cfg = self.cfg;
+        let local_tok = self.token_local;
+
+        thread::spawn(move || {
+            let _ = tx.send(EngineEvent::Log(format!(
+                "[CLOSE] driver start (local={local_tok:016x})"
+            )));
+            let started_at = Instant::now();
+            let mut last_tx = Instant::now() - cfg.close_resend_every;
+
+            while io_flag.load(Ordering::SeqCst) && !close_done.load(Ordering::SeqCst) {
+                if started_at.elapsed() >= cfg.close_timeout {
+                    let _ = tx.send(EngineEvent::Log("[CLOSE] timeout → forcing stop".into()));
+                    break;
+                }
+                if last_tx.elapsed() >= cfg.close_resend_every {
+                    let fin = protocol::encode_fin(local_tok);
+                    let _ = sock.send(fin.as_bytes());
+                    let _ = tx.send(EngineEvent::Log("[CLOSE] send FIN".into()));
+                    let their = peer_tok.load(Ordering::SeqCst);
+                    if their != 0 {
+                        let finack = protocol::encode_finack(their, local_tok);
+                        let _ = sock.send(finack.as_bytes());
+                        let _ = tx.send(EngineEvent::Log("[CLOSE] send FIN-ACK".into()));
+                    }
+                    last_tx = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+            // stop all
+            io_flag.store(false, Ordering::SeqCst);
+            let _ = tx.send(EngineEvent::Log("[CLOSE] driver done".into()));
+            let _ = tx.send(EngineEvent::Closed);
+        });
+    }
+}
