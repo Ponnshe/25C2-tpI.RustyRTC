@@ -2,7 +2,7 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, signaling_state::SignalingState,
 };
-use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use crate::ice::type_ice::ice_agent::{BINDING_REQUEST, IceAgent, IceRole};
 use crate::ice::{
     gathering_service,
     type_ice::ice_agent::IceRole::{Controlled, Controlling},
@@ -16,6 +16,17 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
+use std::{
+    io::ErrorKind,
+    net::{SocketAddr, UdpSocket},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender, channel},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 const DEFAULT_PORT: u16 = 9;
 const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
@@ -26,13 +37,18 @@ const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
 const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 
 // ----------------- ConnectionManager --------------------
-
 pub struct ConnectionManager {
     pub ice_agent: IceAgent,
     signaling: SignalingState,
     local_description: Option<Sdp>,
     remote_description: Option<Sdp>,
     ice_phase: IcePhase,
+
+    // NEW: async ICE worker plumbing
+    ice_evt_tx: Option<Sender<(Vec<u8>, SocketAddr)>>,
+    ice_evt_rx: Option<Receiver<(Vec<u8>, SocketAddr)>>,
+    ice_run_flag: Arc<AtomicBool>,
+    ice_worker: Option<thread::JoinHandle<()>>,
 }
 
 impl ConnectionManager {
@@ -44,6 +60,10 @@ impl ConnectionManager {
             local_description: None,
             remote_description: None,
             ice_phase: IcePhase::Idle,
+            ice_evt_tx: None,
+            ice_evt_rx: None,
+            ice_run_flag: Arc::new(AtomicBool::new(false)),
+            ice_worker: None,
         }
     }
 
@@ -258,14 +278,12 @@ impl ConnectionManager {
 
     /// Runs ICE pipeline to nomination (blocking version for clarity).
     pub fn start_connectivity_checks(&mut self) -> Result<(), ConnectionError> {
-        // 0) Ensure we have descriptions (creds/candidates exchanged)
         if self.local_description.is_none() || self.remote_description.is_none() {
             return Err(ConnectionError::Negotiation(
                 "SDP not complete for ICE".into(),
             ));
         }
 
-        // 1) Gathering (no-op if you already added locals when building SDP)
         self.ice_phase = IcePhase::Gathering;
         if self.ice_agent.local_candidates.is_empty() {
             self.ice_agent
@@ -273,26 +291,15 @@ impl ConnectionManager {
                 .map_err(|_| ConnectionError::IceAgent)?;
         }
 
-        // 2) Form all pairs
         self.ice_phase = IcePhase::Checking;
         self.ice_agent.form_candidate_pairs();
 
-        // 3) Connectivity checks (your simulated UDP flow)
-        self.ice_agent.run_connectivity_checks();
+        // Fire once; worker will keep re-sending
+        self.ice_agent.start_checks();
 
-        // 4) Nomination:
-        //    - Controlling -> select & mark nominated
-        //    - Controlled  -> wait for nomination (your `run_role_logic` simulates it)
-        self.ice_agent.run_role_logic();
-
-        if self.ice_agent.nominated_pair.is_some() {
-            self.ice_phase = IcePhase::Nominated;
-            Ok(())
-        } else {
-            Err(ConnectionError::Negotiation(
-                "no nominated pair after checks".into(),
-            ))
-        }
+        // Spawn background worker; return immediately (so Answer can be shown)
+        self.spawn_ice_worker();
+        Ok(())
     }
     fn set_ice_role_from_signaling(&mut self, we_are_offerer: bool, remote_is_ice_lite: bool) {
         self.ice_agent.role = if remote_is_ice_lite {
@@ -303,6 +310,148 @@ impl ConnectionManager {
         } else {
             Controlled
         };
+    }
+
+    pub fn run_ice_reactor_blocking(&mut self, total_ms: u64) {
+        let deadline = Instant::now() + Duration::from_millis(total_ms);
+
+        // Take a snapshot of sockets to avoid borrowing self.ice_agent during the loop
+        let sockets: Vec<Arc<UdpSocket>> = self
+            .ice_agent
+            .local_candidates
+            .iter()
+            .filter_map(|c| c.socket.clone())
+            .collect();
+
+        // Make reads snappy
+        for sock in &sockets {
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(40)));
+        }
+
+        let mut buf = [0u8; 1500];
+
+        while Instant::now() < deadline && self.ice_agent.nominated_pair.is_none() {
+            for sock in &sockets {
+                match sock.recv_from(&mut buf) {
+                    Ok((n, from)) => {
+                        self.ice_agent.handle_incoming_packet(&buf[..n], from);
+                        if self.ice_agent.nominated_pair.is_some() {
+                            break;
+                        }
+                    }
+                    Err(ref e)
+                        if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
+                    {
+                        // keep spinning
+                    }
+                    Err(e) => {
+                        eprintln!("ICE reactor recv error: {e}");
+                    }
+                }
+            }
+        }
+    }
+    fn spawn_ice_worker(&mut self) {
+        if self.ice_worker.is_some() {
+            return;
+        }
+
+        let (tx, rx) = channel();
+        self.ice_evt_tx = Some(tx.clone());
+        self.ice_evt_rx = Some(rx);
+
+        let run = Arc::clone(&self.ice_run_flag);
+        run.store(true, Ordering::SeqCst);
+
+        // Snapshot sockets
+        let sockets: Vec<Arc<std::net::UdpSocket>> = self
+            .ice_agent
+            .local_candidates
+            .iter()
+            .filter_map(|c| c.socket.clone())
+            .collect();
+
+        // Snapshot send targets per socket index
+        let mut targets_per_sock: Vec<Vec<SocketAddr>> = vec![Vec::new(); sockets.len()];
+        for pair in &self.ice_agent.candidate_pairs {
+            if let Some(ls) = &pair.local.socket {
+                if let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
+                    targets_per_sock[idx].push(pair.remote.address);
+                }
+            }
+        }
+
+        let handle = thread::spawn(move || {
+            let _ = sockets.iter().for_each(|s| {
+                let _ = s.set_nonblocking(true);
+            });
+            let mut buf = [0u8; 1500];
+            let mut last_tx = Instant::now();
+
+            // adjust as needed
+            let resend_every = Duration::from_millis(200);
+
+            loop {
+                if !run.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Drain inbound
+                for s in &sockets {
+                    loop {
+                        match s.recv_from(&mut buf) {
+                            Ok((n, from)) => {
+                                let _ = tx.send((buf[..n].to_vec(), from));
+                            }
+                            Err(ref e)
+                                if e.kind() == std::io::ErrorKind::WouldBlock
+                                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                            {
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+
+                // Periodic re-send BINDING-REQUEST
+                if last_tx.elapsed() >= resend_every {
+                    for (i, s) in sockets.iter().enumerate() {
+                        for &dst in &targets_per_sock[i] {
+                            let _ = s.send_to(BINDING_REQUEST, dst);
+                        }
+                    }
+                    last_tx = Instant::now();
+                }
+
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        self.ice_worker = Some(handle);
+    }
+
+    fn stop_ice_worker(&mut self) {
+        self.ice_run_flag.store(false, Ordering::SeqCst);
+        if let Some(h) = self.ice_worker.take() {
+            let _ = h.join();
+        }
+        self.ice_evt_tx = None;
+        self.ice_evt_rx = None;
+    }
+
+    /// Deliver packets from worker to the agent; stop when nominated.
+    pub fn drain_ice_events(&mut self) {
+        if let Some(rx) = &self.ice_evt_rx {
+            while let Ok((pkt, from)) = rx.try_recv() {
+                self.ice_agent.handle_incoming_packet(&pkt, from);
+            }
+        }
+        if self.ice_agent.nominated_pair.is_some() && !matches!(self.ice_phase, IcePhase::Nominated)
+        {
+            self.ice_phase = IcePhase::Nominated;
+            self.stop_ice_worker(); // optional: stop once we have a pair
+        }
     }
 }
 
