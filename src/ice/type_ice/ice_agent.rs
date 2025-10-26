@@ -4,8 +4,8 @@ use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
 use rand::{Rng, rngs::OsRng};
-use std::{io::Error, net::UdpSocket, time::Duration};
 use std::sync::Arc;
+use std::{io::Error, net::SocketAddr, net::UdpSocket, time::Duration};
 
 const NOMINATION_REQUEST: &[u8] = b"NOMINATE-BINDING-REQUEST";
 
@@ -15,8 +15,8 @@ const WHITESPACE: &str = " ";
 const QUOTE: &str = "\"";
 
 /// Mensajes simulados para los checks
-const BINDING_REQUEST: &[u8] = b"BINDING-REQUEST";
-const BINDING_RESPONSE: &[u8] = b"BINDING-RESPONSE";
+pub const BINDING_REQUEST: &[u8] = b"BINDING-REQUEST";
+pub const BINDING_RESPONSE: &[u8] = b"BINDING-RESPONSE";
 
 /// Configuration constants
 const MAX_PAIR_LIMIT: usize = 100; // reasonable upper bound to avoid combinatorial explosion
@@ -91,26 +91,24 @@ impl IceAgent {
     pub fn start_data_channel(&mut self) -> Result<(), String> {
         println!("🔹 Starting ICE data channel...");
 
-        // Validate the existence of a nominated pair
         if self.nominated_pair.is_none() {
-            return Err(String::from(
-                "Cannot start data channel: no nominated pair available.",
-            ));
+            return Err("Cannot start data channel: no nominated pair available.".into());
         }
 
-        // Open local socket 
-        let socket = match self.get_data_channel_socket() {
-            Ok(sock) => sock,
-            Err(e) => return Err(format!("Failed to open UDP channel: {}", e)),
-        };
+        let (socket, remote_addr) = self
+            .get_data_channel_socket()
+            .map_err(|e| format!("Failed to open UDP channel: {}", e))?;
 
-        // Send test message
-        if let Err(e) = self.send_test_message(&socket, "hola ICE") {
-            return Err(format!("Failed to send test message: {}", e));
-        }
+        // "Connect" the socket to nominate default peer
+        socket
+            .connect(remote_addr)
+            .map_err(|e| format!("Failed to connect UDP channel: {}", e))?;
 
-        // Waiting answer
-        match IceAgent::receive_test_message(&socket) {
+        // Note the &*socket to coerce Arc<UdpSocket> -> &UdpSocket
+        self.send_test_message(&*socket, "hola ICE")
+            .map_err(|e| format!("Failed to send test message: {}", e))?;
+
+        match IceAgent::receive_test_message(&*socket) {
             Ok(msg) if msg.contains("BINDING-ACK") => {
                 println!("ICE Data Channel established successfully!");
                 Ok(())
@@ -188,7 +186,6 @@ impl IceAgent {
         }
     }
 
-
     /// Returns a clone of the Arc'd UDP socket associated with the local candidate of the nominated pair.
     /// # Description
     /// This function provides access to the already bound UDP socket intended for the data channel.
@@ -199,34 +196,42 @@ impl IceAgent {
     ///
     /// # Error
     /// * `Err(String)` — If no nominated pair exists, the pair is not 'Succeeded', or the local candidate lacks a socket.
-    pub fn get_data_channel_socket(&self) -> Result<Arc<UdpSocket>, String> {
-        // Ensure we have a nominated pair
-        let pair = self.nominated_pair.as_ref().ok_or_else(|| {
-            String::from("No nominated pair available to get UDP channel socket.")
-        })?;
+    // in impl IceAgent
+    pub fn get_data_channel_socket(&self) -> Result<(Arc<UdpSocket>, SocketAddr), String> {
+        // 1) Must have a nominated pair recorded
+        let np = self
+            .nominated_pair
+            .as_ref()
+            .ok_or_else(|| "No nominated pair available to get UDP channel socket.".to_string())?;
 
-        // Check the pair is in valid state
-        if !matches!(pair.state, CandidatePairState::Succeeded) {
+        if !matches!(np.state, CandidatePairState::Succeeded) {
             return Err(format!(
                 "Cannot get UDP channel socket — pair not in Succeeded state (current: {:?})",
-                pair.state
+                np.state
             ));
         }
 
-        // Attempt to get the existing socket from the local candidate
-        match &pair.local.socket {
-            Some(socket_arc) => {
-                println!(
-                    "Retrieved existing UDP socket bound to {} (remote = {})",
-                    pair.local.address, pair.remote.address
-                );
-                Ok(socket_arc.clone()) // Devolvemos un clon del Arc
-            }
-            None => Err(format!(
-                "Nominated local candidate {} has no associated socket.",
-                pair.local.address
-            )),
-        }
+        // 2) Find the corresponding full pair (with socket) by addresses
+        let pair = self
+            .candidate_pairs
+            .iter()
+            .find(|p| p.local.address == np.local.address && p.remote.address == np.remote.address)
+            .ok_or_else(|| "Nominated pair not found in candidate_pairs.".to_string())?;
+
+        // 3) Extract socket and peer
+        let sock = pair
+            .local
+            .socket
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "Nominated local candidate {} has no associated socket.",
+                    pair.local.address
+                )
+            })?
+            .clone();
+
+        Ok((sock, pair.remote.address))
     }
 
     /// Executes role-specific logic according to ICE role.
@@ -409,7 +414,6 @@ impl IceAgent {
         count
     }
 
-
     /// Inicia los 'connectivity checks' para todos los pares en estado 'Waiting'.
     /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
     /// Cambia el estado de los pares a 'InProgress'.
@@ -445,7 +449,11 @@ impl IceAgent {
     /// * `packet` - Los bytes del paquete recibido.
     /// * `from_addr` - El SocketAddr de donde vino el paquete.
     pub fn handle_incoming_packet(&mut self, packet: &[u8], from_addr: SocketAddr) {
-        let Some(pair) = self.candidate_pairs.iter_mut().find(|p| p.remote.address == from_addr) else {
+        let Some(pair) = self
+            .candidate_pairs
+            .iter_mut()
+            .find(|p| p.remote.address == from_addr)
+        else {
             eprintln!("Paquete recibido de un 'remote' desconocido: {}", from_addr);
             return;
         };
@@ -454,22 +462,33 @@ impl IceAgent {
             println!("Received BINDING-RESPONSE from {}", from_addr);
             if !matches!(pair.state, CandidatePairState::Succeeded) {
                 pair.state = CandidatePairState::Succeeded;
-                println!("Par actualizado a Succeeded: [local={}, remote={}]", pair.local.address, pair.remote.address);
+                println!(
+                    "Par actualizado a Succeeded: [local={}, remote={}]",
+                    pair.local.address, pair.remote.address
+                );
 
                 if self.role == IceRole::Controlling {
                     let should_nominate = match &self.nominated_pair {
-                        None => true, 
-                        Some(current_nominated) => pair.priority > current_nominated.priority, 
+                        None => true,
+                        Some(current_nominated) => pair.priority > current_nominated.priority,
                     };
 
                     if should_nominate {
-                        println!("Nominating pair: [local={}, remote={}]", pair.local.address, pair.remote.address);
+                        println!(
+                            "Nominating pair: [local={}, remote={}]",
+                            pair.local.address, pair.remote.address
+                        );
                         pair.is_nominated = true;
                         self.nominated_pair = Some(pair.clone_light());
 
                         if let Some(local_sock) = &pair.local.socket {
-                            if let Err(e) = local_sock.send_to(NOMINATION_REQUEST, pair.remote.address) {
-                                eprintln!("Error sending NOMINATION_REQUEST to {}: {}", pair.remote.address, e);
+                            if let Err(e) =
+                                local_sock.send_to(NOMINATION_REQUEST, pair.remote.address)
+                            {
+                                eprintln!(
+                                    "Error sending NOMINATION_REQUEST to {}: {}",
+                                    pair.remote.address, e
+                                );
                             } else {
                                 println!("Sent NOMINATION_REQUEST to {}", pair.remote.address);
                             }
@@ -479,22 +498,30 @@ impl IceAgent {
                     }
                 }
             }
-        } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST { 
-
+        } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST {
             if self.role == IceRole::Controlled && packet == NOMINATION_REQUEST {
                 println!("Received NOMINATION_REQUEST from {}", from_addr);
-                if self.nominated_pair.as_ref().map_or(true, |np| np.local.address != pair.local.address || np.remote.address != pair.remote.address) {
+                if self.nominated_pair.as_ref().map_or(true, |np| {
+                    np.local.address != pair.local.address
+                        || np.remote.address != pair.remote.address
+                }) {
                     pair.is_nominated = true;
-                    pair.state = CandidatePairState::Succeeded; 
-                    self.nominated_pair = Some(pair.clone_light()); 
-                    println!("Pair nominated by peer: [local={}, remote={}]", pair.local.address, pair.remote.address);
+                    pair.state = CandidatePairState::Succeeded;
+                    self.nominated_pair = Some(pair.clone_light());
+                    println!(
+                        "Pair nominated by peer: [local={}, remote={}]",
+                        pair.local.address, pair.remote.address
+                    );
                 }
             } else {
                 println!("Received BINDING-REQUEST from {}", from_addr);
             }
 
             let Some(local_sock) = &pair.local.socket else {
-                eprintln!("No socket para responder al BINDING-REQUEST: {}", pair.local.address);
+                eprintln!(
+                    "No socket para responder al BINDING-REQUEST: {}",
+                    pair.local.address
+                );
                 return;
             };
             if let Err(e) = local_sock.send_to(BINDING_RESPONSE, from_addr) {
@@ -567,7 +594,6 @@ impl IceAgent {
             .collect()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -651,17 +677,13 @@ mod tests {
         const EXPECTED_ERROR_MSG: &str = "Should fail if no nominated peer is configured";
         let ip_address = "127.0.0.1:0";
         let msg = "hola ICE";
-        
 
         let agent = IceAgent::new(IceRole::Controlling);
         let socket = UdpSocket::bind(ip_address).unwrap();
 
         let result = agent.send_test_message(&socket, msg);
 
-        assert!(
-            result.is_err(),
-            "{EXPECTED_ERROR_MSG}"
-        );
+        assert!(result.is_err(), "{EXPECTED_ERROR_MSG}");
     }
 
     #[test]
@@ -718,40 +740,30 @@ mod tests {
         };
         agent.nominated_pair = Some(pair);
 
-<<<<<<< HEAD
-        let send_result = agent.send_test_message(&socket_a, "hola ICE");
-        assert!(
-            send_result.is_ok(),
-            "El envío debe completarse correctamente"
-        );
-=======
         let send_result = agent.send_test_message(&socket_a, msg_send);
         assert!(send_result.is_ok(), "{ERROR_MSG1}");
->>>>>>> 01fabaef3c14496dd7922b6e1db7949fdaa9358a
 
         let recv_result = IceAgent::receive_test_message(&socket_a);
-        assert!(
-            recv_result.is_ok(),
-            "{ERROR_MSG2}"
-        );
-        
+        assert!(recv_result.is_ok(), "{ERROR_MSG2}");
+
         let msg = recv_result.unwrap();
         assert_eq!(msg, BINDING_ACK, "{ERROR_MSG3}");
     }
 
     #[test]
     fn test_get_data_channel_socket_ok() {
-        const EXPECTED_ERROR_MSG: &str = "Should retrieve socket successfully when pair is Succeeded"; 
+        const EXPECTED_ERROR_MSG: &str =
+            "Should retrieve socket successfully when pair is Succeeded";
 
         let mut agent = IceAgent::new(IceRole::Controlling);
 
         let local_candidate = mock_candidate_with_socket("127.0.0.1", 0);
-        let remote_candidate = mock_candidate_with_socket("127.0.0.1", 0); 
-        let local_addr = local_candidate.address; 
+        let remote_candidate = mock_candidate_with_socket("127.0.0.1", 0);
+        let local_addr = local_candidate.address;
 
         let mut pair = CandidatePair::new(local_candidate, remote_candidate, 100);
         pair.state = CandidatePairState::Succeeded;
-        pair.is_nominated = true; 
+        pair.is_nominated = true;
 
         agent.nominated_pair = Some(pair);
 
@@ -765,7 +777,11 @@ mod tests {
         );
 
         let socket_arc = result.unwrap();
-        assert_eq!(socket_arc.local_addr().unwrap(), local_addr, "The retrieved socket has the wrong local address");
+        assert_eq!(
+            socket_arc.local_addr().unwrap(),
+            local_addr,
+            "The retrieved socket has the wrong local address"
+        );
     }
 
     #[test]
@@ -814,26 +830,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-    fn test_agent_with_role_controlled_marks_first_pair_as_nominated_ok() {
-        const EXPECTED_ERROR_MSG1: &str = "Must simulate nomination reception in Controlled mode";
-        const EXPECTED_ERROR_MSG2: &str = "The first pair should be marked as nominated";
-        let mut agent = IceAgent::new(IceRole::Controlled);
-        let p = mock_pair_with_states(CandidatePairState::Succeeded);
-        agent.candidate_pairs = vec![p];
-
-        agent.run_role_logic();
-
-        assert!(agent.nominated_pair.is_some(), "{EXPECTED_ERROR_MSG1}");
-        assert!(
-            agent.candidate_pairs[0].is_nominated,
-            "{EXPECTED_ERROR_MSG2}"
-        );
-    }
-
-    #[test]
-=======
->>>>>>> 01fabaef3c14496dd7922b6e1db7949fdaa9358a
     fn test_nominate_valid_pair_with_highest_priority_ok() {
         let mut agent = IceAgent::new(IceRole::Controlling);
 
@@ -984,34 +980,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-    fn test_run_connectivity_checks_all_succeed_ok() {
-        const EXPECTED_ERROR_MSG: &str = "At least one candidate pair should succeed locally";
-        let ip_address = "127.0.0.1";
-        let port = 0;
-
-        let mut agent = IceAgent::new(IceRole::Controlling);
-        let local = mock_candidate_with_socket(ip_address, port);
-        let remote = mock_candidate_with_socket(ip_address, port);
-
-        agent.local_candidates = vec![local];
-        agent.remote_candidates = vec![remote];
-        agent.form_candidate_pairs();
-
-        agent.run_connectivity_checks();
-
-        assert!(
-            agent
-                .candidate_pairs
-                .iter()
-                .any(|p| matches!(p.state, CandidatePairState::Succeeded)),
-            "{EXPECTED_ERROR_MSG}"
-        );
-    }
-
-    #[test]
-=======
->>>>>>> 01fabaef3c14496dd7922b6e1db7949fdaa9358a
     fn test_run_connectivity_checks_local_candidate_without_socket_error() {
         const EXPECTED_ERROR_MSG: &str = "Pair, with local candidate without socket must fail";
         let ip_address = "127.0.0.1:9999";
@@ -1215,7 +1183,6 @@ mod tests {
         let local = mock_candidate_with_socket(ip_address, port);
         let remote = mock_candidate_with_socket(ip_address, port);
 
-
         let remote_sock = remote.socket.as_ref().unwrap().clone();
         let handle = thread::spawn(move || {
             let mut buf = [0u8; 64];
@@ -1234,7 +1201,9 @@ mod tests {
 
         let mut buf = [0u8; 64];
         let local_sock = agent.candidate_pairs[0].local.socket.as_ref().unwrap();
-        local_sock.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+        local_sock
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
 
         if let Ok((bytes, src)) = local_sock.recv_from(&mut buf) {
             agent.handle_incoming_packet(&buf[..bytes], src);
@@ -1243,7 +1212,10 @@ mod tests {
         }
 
         assert!(
-            matches!(agent.candidate_pairs[0].state, CandidatePairState::Succeeded),
+            matches!(
+                agent.candidate_pairs[0].state,
+                CandidatePairState::Succeeded
+            ),
             "El par de candidatos debería estar en estado 'Succeeded' después de recibir una respuesta"
         );
 
@@ -1262,44 +1234,72 @@ mod tests {
         let mut controlled_agent = IceAgent::new(IceRole::Controlled);
 
         let controlling_local = mock_candidate_with_socket(ip_address, port);
-        let controlled_remote_candidate = controlling_local.clone_light(); 
-        let controlled_local = mock_candidate_with_socket(ip_address, port); 
+        let controlled_remote_candidate = controlling_local.clone_light();
+        let controlled_local = mock_candidate_with_socket(ip_address, port);
 
         controlling_agent.local_candidates = vec![controlling_local.clone()];
-        controlling_agent.remote_candidates = vec![controlled_local.clone_light()]; 
+        controlling_agent.remote_candidates = vec![controlled_local.clone_light()];
         controlled_agent.local_candidates = vec![controlled_local.clone()];
-        controlled_agent.remote_candidates = vec![controlled_remote_candidate]; 
+        controlled_agent.remote_candidates = vec![controlled_remote_candidate];
 
         controlling_agent.form_candidate_pairs();
         controlled_agent.form_candidate_pairs();
 
-        assert!(!controlling_agent.candidate_pairs.is_empty(), "Controlling agent should form pairs");
-        assert!(!controlled_agent.candidate_pairs.is_empty(), "Controlled agent should form pairs");
+        assert!(
+            !controlling_agent.candidate_pairs.is_empty(),
+            "Controlling agent should form pairs"
+        );
+        assert!(
+            !controlled_agent.candidate_pairs.is_empty(),
+            "Controlled agent should form pairs"
+        );
 
-        let controlling_socket = controlling_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
-        let controlling_local_addr = controlling_agent.candidate_pairs[0].local.address; 
-        let controlled_socket = controlled_agent.candidate_pairs[0].local.socket.as_ref().unwrap().clone();
+        let controlling_socket = controlling_agent.candidate_pairs[0]
+            .local
+            .socket
+            .as_ref()
+            .unwrap()
+            .clone();
+        let controlling_local_addr = controlling_agent.candidate_pairs[0].local.address;
+        let controlled_socket = controlled_agent.candidate_pairs[0]
+            .local
+            .socket
+            .as_ref()
+            .unwrap()
+            .clone();
 
         let controlled_handle = thread::spawn(move || {
             let mut buf = [0u8; 128];
             loop {
-                controlled_socket.set_read_timeout(Some(Duration::from_millis(200))).expect("Failed to set read timeout on controlled socket");
+                controlled_socket
+                    .set_read_timeout(Some(Duration::from_millis(200)))
+                    .expect("Failed to set read timeout on controlled socket");
                 match controlled_socket.recv_from(&mut buf) {
                     Ok((size, src)) => {
                         let request = &buf[..size];
                         if request == BINDING_REQUEST || request == NOMINATION_REQUEST {
-                            println!("[Controlled Echo] Received request from {}, sending BINDING_RESPONSE", src);
-                            controlled_socket.send_to(BINDING_RESPONSE, src).expect("Controlled failed to send response");
+                            println!(
+                                "[Controlled Echo] Received request from {}, sending BINDING_RESPONSE",
+                                src
+                            );
+                            controlled_socket
+                                .send_to(BINDING_RESPONSE, src)
+                                .expect("Controlled failed to send response");
                             if request == NOMINATION_REQUEST {
-                                println!("[Controlled Echo] Received NOMINATION_REQUEST, stopping echo.");
-                                break; 
+                                println!(
+                                    "[Controlled Echo] Received NOMINATION_REQUEST, stopping echo."
+                                );
+                                break;
                             }
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
                         println!("[Controlled Echo] Timeout waiting for request, stopping echo.");
                         break;
-                    },
+                    }
                     Err(e) => {
                         eprintln!("[Controlled Echo] Error receiving: {}", e);
                         break;
@@ -1310,27 +1310,67 @@ mod tests {
 
         controlling_agent.start_checks();
 
-        thread::sleep(Duration::from_millis(50)); 
+        thread::sleep(Duration::from_millis(50));
         let mut buf_controlling = [0u8; 128];
-        controlling_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        controlling_socket
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         match controlling_socket.recv_from(&mut buf_controlling) {
             Ok((bytes, src)) => {
                 controlling_agent.handle_incoming_packet(&buf_controlling[..bytes], src);
             }
-            Err(e) => panic!("Controlling agent failed to receive BINDING_RESPONSE: {}", e),
+            Err(e) => panic!(
+                "Controlling agent failed to receive BINDING_RESPONSE: {}",
+                e
+            ),
         }
 
-        assert!(controlling_agent.nominated_pair.is_some(), "Controlling agent should have nominated a pair");
-        assert!(controlling_agent.candidate_pairs[0].is_nominated, "Controlling agent's pair should be marked nominated");
+        assert!(
+            controlling_agent.nominated_pair.is_some(),
+            "Controlling agent should have nominated a pair"
+        );
+        assert!(
+            controlling_agent.candidate_pairs[0].is_nominated,
+            "Controlling agent's pair should be marked nominated"
+        );
 
-        thread::sleep(Duration::from_millis(50)); 
+        thread::sleep(Duration::from_millis(50));
 
-        controlled_agent.handle_incoming_packet(NOMINATION_REQUEST, controlling_local_addr); 
-        assert!(controlled_agent.nominated_pair.is_some(), "Controlled agent should have accepted nomination");
-        assert!(controlled_agent.candidate_pairs.iter().any(|p| p.is_nominated), "At least one pair should be nominated on controlled agent");
-        assert_eq!(controlled_agent.nominated_pair.as_ref().unwrap().local.address, controlled_agent.candidate_pairs[0].local.address, "Controlled nominated wrong pair (local mismatch)");
-        assert_eq!(controlled_agent.nominated_pair.as_ref().unwrap().remote.address, controlling_local_addr, "Controlled nominated wrong pair (remote mismatch)"); 
+        controlled_agent.handle_incoming_packet(NOMINATION_REQUEST, controlling_local_addr);
+        assert!(
+            controlled_agent.nominated_pair.is_some(),
+            "Controlled agent should have accepted nomination"
+        );
+        assert!(
+            controlled_agent
+                .candidate_pairs
+                .iter()
+                .any(|p| p.is_nominated),
+            "At least one pair should be nominated on controlled agent"
+        );
+        assert_eq!(
+            controlled_agent
+                .nominated_pair
+                .as_ref()
+                .unwrap()
+                .local
+                .address,
+            controlled_agent.candidate_pairs[0].local.address,
+            "Controlled nominated wrong pair (local mismatch)"
+        );
+        assert_eq!(
+            controlled_agent
+                .nominated_pair
+                .as_ref()
+                .unwrap()
+                .remote
+                .address,
+            controlling_local_addr,
+            "Controlled nominated wrong pair (remote mismatch)"
+        );
 
-        controlled_handle.join().expect("Controlled echo thread panicked");
+        controlled_handle
+            .join()
+            .expect("Controlled echo thread panicked");
     }
 }

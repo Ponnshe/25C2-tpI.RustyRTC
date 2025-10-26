@@ -1,7 +1,5 @@
 use super::{conn_state::ConnState, gui_error::GuiError};
-use crate::connection_manager::{
-    ConnectionManager, OutboundSdp, connection_error::ConnectionError,
-};
+use crate::connection_manager::{ConnectionManager, OutboundSdp};
 use eframe::{App, Frame, egui};
 use std::{
     collections::VecDeque,
@@ -118,26 +116,24 @@ impl RtcApp {
 
     fn start_connection(&mut self) -> Result<(), GuiError> {
         if self.conn_manager.ice_agent.nominated_pair.is_none() {
-            self.conn_manager
-                .start_connectivity_checks()
-                .map_err(|e| GuiError::Connection(format!("ICE: {e}").into()))?;
+            self.status = "Waiting for ICE nomination…".into();
+            return Ok(());
         }
 
         let (socket, peer_addr) = self
             .conn_manager
             .ice_agent
-            .nominated_socket_arc()
+            .get_data_channel_socket()
             .map_err(|e| GuiError::Connection(format!("nominated socket: {e}").into()))?;
 
-        // "Connect" the UDP socket (sets default peer); method takes &self, works via Arc
         socket
             .connect(peer_addr)
             .map_err(|e| GuiError::Connection(format!("socket.connect: {e}").into()))?;
 
-        // optional ping (takes &UdpSocket so Arc works fine)
+        // NOTE: pass &*socket (Arc<UdpSocket> -> &UdpSocket)
         self.conn_manager
             .ice_agent
-            .send_test_message(&socket, "hello from UI")
+            .send_test_message(&*socket, "hello from UI")
             .map_err(|e| GuiError::Connection(format!("send_test_message: {e}").into()))?;
 
         let tag = if self.i_am_offerer {
@@ -216,6 +212,14 @@ impl RtcApp {
 
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.conn_manager.drain_ice_events();
+
+        if self.conn_manager.ice_agent.nominated_pair.is_some()
+            && matches!(self.conn_state, ConnState::Idle | ConnState::Stopped)
+        {
+            self.status = "ICE nominated a pair. You can Start Connection now.".into();
+        }
+
         while let Ok(line) = self.log_rx.try_recv() {
             if self.logs.len() == 256 {
                 self.logs.pop_front();
