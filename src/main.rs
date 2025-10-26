@@ -1,5 +1,5 @@
 use eframe;
-use rustyrtc::gui::rtc_app::RtcApp;
+use rustyrtc::app::rtc_app::RtcApp;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions::default();
