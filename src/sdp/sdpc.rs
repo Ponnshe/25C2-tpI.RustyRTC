@@ -344,12 +344,6 @@ fn split_line(line: &str) -> Option<(&str, &str)> {
     Some((it.next()?, it.next()?))
 }
 
-pub(crate) fn push_crlf(out: &mut String, args: std::fmt::Arguments) {
-    use std::fmt::Write as _;
-    let _ = out.write_fmt(args);
-    let _ = out.write_str("\r\n");
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
