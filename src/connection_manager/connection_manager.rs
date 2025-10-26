@@ -2,6 +2,7 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, signaling_state::SignalingState,
 };
+use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::type_ice::ice_agent::{BINDING_REQUEST, IceAgent, IceRole};
 use crate::ice::{
     gathering_service,
@@ -44,11 +45,7 @@ pub struct ConnectionManager {
     remote_description: Option<Sdp>,
     ice_phase: IcePhase,
 
-    // NEW: async ICE worker plumbing
-    ice_evt_tx: Option<Sender<(Vec<u8>, SocketAddr)>>,
-    ice_evt_rx: Option<Receiver<(Vec<u8>, SocketAddr)>>,
-    ice_run_flag: Arc<AtomicBool>,
-    ice_worker: Option<thread::JoinHandle<()>>,
+    ice_worker: Option<IceWorker>,
 }
 
 impl ConnectionManager {
@@ -60,9 +57,6 @@ impl ConnectionManager {
             local_description: None,
             remote_description: None,
             ice_phase: IcePhase::Idle,
-            ice_evt_tx: None,
-            ice_evt_rx: None,
-            ice_run_flag: Arc::new(AtomicBool::new(false)),
             ice_worker: None,
         }
     }
@@ -355,102 +349,26 @@ impl ConnectionManager {
         if self.ice_worker.is_some() {
             return;
         }
-
-        let (tx, rx) = channel();
-        self.ice_evt_tx = Some(tx.clone());
-        self.ice_evt_rx = Some(rx);
-
-        let run = Arc::clone(&self.ice_run_flag);
-        run.store(true, Ordering::SeqCst);
-
-        // Snapshot sockets
-        let sockets: Vec<Arc<std::net::UdpSocket>> = self
-            .ice_agent
-            .local_candidates
-            .iter()
-            .filter_map(|c| c.socket.clone())
-            .collect();
-
-        // Snapshot send targets per socket index
-        let mut targets_per_sock: Vec<Vec<SocketAddr>> = vec![Vec::new(); sockets.len()];
-        for pair in &self.ice_agent.candidate_pairs {
-            if let Some(ls) = &pair.local.socket {
-                if let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
-                    targets_per_sock[idx].push(pair.remote.address);
-                }
-            }
-        }
-
-        let handle = thread::spawn(move || {
-            let _ = sockets.iter().for_each(|s| {
-                let _ = s.set_nonblocking(true);
-            });
-            let mut buf = [0u8; 1500];
-            let mut last_tx = Instant::now();
-
-            // adjust as needed
-            let resend_every = Duration::from_millis(200);
-
-            loop {
-                if !run.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                // Drain inbound
-                for s in &sockets {
-                    loop {
-                        match s.recv_from(&mut buf) {
-                            Ok((n, from)) => {
-                                let _ = tx.send((buf[..n].to_vec(), from));
-                            }
-                            Err(ref e)
-                                if e.kind() == std::io::ErrorKind::WouldBlock
-                                    || e.kind() == std::io::ErrorKind::TimedOut =>
-                            {
-                                break;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                }
-
-                // Periodic re-send BINDING-REQUEST
-                if last_tx.elapsed() >= resend_every {
-                    for (i, s) in sockets.iter().enumerate() {
-                        for &dst in &targets_per_sock[i] {
-                            let _ = s.send_to(BINDING_REQUEST, dst);
-                        }
-                    }
-                    last_tx = Instant::now();
-                }
-
-                thread::sleep(Duration::from_millis(20));
-            }
-        });
-
-        self.ice_worker = Some(handle);
+        self.ice_worker = Some(IceWorker::spawn(&self.ice_agent));
     }
 
     fn stop_ice_worker(&mut self) {
-        self.ice_run_flag.store(false, Ordering::SeqCst);
-        if let Some(h) = self.ice_worker.take() {
-            let _ = h.join();
+        if let Some(w) = &mut self.ice_worker {
+            w.stop();
         }
-        self.ice_evt_tx = None;
-        self.ice_evt_rx = None;
+        self.ice_worker = None;
     }
 
-    /// Deliver packets from worker to the agent; stop when nominated.
     pub fn drain_ice_events(&mut self) {
-        if let Some(rx) = &self.ice_evt_rx {
-            while let Ok((pkt, from)) = rx.try_recv() {
+        if let Some(w) = &self.ice_worker {
+            while let Some((pkt, from)) = w.try_recv() {
                 self.ice_agent.handle_incoming_packet(&pkt, from);
             }
         }
         if self.ice_agent.nominated_pair.is_some() && !matches!(self.ice_phase, IcePhase::Nominated)
         {
             self.ice_phase = IcePhase::Nominated;
-            self.stop_ice_worker(); // optional: stop once we have a pair
+            self.stop_ice_worker(); // optional: stop once nominated
         }
     }
 }
