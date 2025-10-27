@@ -3,7 +3,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{Receiver, Sender},
     },
     time::{Duration, Instant},
 };
@@ -15,7 +15,6 @@ use crate::rtp::rtcp::{
     self, ReceiverReport, ReportBlock, RtcpPacket, Sdes, SdesItem, SenderReport,
 };
 use crate::rtp::rtp_packet::{RtpHeader, RtpPacket, SeqExt};
-use crate::rtp::time::ntp_now;
 
 #[derive(Debug, Clone)]
 pub struct RtpConfig {

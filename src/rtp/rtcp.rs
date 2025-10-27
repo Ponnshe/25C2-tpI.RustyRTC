@@ -23,7 +23,7 @@ pub struct ReportBlock {
     pub ssrc: u32,
     pub fraction_lost: u8,
     pub cumulative_lost: u32, // 24-bit stored into u32
-    pub highest_seq: u32,
+    pub ext_highest_seq: u32,
     pub jitter: u32,
     pub lsr: u32,
     pub dlsr: u32,
@@ -158,7 +158,7 @@ fn encode_report_block(r: &ReportBlock) -> [u8; 24] {
     out[5] = ((cl >> 16) & 0xFF) as u8;
     out[6] = ((cl >> 8) & 0xFF) as u8;
     out[7] = (cl & 0xFF) as u8;
-    out[8..12].copy_from_slice(&r.highest_seq.to_be_bytes());
+    out[8..12].copy_from_slice(&r.ext_highest_seq.to_be_bytes());
     out[12..16].copy_from_slice(&r.jitter.to_be_bytes());
     out[16..20].copy_from_slice(&r.lsr.to_be_bytes());
     out[20..24].copy_from_slice(&r.dlsr.to_be_bytes());

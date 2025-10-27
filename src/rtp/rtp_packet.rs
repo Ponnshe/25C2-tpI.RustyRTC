@@ -1,4 +1,7 @@
-use std::io;
+use std::{
+    io::Error,
+    io::{self, ErrorKind},
+};
 
 #[derive(Debug, Clone)]
 pub struct RtpHeader {
@@ -61,13 +64,13 @@ impl RtpPacket {
 
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < 12 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "rtp<12"));
+            return Err(Error::new(ErrorKind::UnexpectedEof, "rtp<12"));
         }
         let b0 = bytes[0];
         let b1 = bytes[1];
         let version = b0 >> 6;
         if version != 2 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "rtp v!=2"));
+            return Err(Error::new(ErrorKind::InvalidData, "rtp v!=2"));
         }
         let padding = (b0 & 0x20) != 0;
         let extension = (b0 & 0x10) != 0;
@@ -81,7 +84,7 @@ impl RtpPacket {
         let mut csrc = Vec::with_capacity(csrc_count as usize);
         for _ in 0..csrc_count {
             if bytes.len() < offset + 4 {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "rtp csrc"));
+                return Err(Error::new(ErrorKind::UnexpectedEof, "rtp csrc"));
             }
             csrc.push(u32::from_be_bytes([
                 bytes[offset],
@@ -92,8 +95,8 @@ impl RtpPacket {
             offset += 4;
         }
         if extension {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(Error::new(
+                ErrorKind::InvalidData,
                 "rtp hdr ext not supported",
             ));
         }
@@ -124,20 +127,3 @@ impl RtpPacket {
 }
 
 /// Helpers for extended sequence (wrap tracking)
-#[derive(Debug, Default, Clone)]
-pub struct SeqExt {
-    pub cycles: u32,
-    pub max_seq: u16,
-}
-impl SeqExt {
-    pub fn update(&mut self, seq: u16) -> u32 {
-        // RFC3550 A.1 seq wrap
-        if seq < self.max_seq && (self.max_seq - seq) > 0x8000 {
-            self.cycles = self.cycles.wrapping_add(1 << 16);
-        }
-        if seq > self.max_seq {
-            self.max_seq = seq;
-        }
-        self.cycles | seq as u32
-    }
-}
