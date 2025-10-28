@@ -10,6 +10,21 @@ pub struct SenderInfo {
 }
 
 impl SenderInfo {
+    pub fn new(
+        ntp_msw: u32,
+        ntp_lsw: u32,
+        rtp_ts: u32,
+        packet_count: u32,
+        octet_count: u32,
+    ) -> Self {
+        Self {
+            ntp_msw,
+            ntp_lsw,
+            rtp_ts,
+            packet_count,
+            octet_count,
+        }
+    }
     pub fn decode(buf: &[u8]) -> Result<(Self, usize), RtcpError> {
         if buf.len() < 20 {
             return Err(RtcpError::TooShort);

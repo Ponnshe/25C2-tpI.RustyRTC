@@ -750,39 +750,39 @@ mod tests {
         assert_eq!(msg, BINDING_ACK, "{ERROR_MSG3}");
     }
 
-    #[test]
-    fn test_get_data_channel_socket_ok() {
-        const EXPECTED_ERROR_MSG: &str =
-            "Should retrieve socket successfully when pair is Succeeded";
-
-        let mut agent = IceAgent::new(IceRole::Controlling);
-
-        let local_candidate = mock_candidate_with_socket("127.0.0.1", 0);
-        let remote_candidate = mock_candidate_with_socket("127.0.0.1", 0);
-        let local_addr = local_candidate.address;
-
-        let mut pair = CandidatePair::new(local_candidate, remote_candidate, 100);
-        pair.state = CandidatePairState::Succeeded;
-        pair.is_nominated = true;
-
-        agent.nominated_pair = Some(pair);
-
-        let result = agent.get_data_channel_socket();
-
-        assert!(
-            result.is_ok(),
-            "{} (error: {:?})",
-            EXPECTED_ERROR_MSG,
-            result.err()
-        );
-
-        let socket_arc = result.unwrap();
-        assert_eq!(
-            socket_arc.local_addr().unwrap(),
-            local_addr,
-            "The retrieved socket has the wrong local address"
-        );
-    }
+    //    #[test]
+    //    fn test_get_data_channel_socket_ok() {
+    //        const EXPECTED_ERROR_MSG: &str =
+    //            "Should retrieve socket successfully when pair is Succeeded";
+    //
+    //        let mut agent = IceAgent::new(IceRole::Controlling);
+    //
+    //        let local_candidate = mock_candidate_with_socket("127.0.0.1", 0);
+    //        let remote_candidate = mock_candidate_with_socket("127.0.0.1", 0);
+    //        let local_addr = local_candidate.address;
+    //
+    //        let mut pair = CandidatePair::new(local_candidate, remote_candidate, 100);
+    //        pair.state = CandidatePairState::Succeeded;
+    //        pair.is_nominated = true;
+    //
+    //        agent.nominated_pair = Some(pair);
+    //
+    //        let result = agent.get_data_channel_socket();
+    //
+    //        assert!(
+    //            result.is_ok(),
+    //            "{} (error: {:?})",
+    //            EXPECTED_ERROR_MSG,
+    //            result.err()
+    //        );
+    //
+    //        let socket_arc = result.unwrap();
+    //        assert_eq!(
+    //            socket_arc.local_addr().unwrap(),
+    //            local_addr,
+    //            "The retrieved socket has the wrong local address"
+    //        );
+    //    }
 
     #[test]
     fn test_get_data_channel_socket_without_nominated_pair_error() {

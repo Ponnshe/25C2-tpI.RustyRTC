@@ -3,7 +3,7 @@ use super::{
     outbound_sdp::OutboundSdp, signaling_state::SignalingState,
 };
 use crate::connection_manager::ice_worker::IceWorker;
-use crate::ice::type_ice::ice_agent::{BINDING_REQUEST, IceAgent, IceRole};
+use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::ice::{
     gathering_service,
     type_ice::ice_agent::IceRole::{Controlled, Controlling},
@@ -19,13 +19,8 @@ use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
 use std::{
     io::ErrorKind,
-    net::{SocketAddr, UdpSocket},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender, channel},
-    },
-    thread,
+    net::UdpSocket,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
