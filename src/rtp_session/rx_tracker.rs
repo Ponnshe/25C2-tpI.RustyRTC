@@ -1,5 +1,6 @@
 use super::seq_ext::SeqExt;
-use crate::rtp::rtcp::ReportBlock;
+use super::time;
+use crate::rtcp::report_block::ReportBlock;
 
 #[derive(Debug, Default, Clone)]
 pub struct RxTracker {
@@ -86,9 +87,9 @@ impl RxTracker {
         ReportBlock {
             ssrc,
             fraction_lost,
-            cumulative_lost: (cumulative_lost_i64 as i32 as u32) & 0x00FF_FFFF,
-            ext_highest_seq: self.highest_ext_seq,
-            jitter: self.jitter,
+            cumulative_lost: (cumulative_lost_i64 as i32) & 0x00FF_FFFF,
+            highest_seq_no_received: self.highest_ext_seq,
+            interarrival_jitter: self.jitter,
             lsr,
             dlsr,
         }
@@ -100,6 +101,6 @@ fn ntp_compact(secs: u32, frac: u32) -> u32 {
     ((secs & 0xFFFF) << 16) | (frac >> 16)
 }
 fn now_ntp_compact() -> u32 {
-    let (s, f) = crate::rtp::time::ntp_now();
+    let (s, f) = time::ntp_now();
     ntp_compact(s, f)
 }
