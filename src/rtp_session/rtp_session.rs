@@ -2,21 +2,21 @@ use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender},
-        Arc, Mutex,
     },
+    thread,
     time::Duration,
 };
 
-use rand::{rngs::OsRng, RngCore};
-
-use crate::core::events::EngineEvent;
-use super::{rtp_send_config, rtp_send_stream, rtp_recv_stream, rtp_recv_config}
-use crate::rtp::{
-    rtcp::{self, ReceiverReport, ReportBlock, Sdes, SdesItem},
-    time::ntp_now,
+use super::{
+    rtp_recv_config::RtpRecvConfig, rtp_recv_stream::RtpRecvStream, rtp_send_config::RtpSendConfig,
+    rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
+use crate::core::events::EngineEvent;
+use crate::rtcp::rtcp::RtcpPacket;
+use rand::{RngCore, rngs::OsRng};
 
 pub struct RtpSession {
     sock: Arc<UdpSocket>,
@@ -44,8 +44,8 @@ impl RtpSession {
         peer: SocketAddr,
         tx_evt: Sender<EngineEvent>,
         rx_media: Receiver<Vec<u8>>,
-        initial_recv: Vec<RecvStreamInfo>,      // can be empty
-        initial_send: Vec<SendStreamInfo>,      // can be empty
+        initial_recv: Vec<RecvStreamInfo>, // can be empty
+        initial_send: Vec<SendStreamInfo>, // can be empty
     ) -> Self {
         let recv_map = HashMap::new();
         let send_map = HashMap::new();
@@ -75,10 +75,12 @@ impl RtpSession {
 
     pub fn add_recv_stream(&mut self, cfg: RtpRecvConfig) {
         if let Some(ssrc) = cfg.remote_ssrc {
-            let st = RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
+            let st =
+                RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
             self.recv_streams.lock().unwrap().insert(ssrc, st);
         } else {
-            let st = RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
+            let st =
+                RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
             self.pending_recv.lock().unwrap().push(st);
         }
     }
@@ -89,7 +91,6 @@ impl RtpSession {
         self.send_streams.lock().unwrap().insert(ssrc, st);
     }
 
-
     pub fn start(&mut self) {
         self.run.store(true, Ordering::SeqCst);
 
@@ -98,23 +99,31 @@ impl RtpSession {
         let rx = self.rx_media.take().expect("start() must be called once");
         let recv_map = Arc::clone(&self.recv_streams);
         let tx_evt = self.tx_evt.clone();
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             while run.load(Ordering::SeqCst) {
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(pkt) => {
-                        if pkt.len() < 2 { continue; }
+                        if pkt.len() < 2 {
+                            continue;
+                        }
                         if is_rtcp(&pkt) {
                             handle_rtcp(&pkt, &recv_map, &tx_evt);
                             continue;
                         }
                         // RTP fast-path
-                        if pkt.len() < 12 { continue; }
-                        if (pkt[0] >> 6) != 2 { continue; } // RTP v2
+                        if pkt.len() < 12 {
+                            continue;
+                        }
+                        if (pkt[0] >> 6) != 2 {
+                            continue;
+                        } // RTP v2
                         let ssrc = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
                         if let Some(st) = recv_map.lock().unwrap().get_mut(&ssrc) {
                             st.handle_packet(&pkt);
                         } else {
-                            let _ = tx_evt.send(EngineEvent::Log(format!("[RTP] unknown remote SSRC={ssrc}")));
+                            let _ = tx_evt.send(EngineEvent::Log(format!(
+                                "[RTP] unknown remote SSRC={ssrc}"
+                            )));
                             // (optional) auto-create stream here if desired.
                         }
                     }
@@ -133,7 +142,7 @@ impl RtpSession {
         let rr_ssrc = self.local_rtcp_ssrc;
         let cname = self.cname.clone();
 
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             while run2.load(Ordering::SeqCst) {
                 std::thread::sleep(interval);
 
@@ -146,8 +155,18 @@ impl RtpSession {
                     }
                 }
 
-                let rr = ReceiverReport { ssrc: rr_ssrc, reports: blocks }.encode();
-                let sdes = Sdes { items: vec![SdesItem { ssrc: rr_ssrc, cname: cname.clone() }] }.encode();
+                let rr = ReceiverReport {
+                    ssrc: rr_ssrc,
+                    reports: blocks,
+                }
+                .encode();
+                let sdes = Sdes {
+                    items: vec![SdesItem {
+                        ssrc: rr_ssrc,
+                        cname: cname.clone(),
+                    }],
+                }
+                .encode();
 
                 let mut comp = Vec::with_capacity(rr.len() + sdes.len());
                 comp.extend_from_slice(&rr);
@@ -170,9 +189,12 @@ impl RtpSession {
         let pli = rtcp::PictureLossIndication {
             sender_ssrc: self.local_rtcp_ssrc,
             media_ssrc: remote_ssrc,
-        }.encode();
+        }
+        .encode();
         let _ = self.sock.send_to(&pli, self.peer);
-        let _ = self.tx_evt.send(EngineEvent::Log(format!("[RTCP] tx PLI media_ssrc={remote_ssrc}")));
+        let _ = self.tx_evt.send(EngineEvent::Log(format!(
+            "[RTCP] tx PLI media_ssrc={remote_ssrc}"
+        )));
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
@@ -196,39 +218,12 @@ fn is_rtcp(pkt: &[u8]) -> bool {
     (200..=206).contains(&pt)
 }
 
-fn handle_rtcp(pkt: &[u8], recv_map: &Arc<Mutex<HashMap<u32, RtpRecvStream>>>, tx_evt: &Sender<EngineEvent>) {
-    // Iterate RTCP compound; call on SRs only for LSR/DLSR bookkeeping.
-    let mut off = 0usize;
-    while off + 4 <= pkt.len() {
-        let v_p_count = pkt[off];
-        let pt = pkt[off + 1] & 0x7F;
-        let len_words = u16::from_be_bytes([pkt[off + 2], pkt[off + 3]]) as usize + 1; // 32-bit words
-        let bytes = len_words * 4;
-        if off + 4 + bytes > pkt.len() { break; }
-
-        if pt == 200 /* SR */ {
-            if bytes >= 24 {
-                // Sender info starts immediately after header
-                let ssrc = u32::from_be_bytes([
-                    pkt[off + 4], pkt[off + 5], pkt[off + 6], pkt[off + 7]
-                ]);
-                let ntp_msw = u32::from_be_bytes([
-                    pkt[off + 8], pkt[off + 9], pkt[off +10], pkt[off +11]
-                ]);
-                let ntp_lsw = u32::from_be_bytes([
-                    pkt[off +12], pkt[off +13], pkt[off +14], pkt[off +15]
-                ]);
-
-                let now = ntp_now(); // (secs, frac)
-                if let Some(st) = recv_map.lock().unwrap().get_mut(&ssrc) {
-                    st.on_sr(ntp_msw, ntp_lsw, now);
-                } else {
-                    let _ = tx_evt.send(EngineEvent::Log(format!("[RTCP] SR for unknown SSRC={ssrc}")));
-                }
-            }
-        }
-
-        off += 4 + bytes;
-        let _rc = v_p_count & 0x1F; // not used, but parsed for completeness
-    }
+fn handle_rtcp(
+    buf: &[u8],
+    recv_map: &Arc<Mutex<HashMap<u32, RtpRecvStream>>>,
+    tx_evt: &Sender<EngineEvent>,
+) -> Result<(), RtpSessionError> {
+    let rtcp_packet: Vec<RtcpPacket> = RtcpPacket::decode_compound(buf)?;
+    // TODO: Implement demux iterating for each RtcpPacket and deciding what action to take.
+    Ok(())
 }
