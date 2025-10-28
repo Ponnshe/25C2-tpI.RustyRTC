@@ -1,3 +1,4 @@
+use super::rtp_codec::RtpCodec;
 #[derive(Debug, Clone)]
 pub struct RtpRecvConfig {
     pub codec: RtpCodec,
