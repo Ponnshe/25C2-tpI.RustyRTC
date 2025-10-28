@@ -22,6 +22,9 @@ pub enum RtcpPacket {
 impl RtcpPacket {
     /// Decode a *compound* RTCP buffer into individual packets.
     pub fn decode_compound(buf: &[u8]) -> Result<Vec<RtcpPacket>, RtcpError> {
+        if buf.len() < 4 {
+            return Err(RtcpError::TooShort);
+        }
         let mut out = Vec::new();
         let mut idx = 0usize;
         while idx + 4 <= buf.len() {
