@@ -1,8 +1,8 @@
 use crate::rtcp::{
     common_header::CommonHeader,
-    packet_type::{RtcpPacketType, PT_SDES},
+    packet_type::{PT_SDES, RtcpPacketType},
     rtcp::RtcpPacket,
-    rtcp_error::RtcpError
+    rtcp_error::RtcpError,
 };
 
 /// SDES items (subset, extend as needed).
@@ -158,7 +158,7 @@ impl RtcpPacketType for Sdes {
         out[start + 3] = (len_words & 0xFF) as u8;
     }
 
-    fn decode(hdr: &super::common_header::CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
+    fn decode(_hdr: &CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
         // SDES is a sequence of chunks occupying the whole payload.
         let mut chunks = Vec::new();
         let mut idx = 0usize;

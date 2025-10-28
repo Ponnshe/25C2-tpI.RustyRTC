@@ -1,3 +1,4 @@
+use super::rtcp_error::RtcpError;
 /// ReportBlock per RFC3550 §6.4.2 (24 bytes)
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReportBlock {

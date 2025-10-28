@@ -1,4 +1,9 @@
-use crate::rtcp::{common_header::CommonHeader, packet_type::{RtcpPacketType, PT_BYE}, rtcp::RtcpPacket, rtcp_error::RtcpError};
+use crate::rtcp::{
+    common_header::CommonHeader,
+    packet_type::{PT_BYE, RtcpPacketType},
+    rtcp::RtcpPacket,
+    rtcp_error::RtcpError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bye {
@@ -9,7 +14,7 @@ pub struct Bye {
 impl RtcpPacketType for Bye {
     fn encode_into(&self, out: &mut Vec<u8>) {
         let start = out.len();
-        let hdr = CommonHeader::new(self.sources.len(), PT_BYE, false);
+        let hdr = CommonHeader::new(self.sources.len() as u8, PT_BYE, false);
         hdr.encode_into(out);
         for ssrc in &self.sources {
             out.extend_from_slice(&ssrc.to_be_bytes());
@@ -35,7 +40,10 @@ impl RtcpPacketType for Bye {
         out[start + 3] = (len_words & 0xFF) as u8;
     }
 
-    fn decode(hdr: &super::common_header::CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
+    fn decode(
+        hdr: &super::common_header::CommonHeader,
+        payload: &[u8],
+    ) -> Result<RtcpPacket, RtcpError> {
         // First rc_or_fmt 5 bits indicate SSRC/CSRC count
         let sc = hdr.rc_or_fmt() as usize;
         if payload.len() < sc * 4 {

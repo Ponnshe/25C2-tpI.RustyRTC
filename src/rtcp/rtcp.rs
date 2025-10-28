@@ -29,7 +29,7 @@ impl RtcpPacket {
             let pkt_bytes = &buf[idx..idx + total];
             let payload = &pkt_bytes[4..];
 
-            let pkt = match hdr.pt {
+            let pkt = match hdr.pt() {
                 packet_type::PT_SR => SenderReport::decode(&hdr, payload)?,
                 packet_type::PT_RR => ReceiverReport::decode(&hdr, payload)?,
                 packet_type::PT_SDES => Sdes::decode(&hdr, payload)?,
