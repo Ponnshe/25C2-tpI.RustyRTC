@@ -1,20 +1,11 @@
 use crate::rtcp::packet_type;
 
 use super::{
-    rtcp_error::RtcpError,
-    common_header::CommonHeader,
+    app::App, bye::Bye, common_header::CommonHeader, generic_nack::GenericNack,
+    packet_type::RtcpPacketType, picture_loss::PictureLossIndication,
+    receiver_report::ReceiverReport, rtcp_error::RtcpError, sdes::Sdes,
     sender_report::SenderReport,
-    receiver_report::ReceiverReport,
-    sdes::Sdes,
-    bye::Bye,
-    app::App,
-    generic_nack::GenericNack,
-    picture_loss::PictureLossIndication,
-    packet_type::RtcpPacketType,
 };
-use std::convert::TryInto;
-
-pub const RTCP_VERSION: u8 = 2;
 
 /// The union of supported RTCP packets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,13 +30,13 @@ impl RtcpPacket {
             let payload = &pkt_bytes[4..];
 
             let pkt = match hdr.pt {
-                packet_type::PT_SR => decode_sr(&hdr, payload)?,
-                packet_type::PT_RR => decode_rr(&hdr, payload)?,
-                packet_type::PT_SDES => decode_sdes(&hdr, payload)?,
-                packet_type::PT_BYE => decode_bye(&hdr, payload)?,
-                packet_type::PT_APP => decode_app(&hdr, payload)?,
-                packet_type::PT_RTPFB => decode_rtcpfb(&hdr, payload)?,
-                packet_type::PT_PSFB => decode_psfb(&hdr, payload)?,
+                packet_type::PT_SR => SenderReport::decode(&hdr, payload)?,
+                packet_type::PT_RR => ReceiverReport::decode(&hdr, payload)?,
+                packet_type::PT_SDES => Sdes::decode(&hdr, payload)?,
+                packet_type::PT_BYE => Bye::decode(&hdr, payload)?,
+                packet_type::PT_APP => App::decode(&hdr, payload)?,
+                packet_type::PT_RTPFB => GenericNack::decode(&hdr, payload)?,
+                packet_type::PT_PSFB => PictureLossIndication::decode(&hdr, payload)?,
                 other => return Err(RtcpError::UnknownPacketType(other)),
             };
             out.push(pkt);
