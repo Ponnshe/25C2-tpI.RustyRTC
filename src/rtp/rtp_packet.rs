@@ -221,3 +221,245 @@ impl RtpPacket {
         self.header.ssrc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::super::config::RTP_VERSION;
+    use super::super::rtp_error::RtpError;
+    use super::super::rtp_header::RtpHeader;
+    use super::super::rtp_header_extension::RtpHeaderExtension;
+    use super::RtpPacket;
+
+    fn mk_header_bytes(
+        version: u8,
+        padding: bool,
+        extension: bool,
+        cc: u8,
+        marker: bool,
+        pt: u8,
+        seq: u16,
+        ts: u32,
+        ssrc: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::with_capacity(12);
+        let vpxcc =
+            (version & 0b11) << 6 | ((padding as u8) << 5) | ((extension as u8) << 4) | (cc & 0x0F);
+        let m_pt = ((marker as u8) << 7) | (pt & 0x7F);
+        b.push(vpxcc);
+        b.push(m_pt);
+        b.extend_from_slice(&seq.to_be_bytes());
+        b.extend_from_slice(&ts.to_be_bytes());
+        b.extend_from_slice(&ssrc.to_be_bytes());
+        b
+    }
+
+    #[test]
+    fn decode_too_short() {
+        let buf = vec![0u8; 11];
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::TooShort));
+    }
+
+    #[test]
+    fn decode_bad_version() {
+        // Version != 2
+        let mut buf = mk_header_bytes(0, false, false, 0, false, 96, 1, 2, 3);
+        // No payload
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        match err {
+            RtpError::BadVersion(v) => assert_eq!(v, 0),
+            _ => panic!("expected BadVersion, got {err:?}"),
+        }
+
+        // Also try version = 3 (still invalid)
+        buf[0] = (3 << 6) | (buf[0] & 0b00_111111);
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        match err {
+            RtpError::BadVersion(v) => assert_eq!(v, 3),
+            _ => panic!("expected BadVersion, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_csrc_count_mismatch() {
+        // cc = 2 but no CSRC words present
+        let buf = mk_header_bytes(RTP_VERSION, false, false, 2, false, 96, 1, 2, 3);
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::CsrcCountMismatch { .. }));
+    }
+
+    #[test]
+    fn decode_header_extension_too_short_header() {
+        // X = 1 but less than 4 bytes available for the extension header
+        let mut buf = mk_header_bytes(RTP_VERSION, false, true, 0, false, 96, 1, 2, 3);
+        buf.extend_from_slice(&[0x12, 0x34]); // only 2 bytes, need 4
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::HeaderExtensionTooShort));
+    }
+
+    #[test]
+    fn decode_header_extension_too_short_data() {
+        // X = 1, provide 4-byte header but not enough data for length_words
+        let mut buf = mk_header_bytes(RTP_VERSION, false, true, 0, false, 96, 1, 2, 3);
+        // profile = 0xABCD, length_words = 2 (needs 8 bytes)
+        buf.extend_from_slice(&0xABCDu16.to_be_bytes());
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        // only 4 bytes of data given -> should error
+        buf.extend_from_slice(&[1, 2, 3, 4]);
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::HeaderExtensionTooShort));
+    }
+
+    #[test]
+    fn decode_padding_without_pad_byte() {
+        // P = 1 but no trailing pad count byte at all (buf ends at idx)
+        let buf = mk_header_bytes(RTP_VERSION, true, false, 0, false, 96, 1, 2, 3);
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::PaddingTooShort));
+    }
+
+    #[test]
+    fn decode_padding_zero_count() {
+        // P = 1 with pad byte = 0 (invalid)
+        let mut buf = mk_header_bytes(RTP_VERSION, true, false, 0, false, 96, 1, 2, 3);
+        buf.push(0); // pad count = 0
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::PaddingTooShort));
+    }
+
+    #[test]
+    fn decode_padding_count_exceeds_total_payload_region() {
+        // P = 1 with pad count greater than total bytes after header.
+        // Here total bytes after header = 2, but pad count = 10.
+        let mut buf = mk_header_bytes(RTP_VERSION, true, false, 0, false, 96, 1, 2, 3);
+        buf.extend_from_slice(&[0xAA, 10]); // 1 payload byte + pad count 10 -> invalid
+        let err = RtpPacket::decode(&buf).unwrap_err();
+        assert!(matches!(err, RtpError::PaddingTooShort));
+    }
+
+    #[test]
+    fn decode_ok_no_payload_no_padding() {
+        // Valid minimal RTP: header only, empty payload, no padding.
+        let buf = mk_header_bytes(
+            RTP_VERSION,
+            false,
+            false,
+            0,
+            true,
+            127,
+            0x1122,
+            0x33445566,
+            0x77889900,
+        );
+        let pkt = RtpPacket::decode(&buf).expect("should decode");
+        assert_eq!(pkt.header.version, RTP_VERSION);
+        assert!(pkt.header.marker);
+        assert_eq!(pkt.header.payload_type, 127);
+        assert_eq!(pkt.header.sequence_number, 0x1122);
+        assert_eq!(pkt.header.timestamp, 0x33445566);
+        assert_eq!(pkt.header.ssrc, 0x77889900);
+        assert!(pkt.payload.is_empty());
+        assert_eq!(pkt.padding_bytes, 0);
+    }
+
+    #[test]
+    fn roundtrip_minimal() {
+        let payload = b"hello".to_vec();
+        let pkt = RtpPacket::simple(96, true, 42, 9000, 0xAABBCCDD, payload.clone());
+        let enc = pkt.encode();
+        let dec = RtpPacket::decode(&enc).expect("decode");
+        assert_eq!(dec.header.version, RTP_VERSION);
+        assert_eq!(dec.header.payload_type, 96);
+        assert!(dec.header.marker);
+        assert_eq!(dec.header.sequence_number, 42);
+        assert_eq!(dec.header.timestamp, 9000);
+        assert_eq!(dec.header.ssrc, 0xAABBCCDD);
+        assert_eq!(dec.payload, payload);
+        assert_eq!(dec.padding_bytes, 0);
+    }
+
+    #[test]
+    fn roundtrip_with_padding_1() {
+        let mut hdr = RtpHeader::new(111, 65535, 0xDEADBEEF, 0x01020304).with_marker(false);
+        hdr.padding = true;
+
+        let mut pkt = RtpPacket::new(hdr, b"PAYLOAD".to_vec());
+        pkt.padding_bytes = 1; // only the count byte appended
+        let enc = pkt.encode();
+        assert_eq!(*enc.last().unwrap(), 1u8);
+
+        let dec = RtpPacket::decode(&enc).expect("decode");
+        assert_eq!(dec.payload, b"PAYLOAD".to_vec());
+        assert_eq!(dec.padding_bytes, 1);
+        assert!(dec.header.padding);
+    }
+
+    #[test]
+    fn roundtrip_with_padding_4() {
+        let mut hdr = RtpHeader::new(111, 7, 1234, 0xCAFEBABE).with_marker(true);
+        hdr.padding = true;
+
+        let mut pkt = RtpPacket::new(hdr, vec![1, 2, 3]);
+        pkt.padding_bytes = 4; // adds 3 zero bytes + final 0x04
+        let enc = pkt.encode();
+        // Total tail should end with [0,0,0,4]
+        assert_eq!(&enc[enc.len() - 4..], &[0, 0, 0, 4]);
+
+        let dec = RtpPacket::decode(&enc).expect("decode");
+        assert_eq!(dec.payload, vec![1, 2, 3]);
+        assert_eq!(dec.padding_bytes, 4);
+        assert!(dec.header.marker);
+    }
+
+    #[test]
+    fn roundtrip_with_csrcs_15() {
+        let mut hdr = RtpHeader::new(96, 1, 2, 3);
+        let csrcs: Vec<u32> = (0..15).map(|i| 0x1111_0000 + i).collect();
+        hdr = hdr.with_csrcs(csrcs.clone());
+        let pkt = RtpPacket::new(hdr, vec![9, 9, 9]);
+        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        assert_eq!(dec.header.csrcs, csrcs);
+        assert_eq!(dec.payload, vec![9, 9, 9]);
+    }
+
+    #[test]
+    fn header_extension_zero_length_roundtrip() {
+        let mut hdr = RtpHeader::new(100, 10, 20, 30);
+        hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0xBEEF, vec![])));
+        let pkt = RtpPacket::new(hdr, vec![]);
+        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        let ext = dec.header.header_extension.expect("ext");
+        assert_eq!(ext.profile, 0xBEEF);
+        assert!(ext.data.is_empty());
+    }
+
+    #[test]
+    fn header_extension_unaligned_data_roundtrip() {
+        // data len = 6 (not multiple of 4) -> should pad to 8 on wire; decode returns 8 bytes.
+        let mut hdr = RtpHeader::new(100, 10, 20, 30);
+        let orig = vec![1, 2, 3, 4, 5, 6];
+        hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0x1234, orig.clone())));
+        let pkt = RtpPacket::new(hdr, vec![0xAA]);
+        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        let ext = dec.header.header_extension.expect("ext");
+
+        assert_eq!(ext.profile, 0x1234);
+        // Should be 8 bytes: original 6 + 2 zero padding bytes
+        assert_eq!(ext.data.len(), 8);
+        assert_eq!(&ext.data[..6], &orig[..]);
+        assert_eq!(&ext.data[6..], &[0, 0]);
+        assert_eq!(dec.payload, vec![0xAA]);
+    }
+
+    #[test]
+    fn getters_work() {
+        let pkt = RtpPacket::simple(120, true, 0xFFFF, 0x01020304, 0x0A0B0C0D, vec![7, 8, 9]);
+        assert_eq!(pkt.payload_type(), 120);
+        assert!(pkt.marker());
+        assert_eq!(pkt.seq(), 0xFFFF);
+        assert_eq!(pkt.timestamp(), 0x01020304);
+        assert_eq!(pkt.ssrc(), 0x0A0B0C0D);
+    }
+}
