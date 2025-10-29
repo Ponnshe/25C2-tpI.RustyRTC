@@ -1,60 +1,51 @@
 use std::{
-    collections::HashMap,
-    net::{SocketAddr, UdpSocket},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender},
-    },
-    thread,
-    time::Duration,
+    collections::HashMap, future::pending, net::{SocketAddr, UdpSocket}, sync::{
+        atomic::{AtomicBool, Ordering}, mpsc::{Receiver, Sender}, Arc, Mutex
+    }, thread, time::Duration
 };
 
 use super::{
     rtp_recv_config::RtpRecvConfig, rtp_recv_stream::RtpRecvStream, rtp_send_config::RtpSendConfig,
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
-use crate::core::events::EngineEvent;
+use crate::{ core::events::EngineEvent, rtcp::{ packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock, sdes::Sdes}, rtp::rtp_packet::RtpPacket };
 use crate::rtcp::rtcp::RtcpPacket;
+use egui::text_selection::text_cursor_state::ccursor_next_word;
 use rand::{RngCore, rngs::OsRng};
 
 pub struct RtpSession {
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
 
-    // Demux maps
     recv_streams: Arc<Mutex<HashMap<u32, RtpRecvStream>>>, // key: remote_ssrc
     pending_recv: Arc<Mutex<Vec<RtpRecvStream>>>,          // remote_ssrc=None
     send_streams: Arc<Mutex<HashMap<u32, RtpSendStream>>>, // key: local_ssrc
 
-    // Control
     run: Arc<AtomicBool>,
     tx_evt: Sender<EngineEvent>,
     rx_media: Option<Receiver<Vec<u8>>>,
 
-    // Session RTCP identity (used for RR sender_ssrc and SDES)
     local_rtcp_ssrc: u32,
     cname: String,
     rtcp_interval: Duration,
 }
 
 impl RtpSession {
+    // Opción A: fallible (puedes llamarla `try_new` si prefieres)
     pub fn new(
         sock: Arc<UdpSocket>,
         peer: SocketAddr,
         tx_evt: Sender<EngineEvent>,
         rx_media: Receiver<Vec<u8>>,
-        initial_recv: Vec<RecvStreamInfo>, // can be empty
-        initial_send: Vec<SendStreamInfo>, // can be empty
-    ) -> Self {
-        let recv_map = HashMap::new();
-        let send_map = HashMap::new();
-
-        let mut this = Self {
+        initial_recv: Vec<RtpRecvConfig>,
+        initial_send: Vec<RtpSendConfig>,
+    ) -> Result<Self, RtpSessionError> {
+        let this = Self {
             sock,
             peer,
-            recv_streams: Arc::new(Mutex::new(recv_map)),
-            send_streams: Arc::new(Mutex::new(send_map)),
+            recv_streams: Arc::new(Mutex::new(HashMap::new())),
+            pending_recv: Arc::new(Mutex::new(Vec::new())),
+            send_streams: Arc::new(Mutex::new(HashMap::new())),
             run: Arc::new(AtomicBool::new(false)),
             tx_evt,
             rx_media: Some(rx_media),
@@ -63,76 +54,135 @@ impl RtpSession {
             rtcp_interval: Duration::from_millis(500),
         };
 
-        for info in initial_recv {
-            let _ = this.add_recv_stream(info.remote_ssrc, info.payload_type, info.clock_rate);
-        }
-        for info in initial_send {
-            let _ = this.add_send_stream(info.local_ssrc, info.payload_type, info.clock_rate);
-        }
+        // Propaga errores de construcción de streams
+        this.add_recv_streams(initial_recv)?;
+        this.add_send_streams(initial_send)?;
 
-        this
+        Ok(this)
     }
 
-    pub fn add_recv_stream(&mut self, cfg: RtpRecvConfig) {
+    // Nota: como usas Mutex internos, puedes tomar &self (no hace falta &mut self)
+    pub fn add_recv_stream(&self, cfg: RtpRecvConfig) -> Result<(), RtpSessionError> {
+        let st = RtpRecvStream::new(cfg.clone(), self.tx_evt.clone())?; // si `new` es fallible
         if let Some(ssrc) = cfg.remote_ssrc {
-            let st =
-                RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
-            self.recv_streams.lock().unwrap().insert(ssrc, st);
+            self.recv_streams.lock()?.insert(ssrc, st);
         } else {
-            let st =
-                RtpRecvStream::new(cfg, Arc::clone(&self.sock), self.peer, self.tx_evt.clone());
-            self.pending_recv.lock().unwrap().push(st);
+            self.pending_recv.lock()?.push(st);
         }
+        Ok(())
     }
 
-    pub fn add_send_stream(&mut self, cfg: RtpSendConfig) {
+    pub fn add_recv_streams(&self, configs: Vec<RtpRecvConfig>) -> Result<(), RtpSessionError> {
+        for cfg in configs {
+            self.add_recv_stream(cfg)?; // propaga error
+        }
+        Ok(())
+    }
+
+    pub fn add_send_stream(&self, cfg: RtpSendConfig) -> Result<(), RtpSessionError> {
         let ssrc = cfg.local_ssrc;
-        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer);
-        self.send_streams.lock().unwrap().insert(ssrc, st);
+        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer)?; // si es fallible
+        self.send_streams.lock()?.insert(ssrc, st);
+        Ok(())
     }
 
-    pub fn start(&mut self) {
+    pub fn add_send_streams(&self, configs: Vec<RtpSendConfig>) -> Result<(), RtpSessionError> {
+        for cfg in configs {
+            self.add_send_stream(cfg)?;
+        }
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), RtpSessionError> {
         self.run.store(true, Ordering::SeqCst);
 
         // === inbound RTP/RTCP loop ===
         let run = Arc::clone(&self.run);
-        let rx = self.rx_media.take().expect("start() must be called once");
+        let rx = self
+            .rx_media
+            .take()
+            .ok_or(RtpSessionError::EmptyMediaReceiver)?;
         let recv_map = Arc::clone(&self.recv_streams);
+        let send_map = Arc::clone(&self.send_streams);
+        let pending_recv = Arc::clone(&self.pending_recv);
         let tx_evt = self.tx_evt.clone();
+
         thread::spawn(move || {
             while run.load(Ordering::SeqCst) {
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(pkt) => {
                         if pkt.len() < 2 {
+                            let _ = tx_evt.send(EngineEvent::Log("[RTP] packet too short".into()));
                             continue;
                         }
+
+                        // ---- RTCP ----
                         if is_rtcp(&pkt) {
-                            handle_rtcp(&pkt, &recv_map, &tx_evt);
+                            if let Err(e) =
+                                handle_rtcp(&pkt, &recv_map, &pending_recv, &send_map, &tx_evt)
+                            {
+                                let _ = tx_evt.send(EngineEvent::Log(format!(
+                                    "[RTCP] error: {e:?}"
+                                )));
+                            }
                             continue;
                         }
-                        // RTP fast-path
-                        if pkt.len() < 12 {
+
+                        // ---- RTP fast-path ----
+                        if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
+                            let _ = tx_evt.send(EngineEvent::Log(
+                                "[RTP] invalid header/version".into(),
+                            ));
                             continue;
                         }
-                        if (pkt[0] >> 6) != 2 {
-                            continue;
-                        } // RTP v2
-                        let ssrc = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
-                        if let Some(st) = recv_map.lock().unwrap().get_mut(&ssrc) {
-                            st.handle_packet(&pkt);
-                        } else {
-                            let _ = tx_evt.send(EngineEvent::Log(format!(
-                                "[RTP] unknown remote SSRC={ssrc}"
-                            )));
-                            // (optional) auto-create stream here if desired.
+
+                        // Decode RTP (adapt if your API returns Result)
+                        let rtp = match RtpPacket::decode(&pkt) {
+                            Ok(p) => p,
+                            Err(_) => {
+                                let _ = tx_evt.send(EngineEvent::Log(
+                                    "[RTP] decode failed".into(),
+                                ));
+                                continue;
+                            }
+                        };
+
+                        let ssrc = rtp.ssrc();
+                        let pt = rtp.payload_type();
+
+                        // 1) Known stream?
+                        if let Ok(mut guard) = recv_map.lock() {
+                            if let Some(st) = guard.get_mut(&ssrc) {
+                                st.receive_rtp_packet(rtp);
+                                continue;
+                            }
                         }
+
+                        // 2) Bind a pending stream by PT, then move it to the map
+                        if let Ok(mut pend) = pending_recv.lock() {
+                            if let Some(idx) = pend.iter().position(|s| s.codec.payload_type == pt) {
+                                let mut st = pend.swap_remove(idx);
+                                st.remote_ssrc = Some(ssrc);
+                                st.receive_rtp_packet(rtp);
+                                if let Ok(mut map) = recv_map.lock() {
+                                    map.insert(ssrc, st);
+                                }
+                                continue;
+                            }
+                        }
+
+                        // 3) Unknown SSRC/PT
+                        let _ = tx_evt.send(EngineEvent::Log(format!(
+                            "[RTP] unknown remote SSRC={:#010x} PT={}",
+                            ssrc, pt
+                        )));
                     }
-                    Err(_) => {}
+                    Err(_) => { /* timeout */ }
                 }
             }
         });
 
-        // === periodic RTCP sender: RR (from all RecvRtpStreams) + SDES ===
+        // === periodic RTCP sender: RR (aggregate all Recv streams) + SDES ===
         let run2 = Arc::clone(&self.run);
         let sock = Arc::clone(&self.sock);
         let peer = self.peer;
@@ -146,38 +196,37 @@ impl RtpSession {
             while run2.load(Ordering::SeqCst) {
                 std::thread::sleep(interval);
 
-                // Build report blocks from *receive* streams
+                // Collect report blocks
                 let mut blocks: Vec<ReportBlock> = Vec::new();
-                {
-                    let mut guard = recv_map2.lock().unwrap();
-                    for (remote_ssrc, st) in guard.iter_mut() {
-                        blocks.push(st.build_report_block(*remote_ssrc));
+                if let Ok(mut guard) = recv_map2.lock() {
+                    for st in guard.values_mut() {
+                        if let Some(rb) = st.build_report_block() {
+                            blocks.push(rb);
+                        }
                     }
                 }
 
-                let rr = ReceiverReport {
-                    ssrc: rr_ssrc,
-                    reports: blocks,
-                }
-                .encode();
-                let sdes = Sdes {
-                    items: vec![SdesItem {
-                        ssrc: rr_ssrc,
-                        cname: cname.clone(),
-                    }],
-                }
-                .encode();
+                // Build RR + SDES (adapt to your encode API)
+                let rr = ReceiverReport::new(rr_ssrc, blocks);
+                let mut rr_bytes = Vec::new();
+                rr.encode_into(&mut rr_bytes);
 
-                let mut comp = Vec::with_capacity(rr.len() + sdes.len());
-                comp.extend_from_slice(&rr);
-                comp.extend_from_slice(&sdes);
+                let sdes = Sdes::cname(rr_ssrc, cname.clone());
+                let mut sdes_bytes = Vec::new();
+                sdes.encode_into(&mut sdes_bytes);
+
+                let mut comp = Vec::with_capacity(rr_bytes.len() + sdes_bytes.len());
+                comp.extend_from_slice(&rr_bytes);
+                comp.extend_from_slice(&sdes_bytes);
 
                 let _ = sock.send_to(&comp, peer);
                 let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR+SDES".into()));
+
+                //TODO: Añadir sender reports con maybe_build_sr
             }
         });
 
-        // (Optional) add a periodic SR loop per send-stream later if you need SRs.
+        Ok(())
     }
 
     pub fn stop(&self) {
@@ -212,18 +261,116 @@ impl RtpSession {
 
 // --------------------- helpers ---------------------
 
+#[inline]
 fn is_rtcp(pkt: &[u8]) -> bool {
-    // RTCP PT lives in byte[1] (7-bit). 200..206 are common (SR/RR/SDES/BYE/APP/RTPFB/PSFB)
-    let pt = pkt[1] & 0x7F;
-    (200..=206).contains(&pt)
+    // RTCP v2: common PTs 200..206 (SR/RR/SDES/BYE/APP/RTPFB/PSFB)
+    pkt.len() >= 2 && (200..=206).contains(&(pkt[1] & 0x7F))
+}
+
+#[inline]
+fn ntp_to_compact(msw: u32, lsw: u32) -> u32 {
+    (msw << 16) | (lsw >> 16)
 }
 
 fn handle_rtcp(
     buf: &[u8],
     recv_map: &Arc<Mutex<HashMap<u32, RtpRecvStream>>>,
+    pending_recv: &Arc<Mutex<Vec<RtpRecvStream>>>,
+    send_map: &Arc<Mutex<HashMap<u32, RtpSendStream>>>,
     tx_evt: &Sender<EngineEvent>,
 ) -> Result<(), RtpSessionError> {
-    let rtcp_packet: Vec<RtcpPacket> = RtcpPacket::decode_compound(buf)?;
-    // TODO: Implement demux iterating for each RtcpPacket and deciding what action to take.
+    // Decode all RTCP packets in the compound
+    let pkts: Vec<RtcpPacket> = RtcpPacket::decode_compound(buf)?;
+
+    // Arrival time for RTT calculus (compact NTP) and for SR anchoring (full NTP)
+    let (now_msw, now_lsw) = crate::rtp_session::time::ntp_now();
+    let arrival_ntp_compact = ntp_to_compact(now_msw, now_lsw);
+
+    for pkt in pkts {
+        match pkt {
+            RtcpPacket::Sr(sr) => {
+                // 1) SR → recv stream (anchors LSR/DLSR clock)
+                if let Ok(mut g) = recv_map.lock() {
+                    if let Some(st) = g.get_mut(&sr.ssrc) {
+                        st.on_sender_report(sr.ssrc, &sr.info, (now_msw, now_lsw));
+                    } else {
+                        // (Optional) if you want to bind a pending recv purely on SR (no RTP yet),
+                        // you could try heuristic binding here. Generally better to wait for RTP.
+                    }
+                }
+
+                // 2) Embedded report blocks → sender streams (outbound metrics/RTT)
+                if let Ok(mut g) = send_map.lock() {
+                    for rb in &sr.reports {
+                        if let Some(st) = g.get_mut(&rb.ssrc) {
+                            st.on_report_block(rb, arrival_ntp_compact);
+                        }
+                    }
+                }
+            }
+
+            RtcpPacket::Rr(rr) => {
+                // Each report block targets one of our *sender* SSRCs
+                if let Ok(mut g) = send_map.lock() {
+                    for rb in &rr.reports {
+                        if let Some(st) = g.get_mut(&rb.ssrc) {
+                            st.on_report_block(rb, arrival_ntp_compact);
+                        }
+                    }
+                }
+            }
+
+            RtcpPacket::Sdes(sdes) => {
+                // Optional: keep SSRC → CNAME mapping at session level
+                let _ = tx_evt.send(EngineEvent::Log(format!(
+                    "[RTCP][SDES] chunks={}",
+                    sdes.chunks.len()
+                )));
+            }
+
+            RtcpPacket::Bye(bye) => {
+                // Tear down any recv streams for the listed sources
+                if let Ok(mut g) = recv_map.lock() {
+                    for ssrc in &bye.sources {
+                        if g.remove(ssrc).is_some() {
+                            let _ = tx_evt.send(EngineEvent::Status(format!(
+                                "[RTCP][BYE] removed recv stream ssrc={:#010x}",
+                                ssrc
+                            )));
+                        }
+                    }
+                }
+                // (Optional) also clear any pending that somehow bound to these sources
+                if let Ok(mut pend) = pending_recv.lock() {
+                    pend.retain(|_| true); // no-op; adjust if you track identities there
+                }
+            }
+
+            RtcpPacket::Pli(pli) => {
+                // Inbound PLI means the remote wants a keyframe for media_ssrc
+                // Route to the *sender* stream of that SSRC, or surface an event:
+                let _ = tx_evt.send(EngineEvent::Status(format!(
+                    "[RTCP][PLI] keyframe requested for ssrc={:#010x}",
+                    pli.media_ssrc
+                )));
+                // If you have encoder wiring, signal it here.
+            }
+
+            RtcpPacket::Nack(nack) => {
+                // Inbound NACK asks us to retransmit lost seqnos on media_ssrc
+                // Route to the *sender* stream (implement your RTX/repair path there)
+                let _ = tx_evt.send(EngineEvent::Log(format!(
+                    "[RTCP][NACK] for media_ssrc={:#010x} fci_count={}",
+                    nack.media_ssrc, nack.entries.len()
+                )));
+            }
+
+            RtcpPacket::App(_app) => {
+                let _ = tx_evt.send(EngineEvent::Log("[RTCP][APP] ignored".into()));
+            }
+        }
+    }
+
     Ok(())
 }
+

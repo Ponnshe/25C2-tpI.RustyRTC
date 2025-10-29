@@ -455,11 +455,11 @@ mod tests {
 
     #[test]
     fn getters_work() {
-        let pkt = RtpPacket::simple(120, true, 0xFFFF, 0x01020304, 0x0A0B0C0D, vec![7, 8, 9]);
+        let pkt = RtpPacket::simple(120, true, 0xF_FFF, 0x01_020_304, 0x0A_0B0_C0D, vec![7, 8, 9]);
         assert_eq!(pkt.payload_type(), 120);
         assert!(pkt.marker());
         assert_eq!(pkt.seq(), 0xFFFF);
-        assert_eq!(pkt.timestamp(), 0x01020304);
-        assert_eq!(pkt.ssrc(), 0x0A0B0C0D);
+        assert_eq!(pkt.timestamp(), 0x01_020_304);
+        assert_eq!(pkt.ssrc(), 0x0A_0B0_C0D);
     }
 }

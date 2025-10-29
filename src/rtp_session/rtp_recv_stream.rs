@@ -1,6 +1,6 @@
 use crate::core::events::EngineEvent;
 use crate::rtcp::report_block::ReportBlock;
-use crate::rtcp::rtcp::RtcpPacket;
+use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
@@ -23,7 +23,7 @@ impl RtpRecvStream {
             codec: cfg.codec,
             remote_ssrc: cfg.remote_ssrc,
             rx: RxTracker::default(),
-            epoch: now, // <— initialize epoch once
+            epoch: now,
             last_activity: now,
             event_transmitter,
         }
@@ -32,12 +32,9 @@ impl RtpRecvStream {
     /// Convert a monotonic Instant to RTP timestamp units using `codec.clock_rate`.
     #[inline]
     fn instant_to_rtp_units(&self, now: Instant) -> u32 {
-        // Use u128 to avoid overflow and keep precision, then wrap to u32 (RTP timestamp space)
         let dur = now.duration_since(self.epoch);
         let rate = self.codec.clock_rate as u128; // Hz
-        let ns = dur.as_nanos(); // total nanoseconds since epoch (u128)
-
-        // units = ns * rate / 1e9  (no floating point)
+        let ns = dur.as_nanos();                  // u128
         let units = (ns.saturating_mul(rate)) / 1_000_000_000u128;
         units as u32
     }
@@ -50,44 +47,52 @@ impl RtpRecvStream {
         let pkt_ssrc = packet.ssrc();
         if let Some(expected) = self.remote_ssrc {
             if expected != pkt_ssrc {
-                // SSRC collision or a different stream's packet — choose policy:
-                // - ignore; or
-                // - switch streams; or
-                // - raise an event. Here we ignore to keep per-stream semantics.
+                // Not our stream
                 return;
             }
         } else {
             self.remote_ssrc = Some(pkt_ssrc);
         }
 
-        // 2) Compute arrival time in *RTP units* (codec clock)
+        // 2) Arrival time in RTP units (codec clock)
         let arrival_rtp = self.instant_to_rtp_units(now);
 
-        // 3) Update receive tracker (seq/jitter/loss/etc.)
-        //    on_rtp expects: (sequence_number, rtp_timestamp, arrival_in_rtp_units)
-        self.rx
-            .on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
+        // 3) Update RX tracker
+        self.rx.on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
 
-        // 4) Push an event into engine (adapt to actual enum/fields)
-        //    If you have a jitter buffer, you might enqueue the whole packet/payload here.
-        let _ = self.event_transmitter.send(EngineEvent::Payload{packet.pt, packet.payload};
+        // 4) Emit media event (prefer owned bytes over borrows; see note below)
+        let _ = self.event_transmitter.send(EngineEvent::RtpMedia {
+            pt: packet.payload_type(),
+            bytes: packet.payload(),
+        });
     }
 
-    pub fn receive_rtcp_packet(&mut self, pkt: RtcpPacket) {
-        // Typical handling:
-        // - SR: call self.on_sr(sr.ntp_msw, sr.ntp_lsw, now_ntp())
-        // - RR: update any per-ssrc state you keep for reporting back
-        // - NACK/PLI: bubble up events for the sender side (if applicable)
-        // TODO: implement based on your RTCP enum variants
-        todo!()
+    /// Called by the *session* when an SR for this remote SSRC arrives.
+    /// `arrival_ntp` is the local receive time of the SR as (ntp_msw, ntp_lsw).
+    pub fn on_sender_report(&mut self, sender_ssrc: u32, info: &SenderInfo, arrival_ntp: (u32, u32)) {
+        // Learn/validate SSRC
+        if let Some(exp) = self.remote_ssrc {
+            if exp != sender_ssrc {
+                return; // SR from someone else
+            }
+        } else {
+            self.remote_ssrc = Some(sender_ssrc);
+        }
+
+        self.last_activity = Instant::now();
+
+        // Anchor SR timing so we can later fill LSR/DLSR in our RR
+        self.rx.on_sr_received(info.ntp_msw, info.ntp_lsw, arrival_ntp);
+
+        // (Optional) surface for logs/metrics
+        let _ = self.event_transmitter.send(EngineEvent::Log(format!(
+            "[RTCP][SR] ssrc={:#010x} rtp_ts={} pkt={} octets={}",
+            sender_ssrc, info.rtp_ts, info.packet_count, info.octet_count
+        )));
     }
 
+    /// Build one RTCP ReportBlock for this remote SSRC.
     pub fn build_report_block(&mut self) -> Option<ReportBlock> {
-        self.remote_ssrc
-            .map(|ssrc| self.rx.build_report_block(ssrc))
-    }
-
-    fn on_sr(&mut self, ntp_msw: u32, ntp_lsw: u32, now_ntp: (u32, u32)) {
-        self.rx.on_sr_received(ntp_msw, ntp_lsw, now_ntp);
+        self.remote_ssrc.map(|ssrc| self.rx.build_report_block(ssrc))
     }
 }
