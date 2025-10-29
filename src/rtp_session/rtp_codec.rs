@@ -5,5 +5,10 @@ pub struct RtpCodec {
 }
 
 impl RtpCodec {
-    pub const fn new(pt: u8, clock: u32) -> Self { Self { payload_type: pt, clock_rate: clock } }
+    pub const fn new(pt: u8, clock: u32) -> Self {
+        Self {
+            payload_type: pt,
+            clock_rate: clock,
+        }
+    }
 }

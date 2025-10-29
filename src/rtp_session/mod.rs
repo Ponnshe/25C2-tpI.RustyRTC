@@ -8,7 +8,7 @@ pub mod rtp_send_stream;
 pub mod rtp_session;
 pub mod rtp_session_error;
 pub mod rx_tracker;
-pub mod tx_tracker;
 pub mod rx_tracker_error;
 pub mod seq_ext;
 pub mod time;
+pub mod tx_tracker;

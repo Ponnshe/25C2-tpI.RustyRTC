@@ -1,10 +1,10 @@
-use crate::rtcp::{packet_type::{RtcpPacketType, PT_SR}, rtcp::RtcpPacket, rtcp_error::RtcpError};
-
-use super::{
-    sender_info::SenderInfo,
-    report_block::ReportBlock,
-    common_header::CommonHeader,
+use crate::rtcp::{
+    packet_type::{PT_SR, RtcpPacketType},
+    rtcp::RtcpPacket,
+    rtcp_error::RtcpError,
 };
+
+use super::{common_header::CommonHeader, report_block::ReportBlock, sender_info::SenderInfo};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SenderReport {
     pub ssrc: u32,
@@ -14,7 +14,7 @@ pub struct SenderReport {
     pub profile_ext: Vec<u8>,
 }
 
-impl RtcpPacketType for SenderReport{
+impl RtcpPacketType for SenderReport {
     fn encode_into(&self, out: &mut Vec<u8>) {
         let start = out.len();
         // placeholder header

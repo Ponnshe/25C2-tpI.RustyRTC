@@ -1,11 +1,8 @@
 use crate::rtcp::packet_type::PT_RR;
 
 use super::{
-    common_header::CommonHeader,
-    report_block::ReportBlock,
-    rtcp::RtcpPacket,
-    rtcp_error::RtcpError,
-    packet_type::RtcpPacketType,
+    common_header::CommonHeader, packet_type::RtcpPacketType, report_block::ReportBlock,
+    rtcp::RtcpPacket, rtcp_error::RtcpError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -15,8 +12,7 @@ pub struct ReceiverReport {
     pub profile_ext: Vec<u8>,
 }
 
-
-impl RtcpPacketType for ReceiverReport{
+impl RtcpPacketType for ReceiverReport {
     fn encode_into(&self, out: &mut Vec<u8>) {
         let start = out.len();
         let hdr = CommonHeader::new(self.reports.len() as u8, PT_RR, false);
@@ -72,4 +68,3 @@ impl ReceiverReport {
         }
     }
 }
-

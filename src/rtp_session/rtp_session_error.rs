@@ -9,34 +9,30 @@ use std::sync::{MutexGuard, PoisonError};
 pub enum RtpSessionError {
     Rtcp(RtcpError),
     Rtp(RtpError),
-    SendStream {
-        source: RtpSendError,
-        ssrc: u32,
-    },
-    RecvStream {
-        source: RtpRecvError,
-        ssrc: u32,
-    },
+    SendStream { source: RtpSendError, ssrc: u32 },
+    RecvStream { source: RtpRecvError, ssrc: u32 },
     MutexPoisoned,
     EmptyMediaReceiver,
 }
 
 impl<'a, T> From<PoisonError<MutexGuard<'a, T>>> for RtpSessionError {
-    fn from(: PoisonError<MutexGuard<'a, T>>) -> Self {
+    fn from(_: PoisonError<MutexGuard<'a, T>>) -> Self {
         RtpSessionError::MutexPoisoned
     }
 }
 
 impl fmt::Display for RtpSessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use RtpSessionError::*;
         match self {
             Rtcp(e) => write!(f, "RTCP error: {e}"),
             Rtp(e) => write!(f, "RTP error: {e}"),
-            SendStream { source, ssrc } =>
-                write!(f, "Send RTP Stream error (ssrc={ssrc}): {source}"),
-            RecvStream { source, ssrc } =>
-                write!(f, "Recv RTP Stream error (ssrc={ssrc}): {source}"),
+            SendStream { source, ssrc } => {
+                write!(f, "Send RTP Stream error (ssrc={ssrc}): {source}")
+            }
+            RecvStream { source, ssrc } => {
+                write!(f, "Recv RTP Stream error (ssrc={ssrc}): {source}")
+            }
             MutexPoisoned => write!(f, "Mutex poisoned"),
             EmptyMediaReceiver => write!(f, "Empty Media Receiver"),
         }
@@ -44,8 +40,12 @@ impl fmt::Display for RtpSessionError {
 }
 
 impl From<RtcpError> for RtpSessionError {
-    fn from(e: RtcpError) -> Self { Self::Rtcp(e) }
+    fn from(e: RtcpError) -> Self {
+        Self::Rtcp(e)
+    }
 }
 impl From<RtpError> for RtpSessionError {
-    fn from(e: RtpError) -> Self { Self::Rtp(e) }
+    fn from(e: RtpError) -> Self {
+        Self::Rtp(e)
+    }
 }

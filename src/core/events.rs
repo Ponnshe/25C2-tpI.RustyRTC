@@ -15,5 +15,8 @@ pub enum EngineEvent {
     },
     Closed,
     Error(String),
-    RtpMedia{bytes: Vec<u8>, pt: u8},
+    RtpMedia {
+        bytes: Vec<u8>,
+        pt: u8,
+    },
 }

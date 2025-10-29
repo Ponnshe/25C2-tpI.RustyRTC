@@ -350,16 +350,16 @@ mod tests {
             true,
             127,
             0x1122,
-            0x33445566,
-            0x77889900,
+            0x33_445_566,
+            0x77_889_900,
         );
         let pkt = RtpPacket::decode(&buf).expect("should decode");
         assert_eq!(pkt.header.version, RTP_VERSION);
         assert!(pkt.header.marker);
         assert_eq!(pkt.header.payload_type, 127);
-        assert_eq!(pkt.header.sequence_number, 0x1122);
-        assert_eq!(pkt.header.timestamp, 0x33445566);
-        assert_eq!(pkt.header.ssrc, 0x77889900);
+        assert_eq!(pkt.header.sequence_number, 0x1_122);
+        assert_eq!(pkt.header.timestamp, 0x33_445_566);
+        assert_eq!(pkt.header.ssrc, 0x77_889_900);
         assert!(pkt.payload.is_empty());
         assert_eq!(pkt.padding_bytes, 0);
     }
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn roundtrip_minimal() {
         let payload = b"hello".to_vec();
-        let pkt = RtpPacket::simple(96, true, 42, 9000, 0xAABBCCDD, payload.clone());
+        let pkt = RtpPacket::simple(96, true, 42, 9_000, 0xAA_BBC_CDD, payload.clone());
         let enc = pkt.encode();
         let dec = RtpPacket::decode(&enc).expect("decode");
         assert_eq!(dec.header.version, RTP_VERSION);
@@ -375,14 +375,14 @@ mod tests {
         assert!(dec.header.marker);
         assert_eq!(dec.header.sequence_number, 42);
         assert_eq!(dec.header.timestamp, 9000);
-        assert_eq!(dec.header.ssrc, 0xAABBCCDD);
+        assert_eq!(dec.header.ssrc, 0xAA_BBC_CDD);
         assert_eq!(dec.payload, payload);
         assert_eq!(dec.padding_bytes, 0);
     }
 
     #[test]
     fn roundtrip_with_padding_1() {
-        let mut hdr = RtpHeader::new(111, 65535, 0xDEADBEEF, 0x01020304).with_marker(false);
+        let mut hdr = RtpHeader::new(111, 65_535, 0xDE_ADB_EEF, 0x01_020_304).with_marker(false);
         hdr.padding = true;
 
         let mut pkt = RtpPacket::new(hdr, b"PAYLOAD".to_vec());
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_padding_4() {
-        let mut hdr = RtpHeader::new(111, 7, 1234, 0xCAFEBABE).with_marker(true);
+        let mut hdr = RtpHeader::new(111, 7, 1234, 0xCA_FEB_ABE).with_marker(true);
         hdr.padding = true;
 
         let mut pkt = RtpPacket::new(hdr, vec![1, 2, 3]);
@@ -455,7 +455,14 @@ mod tests {
 
     #[test]
     fn getters_work() {
-        let pkt = RtpPacket::simple(120, true, 0xF_FFF, 0x01_020_304, 0x0A_0B0_C0D, vec![7, 8, 9]);
+        let pkt = RtpPacket::simple(
+            120,
+            true,
+            0xF_FFF,
+            0x01_020_304,
+            0x0A_0B0_C0D,
+            vec![7, 8, 9],
+        );
         assert_eq!(pkt.payload_type(), 120);
         assert!(pkt.marker());
         assert_eq!(pkt.seq(), 0xFFFF);

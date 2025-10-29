@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn trailing_garbage_at_end() {
         // Valid PLI packet followed by 2 stray bytes -> decoder should error TooShort.
-        let pli_payload = [be32(0xAABBCCDD), be32(0x11223344)].concat();
+        let pli_payload = [be32(0xAA_BB_CC_DD), be32(0x11_22_33_44)].concat();
         let mut buf = mk_packet(2, false, 1, PT_PSFB, &pli_payload);
         buf.extend_from_slice(&[0xAA, 0xBB]); // trailing partial bytes
         let err = RtcpPacket::decode_compound(&buf).unwrap_err();
@@ -196,7 +196,7 @@ mod tests {
         // SDES with one chunk:
         // ssrc(4) + item(type=1=CNAME, len=5, but only 2 bytes provided) + END not present
         // payload bytes = 4 + 1 + 1 + 2 = 8 (already 32-bit aligned)
-        let payload = [be32(0x01020304).to_vec(), vec![1, 5], vec![0x41, 0x42]].concat();
+        let payload = [be32(0x01_02_03_04).to_vec(), vec![1, 5], vec![0x41, 0x42]].concat();
         let pkt = mk_packet(2, false, 1, PT_SDES, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::SdesItemTooShort));
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn bye_truncated_sources() {
         // BYE with SC=2 but only one SSRC (4 bytes) present -> Truncated.
-        let payload = be32(0xDEADBEEF).to_vec(); // only one SSRC
+        let payload = be32(0xDE_AD_BE_EF).to_vec(); // only one SSRC
         let pkt = mk_packet(2, false, 2, PT_BYE, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::Truncated));
@@ -216,7 +216,7 @@ mod tests {
         // BYE with one SSRC and reason length=10 but only 5 reason bytes present.
         // Pad payload up to 32-bit boundary (2 zeros) so header length is valid.
         let mut payload = Vec::new();
-        payload.extend_from_slice(&be32(0xCAFEBABE)); // SSRC
+        payload.extend_from_slice(&be32(0xCA_FE_BA_BE)); // SSRC
         payload.push(10u8); // reason length claims 10
         payload.extend_from_slice(b"short"); // only 5 bytes
         payload.extend_from_slice(&[0, 0]); // pad to multiple of 4 (total 12)
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn app_too_short_payload() {
         // APP requires at least 8 bytes payload (SSRC + 4-char name).
-        let payload = be32(0x11111111).to_vec(); // only SSRC
+        let payload = be32(0x11_11_11_11).to_vec(); // only SSRC
         let pkt = mk_packet(2, false, 0, PT_APP, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::TooShort));
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn rtpfb_invalid_fmt() {
         // RTPFB with FMT != 1 (e.g., 0) should return Invalid.
-        let payload = [be32(0x01020304), be32(0x05060708)].concat(); // sender_ssrc + media_ssrc
+        let payload = [be32(0x01_02_03_04), be32(0x05_06_07_08)].concat(); // sender_ssrc + media_ssrc
         let pkt = mk_packet(2, false, 0, PT_RTPFB, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::Invalid));
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn rtpfb_nack_too_short() {
         // RTPFB FMT=1 (NACK) but payload < 8 bytes -> TooShort.
-        let payload = be32(0xDEAD_BEEF).to_vec(); // only sender_ssrc (4 bytes)
+        let payload = be32(0xDE_AD_BE_EF).to_vec(); // only sender_ssrc (4 bytes)
         let pkt = mk_packet(2, false, 1, PT_RTPFB, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::TooShort));
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn psfb_invalid_fmt() {
         // PSFB with FMT != 1 (e.g., 3) should return Invalid.
-        let payload = [be32(0x11111111), be32(0x22222222)].concat(); // sender + media
+        let payload = [be32(0x11_11_11_11), be32(0x22_22_22_22)].concat(); // sender + media
         let pkt = mk_packet(2, false, 3, PT_PSFB, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::Invalid));
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn psfb_too_short() {
         // PSFB FMT=1 (PLI) but payload < 8 bytes -> TooShort.
-        let payload = be32(0x11111111).to_vec(); // only sender_ssrc
+        let payload = be32(0x11_11_11_11).to_vec(); // only sender_ssrc
         let pkt = mk_packet(2, false, 1, PT_PSFB, &payload);
         let err = RtcpPacket::decode_compound(&pkt).unwrap_err();
         assert!(matches!(err, RtcpError::TooShort));
@@ -275,17 +275,17 @@ mod tests {
     #[test]
     fn roundtrip_pli_and_bye_and_app_compound() {
         let pli = RtcpPacket::Pli(PictureLossIndication {
-            sender_ssrc: 0xAABBCCDD,
-            media_ssrc: 0x11223344,
+            sender_ssrc: 0xAA_BB_CC_DD,
+            media_ssrc: 0x11_22_33_44,
         });
         let bye = RtcpPacket::Bye(Bye {
-            sources: vec![0xDEADBEEF],
+            sources: vec![0xDE_AD_BE_EF],
             reason: Some("bye!".into()),
         });
         let app = RtcpPacket::App(App {
             subtype: 7,
             name: *b"TEST",
-            ssrc: 0x12345678,
+            ssrc: 0x12_34_56_78,
             data: vec![1, 2, 3, 4, 5, 6, 7, 8],
         });
 
@@ -296,14 +296,14 @@ mod tests {
         // preserve order and kind
         match &dec[0] {
             RtcpPacket::Pli(p) => {
-                assert_eq!(p.sender_ssrc, 0xAABBCCDD);
-                assert_eq!(p.media_ssrc, 0x11223344);
+                assert_eq!(p.sender_ssrc, 0xAA_BB_CC_DD);
+                assert_eq!(p.media_ssrc, 0x11_22_33_44);
             }
             _ => panic!("expected PLI"),
         }
         match &dec[1] {
             RtcpPacket::Bye(b) => {
-                assert_eq!(b.sources, vec![0xDEADBEEF]);
+                assert_eq!(b.sources, vec![0xDE_AD_BE_EF]);
                 assert_eq!(b.reason.as_deref(), Some("bye!"));
             }
             _ => panic!("expected BYE"),
@@ -312,7 +312,7 @@ mod tests {
             RtcpPacket::App(a) => {
                 assert_eq!(a.subtype, 7);
                 assert_eq!(&a.name, b"TEST");
-                assert_eq!(a.ssrc, 0x12345678);
+                assert_eq!(a.ssrc, 0x12_34_56_78);
                 assert_eq!(a.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
             }
             _ => panic!("expected APP"),
@@ -323,13 +323,13 @@ mod tests {
     fn roundtrip_sr_and_rr_and_sdes() {
         // Minimal SR (no report blocks)
         let sr = RtcpPacket::Sr(SenderReport {
-            ssrc: 0x01020304,
+            ssrc: 0x01_02_03_04,
             info: SenderInfo {
-                ntp_msw: 0x11111111,
-                ntp_lsw: 0x22222222,
-                rtp_ts: 0x33333333,
+                ntp_msw: 0x11_11_11_11,
+                ntp_lsw: 0x22_22_22_22,
+                rtp_ts: 0x33_33_33_33,
                 packet_count: 10,
-                octet_count: 1000,
+                octet_count: 1_000,
             },
             reports: vec![],
             profile_ext: vec![],
@@ -337,7 +337,7 @@ mod tests {
 
         // Minimal RR (no report blocks)
         let rr = RtcpPacket::Rr(ReceiverReport {
-            ssrc: 0x0A0B0C0D,
+            ssrc: 0x0A_0B_0C_0D,
             reports: vec![],
             profile_ext: vec![],
         });
@@ -345,7 +345,7 @@ mod tests {
         // SDES with one CNAME item
         let sdes = RtcpPacket::Sdes(Sdes {
             chunks: vec![SdesChunk {
-                ssrc: 0xF0E0D0C0,
+                ssrc: 0xF0_E0_D0_C0,
                 items: vec![SdesItem::Cname("alice@example.com".into())],
             }],
         });
@@ -361,8 +361,8 @@ mod tests {
     #[test]
     fn roundtrip_rtpfb_nack_single_entry() {
         let nack = RtcpPacket::Nack(GenericNack {
-            sender_ssrc: 0x11112222,
-            media_ssrc: 0x33334444,
+            sender_ssrc: 0x11_11_22_22,
+            media_ssrc: 0x33_33_44_44,
             entries: vec![(1000, 0b0000_0000_0000_0011)],
         });
 
@@ -371,8 +371,8 @@ mod tests {
         assert_eq!(dec.len(), 1);
         match &dec[0] {
             RtcpPacket::Nack(n) => {
-                assert_eq!(n.sender_ssrc, 0x11112222);
-                assert_eq!(n.media_ssrc, 0x33334444);
+                assert_eq!(n.sender_ssrc, 0x11_11_22_22);
+                assert_eq!(n.media_ssrc, 0x33_33_44_44);
                 assert_eq!(n.entries, vec![(1000, 0b11)]);
             }
             _ => panic!("expected NACK"),

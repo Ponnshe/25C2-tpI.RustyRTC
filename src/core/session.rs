@@ -171,10 +171,7 @@ impl Session {
                     },
                     Err(ref e)
                         if e.kind() == std::io::ErrorKind::WouldBlock
-                            || e.kind() == std::io::ErrorKind::TimedOut =>
-                    {
-                        continue;
-                    }
+                            || e.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(e) => {
                         let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
                         break;

@@ -4,17 +4,15 @@ use std::{
     time::Instant,
 };
 
+use super::rtp_send_error::RtpSendError;
 use super::{
     rtp_codec::RtpCodec,
     rtp_send_config::RtpSendConfig,
     tx_tracker::TxTracker, // <— NEW
 };
-use super::rtp_send_error::RtpSendError;
 
 use crate::rtcp::{
-    report_block::ReportBlock,
-    sender_info::SenderInfo,
-    sender_report::SenderReport,
+    report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
 };
 use crate::rtp::rtp_packet::RtpPacket;
 use crate::rtp_session::time; // assumes time::ntp_now() -> (u32, u32)
@@ -97,14 +95,14 @@ impl RtpSendStream {
             return None;
         }
 
-        let (ntp_msw, ntp_lsw) = time::ntp_now();
+        let (ntp_most_sw, now_least_sw) = time::ntp_now();
 
         // Tell the tracker which SR we’re about to publish (for RTT via LSR/DLSR)
-        self.tx.mark_sr_sent(ntp_msw, ntp_lsw);
+        self.tx.mark_sr_sent(ntp_most_sw, now_least_sw);
 
         let sender_info = SenderInfo::new(
-            ntp_msw,
-            ntp_lsw,
+            ntp_most_sw,
+            now_least_sw,
             self.ts,
             self.pkt_count,
             self.octet_count,
@@ -123,7 +121,11 @@ impl RtpSendStream {
 
     /// Optional: expose some outbound health summary for logging/telemetry.
     pub fn outbound_summary(&self) -> String {
-        let rtt = self.tx.rtt_ms.map(|v| format!("{v} ms")).unwrap_or_else(|| "-".into());
+        let rtt = self
+            .tx
+            .rtt_ms
+            .map(|v| format!("{v} ms"))
+            .unwrap_or_else(|| "-".into());
         format!(
             "SSRC={:#010x} sent={} pkts, {} bytes; remote_lost={} (frac={}), remote_jitter={}, RTT={}",
             self.local_ssrc,

@@ -1,4 +1,9 @@
-use crate::rtcp::{common_header::CommonHeader, packet_type::{RtcpPacketType, PT_PSFB}, rtcp::RtcpPacket, rtcp_error::RtcpError};
+use crate::rtcp::{
+    common_header::CommonHeader,
+    packet_type::{PT_PSFB, RtcpPacketType},
+    rtcp::RtcpPacket,
+    rtcp_error::RtcpError,
+};
 
 // Feedback: PLI (PSFB, FMT=1)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +30,10 @@ impl RtcpPacketType for PictureLossIndication {
         out[start + 3] = (len_words & 0xFF) as u8;
     }
 
-    fn decode(hdr: &super::common_header::CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
+    fn decode(
+        hdr: &super::common_header::CommonHeader,
+        payload: &[u8],
+    ) -> Result<RtcpPacket, RtcpError> {
         // Payload-specific feedback (206); support FMT=1 (PLI) only.
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);

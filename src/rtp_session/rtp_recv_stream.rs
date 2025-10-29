@@ -34,7 +34,7 @@ impl RtpRecvStream {
     fn instant_to_rtp_units(&self, now: Instant) -> u32 {
         let dur = now.duration_since(self.epoch);
         let rate = self.codec.clock_rate as u128; // Hz
-        let ns = dur.as_nanos();                  // u128
+        let ns = dur.as_nanos(); // u128
         let units = (ns.saturating_mul(rate)) / 1_000_000_000u128;
         units as u32
     }
@@ -58,7 +58,8 @@ impl RtpRecvStream {
         let arrival_rtp = self.instant_to_rtp_units(now);
 
         // 3) Update RX tracker
-        self.rx.on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
+        self.rx
+            .on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
 
         // 4) Emit media event (prefer owned bytes over borrows; see note below)
         let _ = self.event_transmitter.send(EngineEvent::RtpMedia {
@@ -69,7 +70,12 @@ impl RtpRecvStream {
 
     /// Called by the *session* when an SR for this remote SSRC arrives.
     /// `arrival_ntp` is the local receive time of the SR as (ntp_msw, ntp_lsw).
-    pub fn on_sender_report(&mut self, sender_ssrc: u32, info: &SenderInfo, arrival_ntp: (u32, u32)) {
+    pub fn on_sender_report(
+        &mut self,
+        sender_ssrc: u32,
+        info: &SenderInfo,
+        arrival_ntp: (u32, u32),
+    ) {
         // Learn/validate SSRC
         if let Some(exp) = self.remote_ssrc {
             if exp != sender_ssrc {
@@ -82,7 +88,8 @@ impl RtpRecvStream {
         self.last_activity = Instant::now();
 
         // Anchor SR timing so we can later fill LSR/DLSR in our RR
-        self.rx.on_sr_received(info.ntp_msw, info.ntp_lsw, arrival_ntp);
+        self.rx
+            .on_sr_received(info.ntp_msw, info.ntp_lsw, arrival_ntp);
 
         // (Optional) surface for logs/metrics
         let _ = self.event_transmitter.send(EngineEvent::Log(format!(
@@ -93,6 +100,7 @@ impl RtpRecvStream {
 
     /// Build one RTCP ReportBlock for this remote SSRC.
     pub fn build_report_block(&mut self) -> Option<ReportBlock> {
-        self.remote_ssrc.map(|ssrc| self.rx.build_report_block(ssrc))
+        self.remote_ssrc
+            .map(|ssrc| self.rx.build_report_block(ssrc))
     }
 }

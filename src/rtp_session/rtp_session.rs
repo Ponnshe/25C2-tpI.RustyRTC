@@ -1,15 +1,28 @@
 use std::{
-    collections::HashMap, future::pending, net::{SocketAddr, UdpSocket}, sync::{
-        atomic::{AtomicBool, Ordering}, mpsc::{Receiver, Sender}, Arc, Mutex
-    }, thread, time::Duration
+    collections::HashMap,
+    net::{SocketAddr, UdpSocket},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+    thread,
+    time::Duration,
 };
 
 use super::{
     rtp_recv_config::RtpRecvConfig, rtp_recv_stream::RtpRecvStream, rtp_send_config::RtpSendConfig,
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
-use crate::{ core::events::EngineEvent, rtcp::{ packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock, sdes::Sdes}, rtp::rtp_packet::RtpPacket };
-use crate::rtcp::rtcp::RtcpPacket;
+use crate::{rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket}};
+use crate::{
+    core::events::EngineEvent,
+    rtcp::{
+        packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
+        sdes::Sdes,
+    },
+    rtp::rtp_packet::RtpPacket,
+};
 use egui::text_selection::text_cursor_state::ccursor_next_word;
 use rand::{RngCore, rngs::OsRng};
 
@@ -121,18 +134,16 @@ impl RtpSession {
                             if let Err(e) =
                                 handle_rtcp(&pkt, &recv_map, &pending_recv, &send_map, &tx_evt)
                             {
-                                let _ = tx_evt.send(EngineEvent::Log(format!(
-                                    "[RTCP] error: {e:?}"
-                                )));
+                                let _ =
+                                    tx_evt.send(EngineEvent::Log(format!("[RTCP] error: {e:?}")));
                             }
                             continue;
                         }
 
                         // ---- RTP fast-path ----
                         if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
-                            let _ = tx_evt.send(EngineEvent::Log(
-                                "[RTP] invalid header/version".into(),
-                            ));
+                            let _ = tx_evt
+                                .send(EngineEvent::Log("[RTP] invalid header/version".into()));
                             continue;
                         }
 
@@ -140,9 +151,7 @@ impl RtpSession {
                         let rtp = match RtpPacket::decode(&pkt) {
                             Ok(p) => p,
                             Err(_) => {
-                                let _ = tx_evt.send(EngineEvent::Log(
-                                    "[RTP] decode failed".into(),
-                                ));
+                                let _ = tx_evt.send(EngineEvent::Log("[RTP] decode failed".into()));
                                 continue;
                             }
                         };
@@ -160,7 +169,8 @@ impl RtpSession {
 
                         // 2) Bind a pending stream by PT, then move it to the map
                         if let Ok(mut pend) = pending_recv.lock() {
-                            if let Some(idx) = pend.iter().position(|s| s.codec.payload_type == pt) {
+                            if let Some(idx) = pend.iter().position(|s| s.codec.payload_type == pt)
+                            {
                                 let mut st = pend.swap_remove(idx);
                                 st.remote_ssrc = Some(ssrc);
                                 st.receive_rtp_packet(rtp);
@@ -235,7 +245,7 @@ impl RtpSession {
 
     /// Send PLI for a specific remote source.
     pub fn send_pli(&self, remote_ssrc: u32) {
-        let pli = rtcp::PictureLossIndication {
+        let pli = PictureLossIndication {
             sender_ssrc: self.local_rtcp_ssrc,
             media_ssrc: remote_ssrc,
         }
@@ -283,8 +293,8 @@ fn handle_rtcp(
     let pkts: Vec<RtcpPacket> = RtcpPacket::decode_compound(buf)?;
 
     // Arrival time for RTT calculus (compact NTP) and for SR anchoring (full NTP)
-    let (now_msw, now_lsw) = crate::rtp_session::time::ntp_now();
-    let arrival_ntp_compact = ntp_to_compact(now_msw, now_lsw);
+    let (now_most_sw, now_least_sw) = crate::rtp_session::time::ntp_now();
+    let arrival_ntp_compact = ntp_to_compact(now_most_sw, now_least_sw);
 
     for pkt in pkts {
         match pkt {
@@ -292,7 +302,7 @@ fn handle_rtcp(
                 // 1) SR → recv stream (anchors LSR/DLSR clock)
                 if let Ok(mut g) = recv_map.lock() {
                     if let Some(st) = g.get_mut(&sr.ssrc) {
-                        st.on_sender_report(sr.ssrc, &sr.info, (now_msw, now_lsw));
+                        st.on_sender_report(sr.ssrc, &sr.info, (now_most_sw, now_least_sw));
                     } else {
                         // (Optional) if you want to bind a pending recv purely on SR (no RTP yet),
                         // you could try heuristic binding here. Generally better to wait for RTP.
@@ -361,7 +371,8 @@ fn handle_rtcp(
                 // Route to the *sender* stream (implement your RTX/repair path there)
                 let _ = tx_evt.send(EngineEvent::Log(format!(
                     "[RTCP][NACK] for media_ssrc={:#010x} fci_count={}",
-                    nack.media_ssrc, nack.entries.len()
+                    nack.media_ssrc,
+                    nack.entries.len()
                 )));
             }
 
@@ -373,4 +384,3 @@ fn handle_rtcp(
 
     Ok(())
 }
-

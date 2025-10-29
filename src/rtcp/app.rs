@@ -1,4 +1,9 @@
-use crate::rtcp::{common_header::CommonHeader, packet_type::{RtcpPacketType, PT_APP}, rtcp::RtcpPacket, rtcp_error::RtcpError };
+use crate::rtcp::{
+    common_header::CommonHeader,
+    packet_type::{PT_APP, RtcpPacketType},
+    rtcp::RtcpPacket,
+    rtcp_error::RtcpError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
@@ -26,7 +31,10 @@ impl RtcpPacketType for App {
         out[start + 3] = (len_words & 0xFF) as u8;
     }
 
-    fn decode(hdr: &super::common_header::CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
+    fn decode(
+        hdr: &super::common_header::CommonHeader,
+        payload: &[u8],
+    ) -> Result<RtcpPacket, RtcpError> {
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
         }

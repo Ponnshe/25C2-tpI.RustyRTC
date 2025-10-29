@@ -1,4 +1,9 @@
-use crate::rtcp::{common_header::CommonHeader, packet_type::{RtcpPacketType, PT_RTPFB}, rtcp::RtcpPacket, rtcp_error::RtcpError};
+use crate::rtcp::{
+    common_header::CommonHeader,
+    packet_type::{PT_RTPFB, RtcpPacketType},
+    rtcp::RtcpPacket,
+    rtcp_error::RtcpError,
+};
 
 // Feedback: Generic NACK (RTPFB, FMT=1)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,10 +32,13 @@ impl RtcpPacketType for GenericNack {
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
         out[start + 2] = ((len_words >> 8) & 0xFF) as u8;
-            out[start + 3] = (len_words & 0xFF) as u8;
+        out[start + 3] = (len_words & 0xFF) as u8;
     }
 
-    fn decode(hdr: &super::common_header::CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {
+    fn decode(
+        hdr: &super::common_header::CommonHeader,
+        payload: &[u8],
+    ) -> Result<RtcpPacket, RtcpError> {
         // Transport layer feedback (205). We only support FMT=1 (Generic NACK).
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
@@ -59,7 +67,6 @@ impl RtcpPacketType for GenericNack {
             }
             _ => Err(RtcpError::Invalid),
         }
-
     }
 }
 

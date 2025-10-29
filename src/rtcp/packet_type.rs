@@ -1,8 +1,4 @@
-use super::{
-    common_header::CommonHeader,
-    rtcp_error::RtcpError,
-    rtcp::RtcpPacket,
-};
+use super::{common_header::CommonHeader, rtcp::RtcpPacket, rtcp_error::RtcpError};
 
 // RTCP packet types (per RFC3550; feedback per RFC4585/5104)
 pub const PT_SR: u8 = 200;
