@@ -192,11 +192,12 @@ impl RtpSession {
             }
         });
 
-        // === periodic RTCP sender: RR (aggregate all Recv streams) + SDES ===
+        // === periodic RTCP sender: SR, RR, SDES ===
         let run2 = Arc::clone(&self.run);
         let sock = Arc::clone(&self.sock);
         let peer = self.peer;
         let recv_map2 = Arc::clone(&self.recv_streams);
+        let send_map2 = Arc::clone(&self.send_streams); // <--- NEW
         let tx_evt2 = self.tx_evt.clone();
         let interval = self.rtcp_interval;
         let rr_ssrc = self.local_rtcp_ssrc;
@@ -206,7 +207,24 @@ impl RtpSession {
             while run2.load(Ordering::SeqCst) {
                 std::thread::sleep(interval);
 
-                // Collect report blocks
+                let mut comp_pkt = Vec::new();
+
+                // Build Sender Reports (SR) for each sending stream ---
+                if let Ok(mut guard) = send_map2.lock() {
+                    for st in guard.values_mut() {
+                        if let Some(sr) = st.maybe_build_sr() {
+                            let mut sr_bytes = Vec::new();
+                            sr.encode_into(&mut sr_bytes);
+                            comp_pkt.extend_from_slice(&sr_bytes);
+                            let _ = tx_evt2.send(EngineEvent::Log(format!(
+                                "[RTCP] tx SR ssrc={:#010x}",
+                                st.local_ssrc
+                            )));
+                        }
+                    }
+                }
+
+                // Build one Receiver Report (RR) for all receiving streams ---
                 let mut blocks: Vec<ReportBlock> = Vec::new();
                 if let Ok(mut guard) = recv_map2.lock() {
                     for st in guard.values_mut() {
@@ -216,23 +234,26 @@ impl RtpSession {
                     }
                 }
 
-                // Build RR + SDES (adapt to your encode API)
-                let rr = ReceiverReport::new(rr_ssrc, blocks);
-                let mut rr_bytes = Vec::new();
-                rr.encode_into(&mut rr_bytes);
+                // Only send RR if there are blocks. If we are a pure sender, we might not have any.
+                if !blocks.is_empty() {
+                    let rr = ReceiverReport::new(rr_ssrc, blocks);
+                    let mut rr_bytes = Vec::new();
+                    rr.encode_into(&mut rr_bytes);
+                    comp_pkt.extend_from_slice(&rr_bytes);
+                    let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR".into()));
+                }
 
+                // --- 3) Build SDES with CNAME ---
+                // Note: could be conditional if you only want to send it once or twice.
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 sdes.encode_into(&mut sdes_bytes);
+                comp_pkt.extend_from_slice(&sdes_bytes);
 
-                let mut comp = Vec::with_capacity(rr_bytes.len() + sdes_bytes.len());
-                comp.extend_from_slice(&rr_bytes);
-                comp.extend_from_slice(&sdes_bytes);
-
-                let _ = sock.send_to(&comp, peer);
-                let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR+SDES".into()));
-
-                //TODO: Añadir sender reports con maybe_build_sr
+                // --- 4) Send compound packet if not empty ---
+                if !comp_pkt.is_empty() {
+                    let _ = sock.send_to(&comp_pkt, peer);
+                }
             }
         });
 
