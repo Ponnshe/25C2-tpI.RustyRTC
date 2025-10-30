@@ -291,7 +291,7 @@ impl RtpSession {
     pub fn send_pli(&self, remote_ssrc: u32) {
         let pli = PictureLossIndication::new(self.local_rtcp_ssrc, remote_ssrc);
         let mut buf = Vec::new();
-        pli.encode_into(&mut buf);
+        let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
         let _ = self.tx_evt.send(EngineEvent::Log(format!(
             "[RTCP] tx PLI media_ssrc={remote_ssrc}"
@@ -329,10 +329,14 @@ impl RtpSession {
 #[inline]
 fn is_rtcp(pkt: &[u8]) -> bool {
     // RTCP header is at least 4 bytes; first byte contains version in top 2 bits
-    if pkt.len() < 4 { return false; }
+    if pkt.len() < 4 {
+        return false;
+    }
 
     let version = pkt[0] >> 6;
-    if version != 2 { return false; } // expect RTP/RTCP v2
+    if version != 2 {
+        return false;
+    } // expect RTP/RTCP v2
 
     // pkt[1] is the RTCP packet type (8 bits) for RTCP packets
     matches!(pkt[1], 200..=206)

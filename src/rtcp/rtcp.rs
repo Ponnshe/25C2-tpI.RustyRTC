@@ -43,7 +43,7 @@ impl RtcpPacket {
                 if payload.is_empty() {
                     return Err(RtcpError::PaddingTooShort);
                 }
-                let pad = *pkt_bytes.last().map_or(RtcpError::Invalid) as usize;
+                let pad = *pkt_bytes.last().ok_or(RtcpError::Invalid)? as usize;
                 if pad == 0 || pad > payload.len() {
                     return Err(RtcpError::PaddingTooShort);
                 }

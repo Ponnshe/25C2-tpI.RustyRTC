@@ -11,7 +11,7 @@ pub const PT_PSFB: u8 = 206; // Payload-specific FB (e.g., PLI, FIR)
 
 pub trait RtcpPacketType {
     /// Codifica el paquete completo (incluyendo CommonHeader)
-    fn encode_into(&self, out: &mut Vec<u8>);
+    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), RtcpError>;
 
     /// Decodifica el paquete a partir del CommonHeader y del payload.
     fn decode(hdr: &CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError>;

@@ -4,7 +4,7 @@ use crate::rtcp::{
     rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
-
+const MAX_CHUNKS: usize = 31;
 /// SDES items (subset, extend as needed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdesItem {
@@ -61,7 +61,7 @@ impl SdesChunk {
         for item in &self.items {
             let (t, data) = item.as_bytes();
             // Fail fast if data is >255
-            if data.len() <= u8::MAX as usize {
+            if data.len() > u8::MAX as usize {
                 return Err(RtcpError::SdesItemTooLong);
             };
             out.push(t);
@@ -144,12 +144,12 @@ impl Sdes {
 }
 
 impl RtcpPacketType for Sdes {
-    fn encode_into(&self, out: &mut Vec<u8>) {
+    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), RtcpError> {
         let start = out.len();
         let hdr = CommonHeader::new(self.chunks.len() as u8, PT_SDES, false);
         hdr.encode_into(out);
         for ch in &self.chunks {
-            ch.encode_into(out);
+            ch.encode_into(out)?;
         }
 
         let pad = (4 - (out.len() - start) % 4) % 4;
@@ -160,6 +160,7 @@ impl RtcpPacketType for Sdes {
         let len_words = (total / 4) - 1;
         out[start + 2] = ((len_words >> 8) & 0xFF) as u8;
         out[start + 3] = (len_words & 0xFF) as u8;
+        Ok(())
     }
 
     fn decode(_hdr: &CommonHeader, payload: &[u8]) -> Result<RtcpPacket, RtcpError> {

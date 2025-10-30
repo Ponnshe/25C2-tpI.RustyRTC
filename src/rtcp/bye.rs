@@ -5,6 +5,7 @@ use crate::rtcp::{
     rtcp_error::RtcpError,
 };
 
+const MAX_SOURCES: usize = 31;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bye {
     pub sources: Vec<u32>,
@@ -12,7 +13,10 @@ pub struct Bye {
 }
 
 impl RtcpPacketType for Bye {
-    fn encode_into(&self, out: &mut Vec<u8>) {
+    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), RtcpError> {
+        if self.sources.len() >= 31 {
+            return Err(RtcpError::TooManyByeSources(self.sources.len()));
+        }
         let start = out.len();
         let hdr = CommonHeader::new(self.sources.len() as u8, PT_BYE, false);
         hdr.encode_into(out);
@@ -38,6 +42,7 @@ impl RtcpPacketType for Bye {
         let len_words = (total / 4) - 1;
         out[start + 2] = ((len_words >> 8) & 0xFF) as u8;
         out[start + 3] = (len_words & 0xFF) as u8;
+        Ok(())
     }
 
     fn decode(

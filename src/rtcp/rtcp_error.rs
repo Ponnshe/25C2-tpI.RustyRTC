@@ -11,6 +11,9 @@ pub enum RtcpError {
     Invalid,
     SdesItemTooShort,
     SdesItemTooLong,
+    TooManyReportBlocks(usize),
+    TooManySdesItems(usize),
+    TooManyByeSources(usize),
 }
 
 impl fmt::Display for RtcpError {
@@ -25,7 +28,10 @@ impl fmt::Display for RtcpError {
             Truncated => write!(f, "truncated RTCP structure"),
             Invalid => write!(f, "invalid RTCP packet"),
             SdesItemTooShort => write!(f, "SDES item too short"),
-            SdesItemTooLong => write(f, "SDES item too long"),
+            SdesItemTooLong => write!(f, "SDES item too long"),
+            TooManyReportBlocks(u) => write!(f, "Report Blocks Limit Exceeded: {u}"),
+            TooManySdesItems(u) => write!(f, "Sdes Items Limit Exceeded: {u}"),
+            TooManyByeSources(u) => write!(f, "Bye Sources Limit Exceeded: {u}"),
         }
     }
 }
