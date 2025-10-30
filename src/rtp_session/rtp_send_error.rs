@@ -1,6 +1,7 @@
 use crate::rtp::rtp_error::RtpError;
 use std::fmt;
 use std::io;
+#[derive(Debug)]
 pub enum RtpSendError {
     Network(io::Error),
     Rtp(RtpError),

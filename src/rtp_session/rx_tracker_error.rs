@@ -1,4 +1,6 @@
 use std::fmt;
+
+#[derive(Debug)]
 pub enum RxTrackerError {
     SeqExt,
 }

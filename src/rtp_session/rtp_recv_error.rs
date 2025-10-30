@@ -1,5 +1,7 @@
 use super::rx_tracker_error::RxTrackerError;
 use std::fmt;
+
+#[derive(Debug)]
 pub enum RtpRecvError {
     RxTracker(RxTrackerError),
 }
