@@ -62,7 +62,7 @@ impl RtpSendStream {
             payload.into(),
         );
 
-        let encoded = rtp_packet.encode();
+        let encoded = rtp_packet.encode()?;
 
         self.sock.send_to(&encoded, self.peer)?;
         self.last_pkt_sent = Instant::now();

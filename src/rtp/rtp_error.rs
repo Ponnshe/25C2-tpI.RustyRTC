@@ -6,6 +6,7 @@ pub enum RtpError {
     BadVersion(u8),
     CsrcCountMismatch { expected: usize, buf_left: usize },
     HeaderExtensionTooShort,
+    HeaderExtensionTooLong,
     PaddingTooShort,
     Invalid,
 }
@@ -22,6 +23,7 @@ impl fmt::Display for RtpError {
                 expected, buf_left
             ),
             HeaderExtensionTooShort => write!(f, "RTP header extension too short"),
+            HeaderExtensionTooLong => write!(f, "RTP header extension too long"),
             PaddingTooShort => write!(f, "padding bit set but payload shorter than padding count"),
             Invalid => write!(f, "invalid RTP packet"),
         }

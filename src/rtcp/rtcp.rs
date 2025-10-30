@@ -27,10 +27,28 @@ impl RtcpPacket {
         }
         let mut out = Vec::new();
         let mut idx = 0usize;
+
         while idx + 4 <= buf.len() {
             let (hdr, total) = CommonHeader::decode(&buf[idx..])?;
+            if total < 4 || idx + total > buf.len() {
+                return Err(RtcpError::Truncated);
+            }
             let pkt_bytes = &buf[idx..idx + total];
-            let payload = &pkt_bytes[4..];
+
+            // strip common header
+            let mut payload = &pkt_bytes[4..];
+
+            // handle RTCP P-bit padding
+            if hdr.padding() {
+                if payload.is_empty() {
+                    return Err(RtcpError::PaddingTooShort);
+                }
+                let pad = *pkt_bytes.last().map_or(RtcpError::Invalid) as usize;
+                if pad == 0 || pad > payload.len() {
+                    return Err(RtcpError::PaddingTooShort);
+                }
+                payload = &payload[..payload.len() - pad];
+            }
 
             let pkt = match hdr.pt() {
                 packet_type::PT_SR => SenderReport::decode(&hdr, payload)?,
@@ -42,12 +60,13 @@ impl RtcpPacket {
                 packet_type::PT_PSFB => PictureLossIndication::decode(&hdr, payload)?,
                 other => return Err(RtcpError::UnknownPacketType(other)),
             };
+
             out.push(pkt);
             idx += total;
         }
+
         if idx != buf.len() {
-            // trailing garbage / partial packet
-            return Err(RtcpError::TooShort);
+            return Err(RtcpError::TooShort); // trailing garbage
         }
         Ok(out)
     }

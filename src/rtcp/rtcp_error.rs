@@ -5,10 +5,12 @@ pub enum RtcpError {
     TooShort,
     BadVersion(u8),
     LengthMismatch,
+    PaddingTooShort,
     UnknownPacketType(u8),
     Truncated,
     Invalid,
     SdesItemTooShort,
+    SdesItemTooLong,
 }
 
 impl fmt::Display for RtcpError {
@@ -18,10 +20,12 @@ impl fmt::Display for RtcpError {
             TooShort => write!(f, "buffer too short"),
             BadVersion(v) => write!(f, "bad RTCP version: {v}"),
             LengthMismatch => write!(f, "rendered length does not match header length"),
+            PaddingTooShort => write!(f, "Padding too short"),
             UnknownPacketType(pt) => write!(f, "unknown RTCP packet type: {pt}"),
             Truncated => write!(f, "truncated RTCP structure"),
             Invalid => write!(f, "invalid RTCP packet"),
             SdesItemTooShort => write!(f, "SDES item too short"),
+            SdesItemTooLong => write(f, "SDES item too long"),
         }
     }
 }

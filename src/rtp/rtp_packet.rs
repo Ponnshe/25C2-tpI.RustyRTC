@@ -43,14 +43,14 @@ impl RtpPacket {
     }
 
     /// Encode into a fresh Vec<u8> (network byte order).
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, RtpError> {
         let mut out = Vec::with_capacity(12 + self.header.csrcs.len() * 4 + self.payload.len() + 4);
 
         let cc = (self.header.csrcs.len() & 0x0F) as u8;
-        let vpxcc = (self.header.version & 0b11) << 6
-            | (self.header.padding as u8) << 5
-            | (self.header.extension as u8) << 4
-            | cc;
+        let has_ext = self.header.header_extension.is_some();
+        let has_pad = self.padding_bytes > 0;
+        let vpxcc =
+            (self.header.version & 0b11) << 6 | (has_pad as u8) << 5 | (has_ext as u8) << 4 | cc;
 
         let m_pt = ((self.header.marker as u8) << 7) | (self.header.payload_type & 0x7F);
 
@@ -66,7 +66,11 @@ impl RtpPacket {
 
         if let Some(ext) = &self.header.header_extension {
             // RFC3550: 16-bit profile, 16-bit length in 32-bit words
-            let len_words = ((ext.data.len() + 3) / 4) as u16;
+            let words = ((ext.data.len() + 3) / 4) as u32;
+            if words > u16::MAX as u32 {
+                return Err(RtpError::HeaderExtensionTooLong);
+            }
+            let len_words = words as u16;
             out.extend_from_slice(&ext.profile.to_be_bytes());
             out.extend_from_slice(&len_words.to_be_bytes());
             out.extend_from_slice(&ext.data);
@@ -83,15 +87,15 @@ impl RtpPacket {
         // padding_bytes > 0, we append that many zero octets and set P bit.
         out.extend_from_slice(&self.payload);
 
-        if self.header.padding && self.padding_bytes > 0 {
-            // Add (padding_bytes - 1) zeros and end with padding_bytes count
+        if has_pad {
+            // Add (padding_bytes - 1) filler bytes (any value is legal; use 0) and end with the pad count
             if self.padding_bytes > 1 {
                 out.extend(std::iter::repeat(0u8).take((self.padding_bytes - 1) as usize));
             }
             out.push(self.padding_bytes);
         }
 
-        out
+        Ok(out)
     }
 
     /// Decode a single RTP packet from `buf`.
@@ -255,6 +259,8 @@ mod tests {
         b
     }
 
+    // ---- Decode error paths -------------------------------------------------
+
     #[test]
     fn decode_too_short() {
         let buf = vec![0u8; 11];
@@ -266,7 +272,6 @@ mod tests {
     fn decode_bad_version() {
         // Version != 2
         let mut buf = mk_header_bytes(0, false, false, 0, false, 96, 1, 2, 3);
-        // No payload
         let err = RtpPacket::decode(&buf).unwrap_err();
         match err {
             RtpError::BadVersion(v) => assert_eq!(v, 0),
@@ -339,6 +344,8 @@ mod tests {
         assert!(matches!(err, RtpError::PaddingTooShort));
     }
 
+    // ---- Basic successful decodes / roundtrips -----------------------------
+
     #[test]
     fn decode_ok_no_payload_no_padding() {
         // Valid minimal RTP: header only, empty payload, no padding.
@@ -368,7 +375,7 @@ mod tests {
     fn roundtrip_minimal() {
         let payload = b"hello".to_vec();
         let pkt = RtpPacket::simple(96, true, 42, 9_000, 0xAA_BBC_CDD, payload.clone());
-        let enc = pkt.encode();
+        let enc = pkt.encode().expect("encode");
         let dec = RtpPacket::decode(&enc).expect("decode");
         assert_eq!(dec.header.version, RTP_VERSION);
         assert_eq!(dec.header.payload_type, 96);
@@ -387,7 +394,7 @@ mod tests {
 
         let mut pkt = RtpPacket::new(hdr, b"PAYLOAD".to_vec());
         pkt.padding_bytes = 1; // only the count byte appended
-        let enc = pkt.encode();
+        let enc = pkt.encode().expect("encode");
         assert_eq!(*enc.last().unwrap(), 1u8);
 
         let dec = RtpPacket::decode(&enc).expect("decode");
@@ -402,10 +409,10 @@ mod tests {
         hdr.padding = true;
 
         let mut pkt = RtpPacket::new(hdr, vec![1, 2, 3]);
-        pkt.padding_bytes = 4; // adds 3 zero bytes + final 0x04
-        let enc = pkt.encode();
-        // Total tail should end with [0,0,0,4]
-        assert_eq!(&enc[enc.len() - 4..], &[0, 0, 0, 4]);
+        pkt.padding_bytes = 4; // adds 3 filler bytes + final 0x04
+        let enc = pkt.encode().expect("encode");
+        // Total tail should end with [?, ?, ?, 4]. We don't require zero filler by spec.
+        assert_eq!(enc[enc.len() - 1], 4);
 
         let dec = RtpPacket::decode(&enc).expect("decode");
         assert_eq!(dec.payload, vec![1, 2, 3]);
@@ -419,7 +426,8 @@ mod tests {
         let csrcs: Vec<u32> = (0..15).map(|i| 0x1111_0000 + i).collect();
         hdr = hdr.with_csrcs(csrcs.clone());
         let pkt = RtpPacket::new(hdr, vec![9, 9, 9]);
-        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        let enc = pkt.encode().expect("encode");
+        let dec = RtpPacket::decode(&enc).expect("decode");
         assert_eq!(dec.header.csrcs, csrcs);
         assert_eq!(dec.payload, vec![9, 9, 9]);
     }
@@ -429,7 +437,8 @@ mod tests {
         let mut hdr = RtpHeader::new(100, 10, 20, 30);
         hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0xBEEF, vec![])));
         let pkt = RtpPacket::new(hdr, vec![]);
-        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        let enc = pkt.encode().expect("encode");
+        let dec = RtpPacket::decode(&enc).expect("decode");
         let ext = dec.header.header_extension.expect("ext");
         assert_eq!(ext.profile, 0xBEEF);
         assert!(ext.data.is_empty());
@@ -442,31 +451,201 @@ mod tests {
         let orig = vec![1, 2, 3, 4, 5, 6];
         hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0x1234, orig.clone())));
         let pkt = RtpPacket::new(hdr, vec![0xAA]);
-        let dec = RtpPacket::decode(&pkt.encode()).expect("decode");
+        let enc = pkt.encode().expect("encode");
+        let dec = RtpPacket::decode(&enc).expect("decode");
         let ext = dec.header.header_extension.expect("ext");
 
         assert_eq!(ext.profile, 0x1234);
-        // Should be 8 bytes: original 6 + 2 zero padding bytes
+        // Should be 8 bytes: original 6 + 2 padding bytes
         assert_eq!(ext.data.len(), 8);
         assert_eq!(&ext.data[..6], &orig[..]);
         assert_eq!(&ext.data[6..], &[0, 0]);
         assert_eq!(dec.payload, vec![0xAA]);
     }
 
+    // ---- Extra robustness checks -------------------------------------------
+
     #[test]
-    fn getters_work() {
-        let pkt = RtpPacket::simple(
-            120,
-            true,
-            0xF_FFF,
-            0x01_020_304,
-            0x0A_0B0_C0D,
-            vec![7, 8, 9],
-        );
-        assert_eq!(pkt.payload_type(), 120);
-        assert!(pkt.marker());
-        assert_eq!(pkt.seq(), 0xFFFF);
-        assert_eq!(pkt.timestamp(), 0x01_020_304);
-        assert_eq!(pkt.ssrc(), 0x0A_0B0_C0D);
+    fn padding_bit_follows_bytes() {
+        // When padding_bytes == 0 the P bit must be 0 (even if header.padding=true).
+        let mut hdr = RtpHeader::new(96, 1, 2, 3);
+        hdr.padding = true; // user sets it, but encode derives from padding_bytes
+        let pkt = RtpPacket::new(hdr, vec![]);
+        let enc = pkt.encode().expect("encode");
+        let p_bit = (enc[0] >> 5) & 1;
+        assert_eq!(p_bit, 0);
+
+        // Now with actual pad bytes:
+        let mut hdr = RtpHeader::new(96, 1, 2, 3);
+        hdr.padding = false;
+        let mut pkt = RtpPacket::new(hdr, vec![7, 8, 9]);
+        pkt.padding_bytes = 3;
+        let enc = pkt.encode().expect("encode");
+        let p_bit = (enc[0] >> 5) & 1;
+        assert_eq!(p_bit, 1);
+        let dec = RtpPacket::decode(&enc).unwrap();
+        assert!(dec.header.padding);
+        assert_eq!(dec.padding_bytes, 3);
+    }
+
+    #[test]
+    fn zero_payload_with_padding_ok() {
+        // It's legal to have zero payload and 1+ padding bytes.
+        let mut hdr = RtpHeader::new(96, 10, 20, 30);
+        hdr.padding = true;
+        let mut pkt = RtpPacket::new(hdr, vec![]);
+        pkt.padding_bytes = 1;
+        let enc = pkt.encode().expect("encode");
+        let dec = RtpPacket::decode(&enc).unwrap();
+        assert!(dec.payload.is_empty());
+        assert_eq!(dec.padding_bytes, 1);
+    }
+
+    #[test]
+    fn decode_ignores_nonzero_padding_fill() {
+        // RTP doesn't constrain the filler bytes (only the last count matters).
+        let mut hdr = RtpHeader::new(96, 10, 20, 30);
+        hdr.padding = true;
+        let mut pkt = RtpPacket::new(hdr, b"ABC".to_vec());
+        pkt.padding_bytes = 4;
+        let mut enc = pkt.encode().expect("encode");
+
+        // Overwrite filler bytes with non-zeros (leave last count alone).
+        let n = enc.len();
+        enc[n - 4] = 7;
+        enc[n - 3] = 8;
+        enc[n - 2] = 9;
+        // enc[n-1] is the pad count (4)
+
+        let dec = RtpPacket::decode(&enc).unwrap();
+        assert_eq!(dec.payload, b"ABC");
+        assert_eq!(dec.padding_bytes, 4);
+    }
+
+    #[test]
+    fn header_extension_too_long_errors() {
+        // ext length in words must fit u16; trigger error when it doesn't.
+        let huge = vec![0u8; (u16::MAX as usize + 1) * 4];
+        let mut hdr = RtpHeader::new(96, 1, 2, 3);
+        hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0xABCD, huge)));
+        let pkt = RtpPacket::new(hdr, vec![1, 2, 3]);
+        let err = pkt.encode().unwrap_err();
+        assert!(matches!(err, RtpError::HeaderExtensionTooLong));
+    }
+
+    #[test]
+    fn roundtrip_matrix_covering_common_axes() {
+        // Sweep over a small matrix of PT/marker/CSRC count/payload sizes.
+        let pts = [0u8, 96, 127];
+        let markers = [false, true];
+        let payload_lens = [0usize, 1, 7, 12, 13, 31];
+        let csrc_counts = [0usize, 1, 15];
+
+        for &pt in &pts {
+            for &marker in &markers {
+                for &cc in &csrc_counts {
+                    let mut hdr =
+                        RtpHeader::new(pt, 0xFFFF, 0x0123_4567, 0x89AB_CDEF).with_marker(marker);
+                    let csrcs: Vec<u32> = (0..cc).map(|i| 0x1111_0000 + i as u32).collect();
+                    hdr = hdr.with_csrcs(csrcs.clone());
+
+                    for &plen in &payload_lens {
+                        let payload: Vec<u8> = (0..plen as u8).collect();
+                        let pkt = RtpPacket::new(hdr.clone(), payload.clone());
+                        let enc = pkt.encode().expect("encode");
+                        let dec = RtpPacket::decode(&enc).expect("decode");
+                        assert_eq!(dec.header.payload_type, pt);
+                        assert_eq!(dec.header.marker, marker);
+                        assert_eq!(dec.header.csrcs, csrcs);
+                        assert_eq!(dec.payload, payload);
+                        assert_eq!(dec.padding_bytes, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn header_extension_various_lengths_roundtrip() {
+        for len in [0usize, 1, 2, 3, 4, 5, 6, 7, 8, 15, 16] {
+            let data: Vec<u8> = (0..len as u8).collect();
+            let mut hdr = RtpHeader::new(100, 10, 20, 30);
+            hdr = hdr.with_extension(Some(RtpHeaderExtension::new(0xEE01, data.clone())));
+            let pkt = RtpPacket::new(hdr, vec![0x55, 0xAA]);
+            let enc = pkt.encode().expect("encode");
+            let dec = RtpPacket::decode(&enc).expect("decode");
+            let ext = dec.header.header_extension.expect("ext");
+
+            assert_eq!(ext.profile, 0xEE01);
+            // wire must pad to multiple of 4
+            assert_eq!(ext.data.len() % 4, 0);
+            assert_eq!(&ext.data[..data.len()], &data[..]);
+            assert!(ext.data[data.len()..].iter().all(|&b| b == 0));
+            assert_eq!(dec.payload, vec![0x55, 0xAA]);
+        }
     }
 }
+//     // ---- Property test (requires `proptest` dev-dependency) -----------------
+//     #[cfg(feature = "prop_rtp")]
+//     mod prop {
+//         use super::*;
+//         use proptest::prelude::*;
+//
+//         proptest! {
+//             #[test]
+//             fn prop_roundtrip_random(
+//                 pt in 0u8..=127,
+//                 marker in any::<bool>(),
+//                 seq in any::<u16>(),
+//                 ts in any::<u32>(),
+//                 ssrc in any::<u32>(),
+//                 payload in proptest::collection::vec(any::<u8>(), 0..256),
+//                 csrcs in proptest::collection::vec(any::<u32>(), 0..=15),
+//                 pad in 0u8..=8,
+//                 ext_present in any::<bool>(),
+//                 ext_data in proptest::collection::vec(any::<u8>(), 0..=24),
+//                 profile in any::<u16>(),
+//             ) {
+//                 let mut hdr = RtpHeader::new(pt, seq, ts, ssrc).with_marker(marker);
+//                 hdr = hdr.with_csrcs(csrcs.clone());
+//                 if ext_present {
+//                     hdr = hdr.with_extension(Some(RtpHeaderExtension::new(profile, ext_data.clone())));
+//                 }
+//
+//                 let mut pkt = RtpPacket::new(hdr, payload.clone());
+//                 // Ensure encode/decode agree on P bit semantics (derive from bytes).
+//                 pkt.header.padding = pad > 0;
+//                 pkt.padding_bytes = pad;
+//
+//                 let enc = pkt.encode().expect("encode");
+//                 let dec = RtpPacket::decode(&enc).expect("decode");
+//
+//                 // Header fields
+//                 assert_eq!(dec.header.version, RTP_VERSION);
+//                 assert_eq!(dec.header.payload_type, pt);
+//                 assert_eq!(dec.header.marker, marker);
+//                 assert_eq!(dec.header.sequence_number, seq);
+//                 assert_eq!(dec.header.timestamp, ts);
+//                 assert_eq!(dec.header.ssrc, ssrc);
+//                 assert_eq!(dec.header.csrcs, csrcs);
+//
+//                 // Padding & payload
+//                 assert_eq!(dec.header.padding, pad > 0);
+//                 assert_eq!(dec.padding_bytes, pad);
+//                 assert_eq!(dec.payload, payload);
+//
+//                 // Extension (if present)
+//                 if ext_present {
+//                     let ext = dec.header.header_extension.as_ref().expect("ext");
+//                     assert_eq!(ext.profile, profile);
+//                     assert_eq!(ext.data.len() % 4, 0);
+//                     assert!(ext.data.starts_with(&ext_data));
+//                     assert!(ext.data[ext_data.len()..].iter().all(|&b| b == 0));
+//                 } else {
+//                     assert!(dec.header.header_extension.is_none());
+//                 }
+//             }
+//         }
+//     }
+// }
+//

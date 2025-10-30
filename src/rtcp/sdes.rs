@@ -55,21 +55,25 @@ pub struct SdesChunk {
 }
 
 impl SdesChunk {
-    fn encode_into(&self, out: &mut Vec<u8>) {
+    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), RtcpError> {
+        let start = out.len();
         out.extend_from_slice(&self.ssrc.to_be_bytes());
         for item in &self.items {
             let (t, data) = item.as_bytes();
+            // Fail fast if data is >255
+            if data.len() <= u8::MAX as usize {
+                return Err(RtcpError::SdesItemTooLong);
+            };
             out.push(t);
-            out.push(u8::try_from(data.len()).unwrap_or(0));
+            out.push(data.len() as u8);
             out.extend_from_slice(&data);
         }
-        // End + pad to 32-bit boundary
         out.push(0); // END
-        // pad zeroes until 4-byte alignment of the chunk
-        let rem = out.len() % 4;
+        let rem = (out.len() - start) % 4;
         if rem != 0 {
             out.extend(std::iter::repeat(0u8).take(4 - rem));
         }
+        Ok(())
     }
 
     fn decode(buf: &[u8]) -> Result<(Self, usize), RtcpError> {
