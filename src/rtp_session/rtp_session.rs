@@ -328,8 +328,14 @@ impl RtpSession {
 
 #[inline]
 fn is_rtcp(pkt: &[u8]) -> bool {
-    // RTCP v2: common PTs 200..206 (SR/RR/SDES/BYE/APP/RTPFB/PSFB)
-    pkt.len() >= 2 && (200..=206).contains(&(pkt[1] & 0x7F))
+    // RTCP header is at least 4 bytes; first byte contains version in top 2 bits
+    if pkt.len() < 4 { return false; }
+
+    let version = pkt[0] >> 6;
+    if version != 2 { return false; } // expect RTP/RTCP v2
+
+    // pkt[1] is the RTCP packet type (8 bits) for RTCP packets
+    matches!(pkt[1], 200..=206)
 }
 
 #[inline]
