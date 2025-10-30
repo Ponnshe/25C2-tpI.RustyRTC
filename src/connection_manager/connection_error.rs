@@ -11,18 +11,21 @@ pub enum ConnectionError {
     Negotiation(String),
     Sdp(SdpError),
     ClosingProt(String),
+    RtpMap(String),
 }
 
 impl fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use ConnectionError::*;
         match self {
-            ConnectionError::MediaSpec => write!(f, "Invalid media specification"),
-            ConnectionError::IceAgent => write!(f, "ICE agent error"),
-            ConnectionError::Negotiation(msg) => write!(f, "Negotiation error: {msg}"),
-            ConnectionError::Sdp(e) => write!(f, "SDP error: {e}"),
-            ConnectionError::Network(msg) => write!(f, "Network error: {msg}"),
-            ConnectionError::Socket(e) => write!(f, "Socket error: {e}"),
-            ConnectionError::ClosingProt(msg) => write!(f, "Closing protocol error: {msg}"),
+            MediaSpec => write!(f, "Invalid media specification"),
+            IceAgent => write!(f, "ICE agent error"),
+            Negotiation(msg) => write!(f, "Negotiation error: {msg}"),
+            Sdp(e) => write!(f, "SDP error: {e}"),
+            Network(msg) => write!(f, "Network error: {msg}"),
+            Socket(e) => write!(f, "Socket error: {e}"),
+            ClosingProt(msg) => write!(f, "Closing protocol error: {msg}"),
+            RtpMap(msg) => write!(f, "RtpMap error: {msg}"),
         }
     }
 }

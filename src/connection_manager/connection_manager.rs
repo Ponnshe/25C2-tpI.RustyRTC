@@ -1,6 +1,6 @@
 use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
-    outbound_sdp::OutboundSdp, signaling_state::SignalingState,
+    outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
@@ -8,6 +8,7 @@ use crate::ice::{
     gathering_service,
     type_ice::ice_agent::IceRole::{Controlled, Controlling},
 };
+use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
@@ -17,6 +18,7 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
+use std::collections::HashSet;
 use std::{
     io::ErrorKind,
     net::UdpSocket,
@@ -26,7 +28,7 @@ use std::{
 
 const DEFAULT_PORT: u16 = 9;
 const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
-const DEFAULT_FMT: &str = "99";
+const DEFAULT_FMT: &str = "96";
 const DEFAULT_NET_TYPE: &str = "IN";
 const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
 const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
@@ -39,7 +41,8 @@ pub struct ConnectionManager {
     local_description: Option<Sdp>,
     remote_description: Option<Sdp>,
     ice_phase: IcePhase,
-
+    //local_codecs: Vec<RtpCodec>,
+    remote_codecs: Vec<RtpCodec>,
     ice_worker: Option<IceWorker>,
 }
 
@@ -52,6 +55,8 @@ impl ConnectionManager {
             local_description: None,
             remote_description: None,
             ice_phase: IcePhase::Idle,
+            //local_codecs,
+            remote_codecs: vec![],
             ice_worker: None,
         }
     }
@@ -92,6 +97,7 @@ impl ConnectionManager {
                     // Treat as remote offer.
                     let (remote_is_ice_lite, _ufrag, _pwd) =
                         self.extract_and_store_remote_ice_meta(&sdp)?;
+                    self.extract_and_store_rtp_meta(&sdp)?;
                     self.remote_description = Some(sdp);
                     self.signaling = SignalingState::HaveRemoteOffer;
 
@@ -114,6 +120,7 @@ impl ConnectionManager {
                     // It’s an ANSWER → parse ICE meta & candidates
                     let (_remote_is_ice_lite, _ufrag, _pwd) =
                         self.extract_and_store_remote_ice_meta(&sdp)?;
+                    self.extract_and_store_rtp_meta(&sdp)?;
                     self.remote_description = Some(sdp);
                     self.signaling = SignalingState::Stable;
                     Ok(OutboundSdp::None)
@@ -135,6 +142,58 @@ impl ConnectionManager {
         out
     }
 
+    pub fn set_pts_and_codecs_for_rtp(&mut self, codecs: Vec<RtpCodec>) {
+        //self.codecs.push(codecs);
+        todo!();
+    }
+
+    pub fn extract_and_store_rtp_meta(&mut self, remote_sdp: &Sdp) -> Result<(), ConnectionError> {
+        let mut discovered: Vec<RtpCodec> = Vec::new();
+
+        for m in remote_sdp.media() {
+            // Skip non-RTP media
+            if !m.proto().to_uppercase().contains("RTP") {
+                continue;
+            }
+
+            // Parse allowed payload types from the m-line formats
+            let allowed_pts: HashSet<u8> = m
+                .fmts()
+                .iter()
+                .filter_map(|fmt| fmt.parse::<u8>().ok())
+                .collect();
+
+            // Scan attributes for a=rtpmap
+            for a in m.attrs() {
+                if a.key() != "rtpmap" {
+                    continue;
+                }
+                let raw = a
+                    .value()
+                    .ok_or(ConnectionError::RtpMap("Wrong value".into()))?;
+                let rm: RtpMap = raw.parse().map_err(|_| {
+                    ConnectionError::RtpMap(
+                        "No se pudo parsear el valor del atributo rtpmap".into(),
+                    )
+                })?;
+
+                // Keep only if PT is listed in this media’s fmt list (when present)
+                if !allowed_pts.is_empty() && !allowed_pts.contains(&rm.payload_type) {
+                    continue;
+                }
+
+                // Record as RtpCodec
+                discovered.push(RtpCodec::new(rm.payload_type, rm.clock_rate));
+            }
+        }
+
+        // Dedup by payload_type (first occurrence wins)
+        discovered.sort_by_key(|c| c.payload_type);
+        discovered.dedup_by_key(|c| c.payload_type);
+
+        self.remote_codecs = discovered;
+        Ok(())
+    }
     /// separate method if we ever need to apply only candidates from a remote trickle.
     pub fn apply_remote_trickle_candidate(
         &mut self,
@@ -365,6 +424,10 @@ impl ConnectionManager {
             self.ice_phase = IcePhase::Nominated;
             self.stop_ice_worker(); // optional: stop once nominated
         }
+    }
+
+    pub fn remote_codecs(&self) -> &Vec<RtpCodec> {
+        &self.remote_codecs
     }
 }
 
