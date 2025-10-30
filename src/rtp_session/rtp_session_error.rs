@@ -10,6 +10,7 @@ pub enum RtpSessionError {
     Rtcp(RtcpError),
     Rtp(RtpError),
     SendStream { source: RtpSendError, ssrc: u32 },
+    SendStreamMissing { ssrc: u32 },
     RecvStream { source: RtpRecvError, ssrc: u32 },
     MutexPoisoned,
     EmptyMediaReceiver,
@@ -29,6 +30,9 @@ impl fmt::Display for RtpSessionError {
             Rtp(e) => write!(f, "RTP error: {e}"),
             SendStream { source, ssrc } => {
                 write!(f, "Send RTP Stream error (ssrc={ssrc}): {source}")
+            }
+            SendStreamMissing { ssrc } => {
+                write!(f, "Send RTP Stream missing for ssrc={ssrc:#010x}")
             }
             RecvStream { source, ssrc } => {
                 write!(f, "Recv RTP Stream error (ssrc={ssrc}): {source}")

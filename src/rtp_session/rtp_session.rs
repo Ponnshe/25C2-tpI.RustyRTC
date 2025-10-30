@@ -11,10 +11,11 @@ use std::{
 };
 
 use super::{
+    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
     rtp_recv_config::RtpRecvConfig, rtp_recv_stream::RtpRecvStream, rtp_send_config::RtpSendConfig,
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
-use crate::{rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket}};
+use crate::rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket};
 use crate::{
     core::events::EngineEvent,
     rtcp::{
@@ -23,7 +24,6 @@ use crate::{
     },
     rtp::rtp_packet::RtpPacket,
 };
-use egui::text_selection::text_cursor_state::ccursor_next_word;
 use rand::{RngCore, rngs::OsRng};
 
 pub struct RtpSession {
@@ -69,15 +69,15 @@ impl RtpSession {
 
         // Propaga errores de construcción de streams
         this.add_recv_streams(initial_recv)?;
-        this.add_send_streams(initial_send)?;
+        let _ = this.add_send_streams(initial_send)?;
 
         Ok(this)
     }
 
-    // Nota: como usas Mutex internos, puedes tomar &self (no hace falta &mut self)
     pub fn add_recv_stream(&self, cfg: RtpRecvConfig) -> Result<(), RtpSessionError> {
-        let st = RtpRecvStream::new(cfg.clone(), self.tx_evt.clone())?; // si `new` es fallible
-        if let Some(ssrc) = cfg.remote_ssrc {
+        let remote_ssrc = cfg.remote_ssrc;
+        let st = RtpRecvStream::new(cfg, self.tx_evt.clone());
+        if let Some(ssrc) = remote_ssrc {
             self.recv_streams.lock()?.insert(ssrc, st);
         } else {
             self.pending_recv.lock()?.push(st);
@@ -87,23 +87,42 @@ impl RtpSession {
 
     pub fn add_recv_streams(&self, configs: Vec<RtpRecvConfig>) -> Result<(), RtpSessionError> {
         for cfg in configs {
-            self.add_recv_stream(cfg)?; // propaga error
+            self.add_recv_stream(cfg)?;
         }
         Ok(())
     }
 
-    pub fn add_send_stream(&self, cfg: RtpSendConfig) -> Result<(), RtpSessionError> {
+    pub fn add_send_stream(
+        &self,
+        cfg: RtpSendConfig,
+    ) -> Result<OutboundTrackHandle, RtpSessionError> {
         let ssrc = cfg.local_ssrc;
-        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer)?; // si es fallible
+        let codec = cfg.codec;
+        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer);
         self.send_streams.lock()?.insert(ssrc, st);
-        Ok(())
+        Ok(OutboundTrackHandle {
+            local_ssrc: ssrc,
+            codec,
+        })
     }
 
-    pub fn add_send_streams(&self, configs: Vec<RtpSendConfig>) -> Result<(), RtpSessionError> {
+    pub fn add_send_streams(
+        &self,
+        configs: Vec<RtpSendConfig>,
+    ) -> Result<Vec<OutboundTrackHandle>, RtpSessionError> {
+        let mut handles = Vec::with_capacity(configs.len());
         for cfg in configs {
-            self.add_send_stream(cfg)?;
+            handles.push(self.add_send_stream(cfg)?);
         }
-        Ok(())
+        Ok(handles)
+    }
+
+    pub fn register_outbound_track(
+        &self,
+        codec: RtpCodec,
+    ) -> Result<OutboundTrackHandle, RtpSessionError> {
+        let cfg = RtpSendConfig::new(codec);
+        self.add_send_stream(cfg)
     }
 
     pub fn start(&mut self) -> Result<(), RtpSessionError> {
@@ -178,6 +197,10 @@ impl RtpSession {
                                     map.insert(ssrc, st);
                                 }
                                 continue;
+                            } else {
+                                println!(
+                                    "[RTP] couldn't map codec to payload type on the pool of pending receivers: {pt}"
+                                )
                             }
                         }
 
@@ -266,12 +289,10 @@ impl RtpSession {
 
     /// Send PLI for a specific remote source.
     pub fn send_pli(&self, remote_ssrc: u32) {
-        let pli = PictureLossIndication {
-            sender_ssrc: self.local_rtcp_ssrc,
-            media_ssrc: remote_ssrc,
-        }
-        .encode();
-        let _ = self.sock.send_to(&pli, self.peer);
+        let pli = PictureLossIndication::new(self.local_rtcp_ssrc, remote_ssrc);
+        let mut buf = Vec::new();
+        pli.encode_into(&mut buf);
+        let _ = self.sock.send_to(&buf, self.peer);
         let _ = self.tx_evt.send(EngineEvent::Log(format!(
             "[RTCP] tx PLI media_ssrc={remote_ssrc}"
         )));
@@ -280,6 +301,19 @@ impl RtpSession {
     /// Convenience: does this remote SSRC exist as a recv stream?
     pub fn has_recv_ssrc(&self, remote_ssrc: u32) -> bool {
         self.recv_streams.lock().unwrap().contains_key(&remote_ssrc)
+    }
+
+    pub fn send_frame(&self, local_ssrc: u32, payload: &[u8]) -> Result<(), RtpSessionError> {
+        let mut guard = self.send_streams.lock()?;
+        match guard.get_mut(&local_ssrc) {
+            Some(st) => st
+                .send_frame(payload)
+                .map_err(|source| RtpSessionError::SendStream {
+                    source,
+                    ssrc: local_ssrc,
+                }),
+            None => Err(RtpSessionError::SendStreamMissing { ssrc: local_ssrc }),
+        }
     }
 
     /// Convenience: get a mutable handle to a send stream by local SSRC (e.g., to call send_frame).

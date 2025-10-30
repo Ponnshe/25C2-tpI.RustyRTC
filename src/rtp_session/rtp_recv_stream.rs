@@ -62,9 +62,11 @@ impl RtpRecvStream {
             .on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
 
         // 4) Emit media event (prefer owned bytes over borrows; see note below)
+        let payload_type = packet.payload_type();
+        let payload = packet.payload;
         let _ = self.event_transmitter.send(EngineEvent::RtpMedia {
-            pt: packet.payload_type(),
-            bytes: packet.payload(),
+            pt: payload_type,
+            bytes: payload,
         });
     }
 
@@ -89,7 +91,7 @@ impl RtpRecvStream {
 
         // Anchor SR timing so we can later fill LSR/DLSR in our RR
         self.rx
-            .on_sr_received(info.ntp_msw, info.ntp_lsw, arrival_ntp);
+            .on_sr_received(info.ntp_most_sw, info.now_least_sw, arrival_ntp);
 
         // (Optional) surface for logs/metrics
         let _ = self.event_transmitter.send(EngineEvent::Log(format!(

@@ -5,17 +5,13 @@ use std::{
 };
 
 use super::rtp_send_error::RtpSendError;
-use super::{
-    rtp_codec::RtpCodec,
-    rtp_send_config::RtpSendConfig,
-    tx_tracker::TxTracker, // <— NEW
-};
+use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
 use crate::rtcp::{
     report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
 };
 use crate::rtp::rtp_packet::RtpPacket;
-use crate::rtp_session::time; // assumes time::ntp_now() -> (u32, u32)
+use crate::rtp_session::time;
 
 pub struct RtpSendStream {
     pub codec: RtpCodec,
@@ -31,7 +27,7 @@ pub struct RtpSendStream {
     last_sr_built: Instant,
     last_pkt_sent: Instant,
 
-    pub tx: TxTracker, // <— NEW: outbound metrics, RTT, last SR id, etc.
+    pub tx: TxTracker,
 }
 
 impl RtpSendStream {
@@ -48,13 +44,15 @@ impl RtpSendStream {
             peer,
             last_sr_built: Instant::now(),
             last_pkt_sent: Instant::now(),
-            tx: TxTracker::default(), // <— NEW
+            tx: TxTracker::default(),
         }
     }
 
     /// Send one RTP packet carrying `payload`.
     /// Note: This does NOT advance the RTP timestamp; call `advance_timestamp(samples)` as appropriate for your codec pacing.
     pub fn send_frame(&mut self, payload: &[u8]) -> Result<(), RtpSendError> {
+        let pt = &self.codec.payload_type;
+        println!("Recibido payload, PT: {pt}");
         let rtp_packet = RtpPacket::simple(
             self.codec.payload_type,
             false,
@@ -66,7 +64,7 @@ impl RtpSendStream {
 
         let encoded = rtp_packet.encode();
 
-        self.sock.send(&encoded)?;
+        self.sock.send_to(&encoded, self.peer)?;
         self.last_pkt_sent = Instant::now();
 
         // ——— accounting ———
