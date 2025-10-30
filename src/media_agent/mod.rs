@@ -53,7 +53,7 @@ impl MockMediaAgent {
         }
 
         for track in &self.outbound_tracks {
-            // Dummy payload that matches PT to help during inspection.
+            // Dummy payload for testing.
             let payload = vec![track.payload_type(); 1200];
             match sess.send_media_frame(track, &payload) {
                 Ok(()) => {
