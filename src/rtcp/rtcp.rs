@@ -72,38 +72,24 @@ impl RtcpPacket {
     }
 
     /// Encode a compound RTCP packet (concatenation of packets).
-    pub fn encode_compound(pkts: &[RtcpPacket]) -> Vec<u8> {
+    pub fn encode_compound(pkts: &[RtcpPacket]) -> Result<Vec<u8>, RtcpError> {
         let mut out = Vec::new();
         for pkt in pkts {
-            encode_one(pkt, &mut out);
+            encode_one(pkt, &mut out)?;
         }
-        out
+        Ok(out)
     }
 }
 
-fn encode_one(packet: &RtcpPacket, out: &mut Vec<u8>) {
+fn encode_one(packet: &RtcpPacket, out: &mut Vec<u8>) -> Result<(), RtcpError> {
     match packet {
-        RtcpPacket::Sr(sr) => {
-            sr.encode_into(out);
-        }
-        RtcpPacket::Rr(rr) => {
-            rr.encode_into(out);
-        }
-        RtcpPacket::Sdes(sdes) => {
-            sdes.encode_into(out);
-        }
-        RtcpPacket::Bye(bye) => {
-            bye.encode_into(out);
-        }
-        RtcpPacket::App(app) => {
-            app.encode_into(out);
-        }
-        RtcpPacket::Nack(nack) => {
-            nack.encode_into(out);
-        }
-        RtcpPacket::Pli(pli) => {
-            pli.encode_into(out);
-        }
+        RtcpPacket::Sr(sr) => sr.encode_into(out),
+        RtcpPacket::Rr(rr) => rr.encode_into(out),
+        RtcpPacket::Sdes(sdes) => sdes.encode_into(out),
+        RtcpPacket::Bye(bye) => bye.encode_into(out),
+        RtcpPacket::App(app) => app.encode_into(out),
+        RtcpPacket::Nack(nack) => nack.encode_into(out),
+        RtcpPacket::Pli(pli) => pli.encode_into(out),
     }
 }
 #[cfg(test)]
@@ -308,7 +294,7 @@ mod tests {
             data: vec![1, 2, 3, 4, 5, 6, 7, 8],
         });
 
-        let enc = RtcpPacket::encode_compound(&[pli.clone(), bye.clone(), app.clone()]);
+        let enc = RtcpPacket::encode_compound(&[pli.clone(), bye.clone(), app.clone()]).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode compound");
 
         assert_eq!(dec.len(), 3);
@@ -369,7 +355,7 @@ mod tests {
             }],
         });
 
-        let enc = RtcpPacket::encode_compound(&[sr.clone(), rr.clone(), sdes.clone()]);
+        let enc = RtcpPacket::encode_compound(&[sr.clone(), rr.clone(), sdes.clone()]).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode compound");
         assert_eq!(dec.len(), 3);
         matches!(&dec[0], RtcpPacket::Sr(_));
@@ -385,7 +371,7 @@ mod tests {
             entries: vec![(1000, 0b0000_0000_0000_0011)],
         });
 
-        let enc = RtcpPacket::encode_compound(&[nack.clone()]);
+        let enc = RtcpPacket::encode_compound(&[nack.clone()]).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode");
         assert_eq!(dec.len(), 1);
         match &dec[0] {
