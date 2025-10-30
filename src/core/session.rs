@@ -2,9 +2,9 @@ use std::{
     io,
     net::{self, UdpSocket},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::Sender,
+        mpsc::{self, Sender},
     },
     thread,
     time::{Duration, Instant},
@@ -12,9 +12,15 @@ use std::{
 
 use rand::{RngCore, rngs::OsRng};
 
-use crate::core::{
-    events::EngineEvent,
-    protocol::{self, AppMsg},
+use crate::rtp_session::{
+    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec, rtp_session::RtpSession,
+};
+use crate::{
+    core::{
+        events::EngineEvent,
+        protocol::{self, AppMsg},
+    },
+    rtp_session::rtp_recv_config::RtpRecvConfig,
 };
 
 #[derive(Clone, Copy)]
@@ -28,6 +34,8 @@ pub struct SessionConfig {
 pub struct Session {
     sock: Arc<UdpSocket>,
     peer: net::SocketAddr,
+    //local_codecs: Vec<RtpCodec>,
+    remote_codecs: Vec<RtpCodec>,
 
     run_flag: Arc<AtomicBool>,
     established: Arc<AtomicBool>,
@@ -41,18 +49,23 @@ pub struct Session {
 
     tx_evt: Sender<EngineEvent>,
     cfg: SessionConfig,
+
+    rtp_session: Arc<Mutex<Option<RtpSession>>>,
+    rtp_media_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
 }
 
 impl Session {
     pub fn new(
         sock: Arc<UdpSocket>,
         peer: std::net::SocketAddr,
+        remote_codecs: &Vec<RtpCodec>,
         tx_evt: Sender<EngineEvent>,
         cfg: SessionConfig,
     ) -> Self {
         Self {
             sock,
             peer,
+            remote_codecs: remote_codecs.clone(),
             run_flag: Arc::new(AtomicBool::new(false)),
             established: Arc::new(AtomicBool::new(false)),
             token_local: 0,
@@ -62,6 +75,8 @@ impl Session {
             close_done: Arc::new(AtomicBool::new(false)),
             tx_evt,
             cfg,
+            rtp_session: Arc::new(Mutex::new(None)),
+            rtp_media_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -82,6 +97,52 @@ impl Session {
 
         self.run_flag.store(true, Ordering::SeqCst);
 
+        // reset RTP plumbing before starting
+        self.teardown_rtp();
+
+        let initial_recv: Vec<_> = self
+            .remote_codecs
+            .clone()
+            .into_iter()
+            .map(|codec| RtpRecvConfig::new(codec, None))
+            .collect();
+
+        let (tx_media, rx_media) = mpsc::channel();
+        let rtp_result = RtpSession::new(
+            Arc::clone(&self.sock),
+            self.peer,
+            self.tx_evt.clone(),
+            rx_media,
+            initial_recv,
+            Vec::new(),
+        )
+        .and_then(|mut rtp| {
+            if let Err(e) = rtp.start() {
+                Err(e)
+            } else {
+                Ok(rtp)
+            }
+        });
+
+        match rtp_result {
+            Ok(rtp) => {
+                if let Ok(mut guard) = self.rtp_session.lock() {
+                    *guard = Some(rtp);
+                }
+                if let Ok(mut guard) = self.rtp_media_tx.lock() {
+                    *guard = Some(tx_media.clone());
+                }
+                let _ = self
+                    .tx_evt
+                    .send(EngineEvent::Log("[RTP] session started".into()));
+            }
+            Err(e) => {
+                let _ = self.tx_evt.send(EngineEvent::Error(format!(
+                    "Failed to start RTP session: {e}"
+                )));
+            }
+        }
+
         // === Receiver (parse+respond) ===
         let rx_run = Arc::clone(&self.run_flag);
         let rx_sock = Arc::clone(&self.sock);
@@ -91,6 +152,8 @@ impl Session {
         let rx_peer_init = Arc::clone(&self.peer_initiated_close);
         let local_token = self.token_local;
         let tx = self.tx_evt.clone();
+        let rtp_media_tx = Arc::clone(&self.rtp_media_tx);
+        let rtp_session_handle = Arc::clone(&self.rtp_session);
 
         thread::spawn(move || {
             let mut buf = [0u8; 1500];
@@ -132,6 +195,7 @@ impl Session {
                             rx_tok_peer.store(their, Ordering::SeqCst);
                             let finack = protocol::encode_finack(their, local_token);
                             let _ = rx_sock.send(finack.as_bytes());
+                            stop_rtp_session(&rtp_session_handle, &rtp_media_tx);
                             let _ = tx.send(EngineEvent::Log(format!(
                                 "[CLOSE] recv FIN({their:016x}) → send FIN-ACK({their:016x},{local_token:016x})"
                             )));
@@ -157,6 +221,7 @@ impl Session {
                                 rx_close_done.store(true, Ordering::SeqCst);
                                 let _ = tx.send(EngineEvent::Closing { graceful: true });
                                 let _ = tx.send(EngineEvent::Closed);
+                                stop_rtp_session(&rtp_session_handle, &rtp_media_tx);
                                 let _ = tx.send(EngineEvent::Log(
                                     "[CLOSE] graceful close complete".into(),
                                 ));
@@ -164,8 +229,14 @@ impl Session {
                         }
                         AppMsg::Other(pkt) => {
                             if rx_est.load(Ordering::SeqCst) {
-                                let s = String::from_utf8_lossy(&pkt).to_string();
-                                let _ = tx.send(EngineEvent::Payload(s));
+                                let maybe_tx = rtp_media_tx
+                                    .lock()
+                                    .ok()
+                                    .and_then(|guard| guard.as_ref().cloned());
+                                if let Some(tx_media) = maybe_tx {
+                                    let _ = tx_media.send(pkt);
+                                    continue;
+                                }
                             }
                         }
                     },
@@ -242,6 +313,8 @@ impl Session {
         let cfg = self.cfg;
         let local_tok = self.token_local;
 
+        stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
+
         thread::spawn(move || {
             let _ = tx.send(EngineEvent::Log(format!(
                 "[CLOSE] driver start (local={local_tok:016x})"
@@ -273,5 +346,54 @@ impl Session {
             let _ = tx.send(EngineEvent::Log("[CLOSE] driver done".into()));
             let _ = tx.send(EngineEvent::Closed);
         });
+    }
+
+    pub fn register_outbound_track(&self, codec: RtpCodec) -> Result<OutboundTrackHandle, String> {
+        let guard = self
+            .rtp_session
+            .lock()
+            .map_err(|_| "rtp session lock poisoned".to_string())?;
+        let rtp_sesh = guard
+            .as_ref()
+            .ok_or_else(|| "rtp session not running".to_string())?;
+        rtp_sesh
+            .register_outbound_track(codec)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn send_media_frame(
+        &self,
+        handle: &OutboundTrackHandle,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        let guard = self
+            .rtp_session
+            .lock()
+            .map_err(|_| "rtp session lock poisoned".to_string())?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| "rtp session not running".to_string())?;
+        session
+            .send_frame(handle.local_ssrc, payload)
+            .map_err(|e| e.to_string())
+    }
+
+    fn teardown_rtp(&self) {
+        stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
+    }
+}
+
+fn stop_rtp_session(
+    rtp_session: &Arc<Mutex<Option<RtpSession>>>,
+    rtp_media_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
+) {
+    if let Ok(mut guard) = rtp_session.lock() {
+        if let Some(rtp) = guard.as_ref() {
+            rtp.stop();
+        }
+        guard.take();
+    }
+    if let Ok(mut guard) = rtp_media_tx.lock() {
+        guard.take();
     }
 }

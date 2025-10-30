@@ -325,8 +325,8 @@ mod tests {
         let sr = RtcpPacket::Sr(SenderReport {
             ssrc: 0x01_02_03_04,
             info: SenderInfo {
-                ntp_msw: 0x11_11_11_11,
-                ntp_lsw: 0x22_22_22_22,
+                ntp_most_sw: 0x11_11_11_11,
+                now_least_sw: 0x22_22_22_22,
                 rtp_ts: 0x33_33_33_33,
                 packet_count: 10,
                 octet_count: 1_000,
