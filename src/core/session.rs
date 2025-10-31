@@ -12,15 +12,13 @@ use std::{
 
 use rand::{RngCore, rngs::OsRng};
 
-use crate::{rtp::rtp_header::RtpHeader , rtp_session::{
-    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec, rtp_session::RtpSession,
-}};
-use crate::{
-    core::{
-        events::EngineEvent,
-        protocol::{self, AppMsg},
-    },
-    rtp_session::rtp_recv_config::RtpRecvConfig,
+use crate::core::{
+    events::EngineEvent,
+    protocol::{self, AppMsg},
+};
+use crate::rtp_session::{
+    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
+    rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
 };
 
 #[derive(Clone, Copy)]
@@ -34,7 +32,6 @@ pub struct SessionConfig {
 pub struct Session {
     sock: Arc<UdpSocket>,
     peer: net::SocketAddr,
-    //local_codecs: Vec<RtpCodec>,
     remote_codecs: Vec<RtpCodec>,
 
     run_flag: Arc<AtomicBool>,
@@ -58,14 +55,14 @@ impl Session {
     pub fn new(
         sock: Arc<UdpSocket>,
         peer: std::net::SocketAddr,
-        remote_codecs: &Vec<RtpCodec>,
+        remote_codecs: Vec<RtpCodec>,
         tx_evt: Sender<EngineEvent>,
         cfg: SessionConfig,
     ) -> Self {
         Self {
             sock,
             peer,
-            remote_codecs: remote_codecs.clone(),
+            remote_codecs,
             run_flag: Arc::new(AtomicBool::new(false)),
             established: Arc::new(AtomicBool::new(false)),
             token_local: 0,

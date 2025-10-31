@@ -8,7 +8,6 @@ use crate::ice::{
     gathering_service,
     type_ice::ice_agent::IceRole::{Controlled, Controlling},
 };
-use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
@@ -18,6 +17,7 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
+use crate::{media_agent::CodecDescriptor, rtp_session::rtp_codec::RtpCodec};
 use std::collections::HashSet;
 use std::{
     io::ErrorKind,
@@ -41,7 +41,7 @@ pub struct ConnectionManager {
     local_description: Option<Sdp>,
     remote_description: Option<Sdp>,
     ice_phase: IcePhase,
-    //local_codecs: Vec<RtpCodec>,
+    local_codecs: Vec<CodecDescriptor>,
     remote_codecs: Vec<RtpCodec>,
     ice_worker: Option<IceWorker>,
 }
@@ -55,7 +55,7 @@ impl ConnectionManager {
             local_description: None,
             remote_description: None,
             ice_phase: IcePhase::Idle,
-            //local_codecs,
+            local_codecs: Vec::new(),
             remote_codecs: vec![],
             ice_worker: None,
         }
@@ -142,9 +142,8 @@ impl ConnectionManager {
         out
     }
 
-    pub fn set_pts_and_codecs_for_rtp(&mut self, codecs: Vec<RtpCodec>) {
-        //self.codecs.push(codecs);
-        todo!();
+    pub fn set_local_rtp_codecs(&mut self, codecs: Vec<CodecDescriptor>) {
+        self.local_codecs = codecs;
     }
 
     pub fn extract_and_store_rtp_meta(&mut self, remote_sdp: &Sdp) -> Result<(), ConnectionError> {
@@ -182,8 +181,11 @@ impl ConnectionManager {
                     continue;
                 }
 
-                // Record as RtpCodec
-                discovered.push(RtpCodec::new(rm.payload_type, rm.clock_rate));
+                discovered.push(RtpCodec::with_name(
+                    rm.payload_type,
+                    rm.clock_rate,
+                    rm.encoding_name.clone(),
+                ));
             }
         }
 
@@ -225,7 +227,7 @@ impl ConnectionManager {
         let bandwidth = Vec::new();
         let times: Vec<SDPTimeDesc> = vec![SDPTimeDesc::new_blank()];
         let attrs = Vec::new();
-        let media: Vec<SDPMedia> = vec![get_mocked_media_description(self)?];
+        let media: Vec<SDPMedia> = vec![self.build_media_description()?];
         let extra_lines = Vec::new();
         Ok(Sdp::new(
             version,
@@ -307,8 +309,12 @@ impl ConnectionManager {
         }
 
         // store credentials on the agent when we add setters/fields
-        // if let Some(u) = &ufrag { self.ice_agent.set_remote_ufrag(u.clone()); }
-        // if let Some(p) = &pwd   { self.ice_agent.set_remote_pwd(p.clone()); }
+        if let Some(u) = &ufrag {
+            self.ice_agent.set_remote_ufrag(u.clone());
+        }
+        if let Some(p) = &pwd {
+            self.ice_agent.set_remote_pwd(p.clone());
+        }
 
         Ok((remote_is_ice_lite, ufrag, pwd))
     }
@@ -429,6 +435,62 @@ impl ConnectionManager {
     pub fn remote_codecs(&self) -> &Vec<RtpCodec> {
         &self.remote_codecs
     }
+
+    fn build_media_description(&mut self) -> Result<SDPMedia, ConnectionError> {
+        let mut media_desc = SDPMedia::new_blank();
+        media_desc.set_kind(DEFAULT_MEDIA_KIND);
+        let port_spec_sdp = SDPPortSpec::new(DEFAULT_PORT, None);
+        media_desc.set_port(port_spec_sdp);
+        media_desc.set_proto(DEAFULT_PROTO);
+
+        let formats = if self.local_codecs.is_empty() {
+            vec![DEFAULT_FMT.to_owned()]
+        } else {
+            self.local_codecs
+                .iter()
+                .map(|c| c.rtp.payload_type.to_string())
+                .collect()
+        };
+        media_desc.set_fmts(formats);
+
+        let connection_sdp =
+            SDPConnection::new(DEFAULT_NET_TYPE, DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR);
+        media_desc.set_connection(Some(connection_sdp));
+
+        let mut attrs = get_local_candidates_as_attributes(self);
+        let (ufrag, pwd) = self.ice_agent.local_credentials();
+        attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
+        attrs.push(SDPAttribute::new("ice-pwd", pwd));
+
+        if self.local_codecs.is_empty() {
+            attrs.push(SDPAttribute::new(
+                "rtpmap",
+                Some("96 H264/90000".to_owned()),
+            ));
+        } else {
+            for descriptor in &self.local_codecs {
+                let codec = &descriptor.rtp;
+                let name = if codec.name.is_empty() {
+                    "H264"
+                } else {
+                    codec.name.as_str()
+                };
+                let value = format!("{} {}/{}", codec.payload_type, name, codec.clock_rate);
+                attrs.push(SDPAttribute::new("rtpmap", Some(value)));
+
+                if let Some(fmtp) = &descriptor.fmtp {
+                    attrs.push(SDPAttribute::new(
+                        "fmtp",
+                        Some(format!("{} {fmtp}", codec.payload_type)),
+                    ));
+                }
+            }
+        }
+
+        attrs.push(SDPAttribute::new("rtcp-mux", None));
+        media_desc.set_attrs(attrs);
+        Ok(media_desc)
+    }
 }
 
 // Heuristic to decide if an SDP looks like an "offer" when we need to disambiguate during glare.
@@ -439,29 +501,6 @@ fn is_probably_offer(_sdp: &Sdp) -> bool {
 }
 
 // -----------------  helpers -----------------
-
-fn get_mocked_media_description(
-    conn_manager: &mut ConnectionManager,
-) -> Result<SDPMedia, ConnectionError> {
-    let mut media_desc = SDPMedia::new_blank();
-    media_desc.set_kind(DEFAULT_MEDIA_KIND);
-    let port_spec_sdp = SDPPortSpec::new(DEFAULT_PORT, None);
-    media_desc.set_port(port_spec_sdp);
-    media_desc.set_proto(DEAFULT_PROTO);
-    let fmts = vec![DEFAULT_FMT.to_owned()];
-    media_desc.set_fmts(fmts);
-    let connection_sdp = SDPConnection::new(DEFAULT_NET_TYPE, DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR);
-    media_desc.set_connection(Some(connection_sdp));
-    let mut attrs = get_local_candidates_as_attributes(conn_manager);
-    let (ufrag, pwd) = conn_manager.ice_agent.local_credentials();
-    attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
-    attrs.push(SDPAttribute::new("ice-pwd", pwd));
-    // Codec lines, mux
-    attrs.push(SDPAttribute::new("rtpmap", Some("96 VP8/90000".to_owned())));
-    attrs.push(SDPAttribute::new("rtcp-mux", Some("".to_owned())));
-    media_desc.set_attrs(attrs);
-    Ok(media_desc)
-}
 
 fn get_local_candidates_as_attributes(conn_manager: &mut ConnectionManager) -> Vec<SDPAttribute> {
     gathering_service::gather_host_candidates()

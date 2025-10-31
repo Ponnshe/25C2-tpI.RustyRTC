@@ -12,21 +12,20 @@ use crate::core::{
     events::EngineEvent,
     session::{Session, SessionConfig},
 };
-use crate::media_agent::MockMediaAgent;
+use crate::media_agent::{MediaAgent, VideoFrame};
 
 pub struct Engine {
     cm: ConnectionManager,
     session: Option<Session>,
     tx_evt: Sender<EngineEvent>,
     rx_evt: Receiver<EngineEvent>,
-    media_agent: MockMediaAgent,
+    media_agent: MediaAgent,
 }
 
 impl Engine {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        let media_agent = MockMediaAgent::new(tx.clone());
-        //let client_codecs = media_agent.get_codecs();
+        let media_agent = MediaAgent::new(tx.clone());
         Self {
             cm: ConnectionManager::new(),
             session: None,
@@ -37,6 +36,8 @@ impl Engine {
     }
 
     pub fn negotiate(&mut self) -> Result<Option<String>, ConnectionError> {
+        self.cm
+            .set_local_rtp_codecs(self.media_agent.codec_descriptors());
         match self.cm.negotiate()? {
             OutboundSdp::Offer(o) => Ok(Some(o.encode())),
             OutboundSdp::Answer(a) => Ok(Some(a.encode())),
@@ -48,6 +49,8 @@ impl Engine {
         &mut self,
         remote_sdp: &str,
     ) -> Result<Option<String>, ConnectionError> {
+        self.cm
+            .set_local_rtp_codecs(self.media_agent.codec_descriptors());
         match self.cm.apply_remote_sdp(remote_sdp)? {
             OutboundSdp::Answer(a) => Ok(Some(a.encode())),
             OutboundSdp::Offer(o) => Ok(Some(o.encode())),
@@ -91,11 +94,10 @@ impl Engine {
                         local,
                         remote: peer,
                     });
-                    let remote_codecs = self.cm.remote_codecs();
                     let sess = Session::new(
                         Arc::clone(&sock),
                         peer,
-                        remote_codecs,
+                        self.cm.remote_codecs().clone(),
                         self.tx_evt.clone(),
                         SessionConfig {
                             handshake_timeout: Duration::from_secs(10),
@@ -111,10 +113,15 @@ impl Engine {
 
         let mut out = Vec::new();
         while let Ok(ev) = self.rx_evt.try_recv() {
-            self.media_agent.on_engine_event(&ev, self.session.as_ref());
+            self.media_agent
+                .handle_engine_event(&ev, self.session.as_ref());
             out.push(ev);
         }
         self.media_agent.tick(self.session.as_ref());
         out
+    }
+
+    pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
+        self.media_agent.snapshot_frames()
     }
 }

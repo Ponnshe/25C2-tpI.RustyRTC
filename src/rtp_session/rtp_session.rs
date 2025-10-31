@@ -97,7 +97,7 @@ impl RtpSession {
         cfg: RtpSendConfig,
     ) -> Result<OutboundTrackHandle, RtpSessionError> {
         let ssrc = cfg.local_ssrc;
-        let codec = cfg.codec;
+        let codec = cfg.codec.clone();
         let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer);
         self.send_streams.lock()?.insert(ssrc, st);
         Ok(OutboundTrackHandle {
@@ -237,7 +237,12 @@ impl RtpSession {
                     for st in guard.values_mut() {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
-                            sr.encode_into(&mut sr_bytes);
+                            if let Err(e) = sr.encode_into(&mut sr_bytes) {
+                                let _ = tx_evt2.send(EngineEvent::Log(format!(
+                                    "[RTCP] failed to encode SR: {e}"
+                                )));
+                                continue;
+                            }
                             comp_pkt.extend_from_slice(&sr_bytes);
                             let _ = tx_evt2.send(EngineEvent::Log(format!(
                                 "[RTCP] tx SR ssrc={:#010x}",
@@ -261,17 +266,26 @@ impl RtpSession {
                 if !blocks.is_empty() {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
-                    rr.encode_into(&mut rr_bytes);
-                    comp_pkt.extend_from_slice(&rr_bytes);
-                    let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR".into()));
+                    if let Err(e) = rr.encode_into(&mut rr_bytes) {
+                        let _ = tx_evt2
+                            .send(EngineEvent::Log(format!("[RTCP] failed to encode RR: {e}")));
+                    } else {
+                        comp_pkt.extend_from_slice(&rr_bytes);
+                        let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR".into()));
+                    }
                 }
 
                 // --- 3) Build SDES with CNAME ---
                 // Note: could be conditional if you only want to send it once or twice.
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
-                sdes.encode_into(&mut sdes_bytes);
-                comp_pkt.extend_from_slice(&sdes_bytes);
+                if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
+                    let _ = tx_evt2.send(EngineEvent::Log(format!(
+                        "[RTCP] failed to encode SDES: {e}"
+                    )));
+                } else {
+                    comp_pkt.extend_from_slice(&sdes_bytes);
+                }
 
                 // --- 4) Send compound packet if not empty ---
                 if !comp_pkt.is_empty() {

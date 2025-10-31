@@ -1,5 +1,8 @@
 use super::{conn_state::ConnState, gui_error::GuiError};
-use crate::core::{engine::Engine, events::EngineEvent};
+use crate::{
+    core::{engine::Engine, events::EngineEvent},
+    media_agent::VideoFrame,
+};
 use eframe::{App, Frame, egui};
 use std::collections::VecDeque;
 
@@ -43,6 +46,16 @@ impl RtcApp {
             self.ui_logs.pop_front();
         }
         self.ui_logs.push_back(s.into());
+    }
+
+    fn summarize_frame(frame: Option<&VideoFrame>) -> String {
+        match frame {
+            Some(f) if f.width > 0 && f.height > 0 => {
+                format!("{}x{} • {} bytes", f.width, f.height, f.bytes.len())
+            }
+            Some(f) => format!("{} bytes (pending decode)", f.bytes.len()),
+            None => "no frame".into(),
+        }
     }
 
     fn create_or_renegotiate_local_sdp(&mut self) -> Result<(), GuiError> {
@@ -117,12 +130,23 @@ impl App for RtcApp {
             }
         }
 
+        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("RoomRTC • SDP Messenger");
                 ui.add_space(10.);
             });
 
+            ui.separator();
+            ui.label(format!(
+                "Local video: {}",
+                Self::summarize_frame(local_frame.as_ref())
+            ));
+            ui.label(format!(
+                "Remote video: {}",
+                Self::summarize_frame(remote_frame.as_ref())
+            ));
             ui.separator();
             ui.label("1) Paste remote SDP (offer or answer):");
             ui.add(
