@@ -1,3 +1,4 @@
+pub mod h264_packetizer;
 pub mod outbound_track_handle;
 pub mod rtp_codec;
 pub mod rtp_recv_config;
