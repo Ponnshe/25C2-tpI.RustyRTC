@@ -20,8 +20,8 @@ use crate::{
         video_frame::VideoFrame,
     },
     rtp_session::{
-        h264_packetizer::{H264Packetizer, RtpPayloadChunk},
         outbound_track_handle::OutboundTrackHandle,
+        payload::{h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk},
         rtp_codec::RtpCodec,
     },
 };
