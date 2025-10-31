@@ -5,6 +5,18 @@
 //!
 //! Scope : non-interleaved, packetization-mode=1. STAP-A is ignored (not used by your packetizer).
 
+#[derive(Debug, Clone)]
+pub struct AccessUnit {
+    pub timestamp_90khz: u32,
+    pub nalus: Vec<Vec<u8>>, // each entry begins with the 1-byte NAL header
+}
+
+#[derive(Debug, Clone)]
+struct FuState {
+    nalu_header: u8, // reconstructed: F|NRI|Type
+    buf: Vec<u8>,    // complete NAL content: [nalu_header, ...payload...]
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct H264Depacketizer {
     cur_ts: Option<u32>,
@@ -12,12 +24,6 @@ pub struct H264Depacketizer {
     nalus: Vec<Vec<u8>>, // NAL units collected for the current frame (without start codes)
     fua: Option<FuState>, // ongoing FU-A reassembly
     frame_corrupted: bool, // set if we detect loss or malformed FU-A; drop frame on M=1
-}
-
-#[derive(Debug, Clone)]
-struct FuState {
-    nalu_header: u8, // reconstructed: F|NRI|Type
-    buf: Vec<u8>,    // complete NAL content: [nalu_header, ...payload...]
 }
 
 impl H264Depacketizer {
@@ -37,7 +43,7 @@ impl H264Depacketizer {
         marker: bool,
         timestamp: u32,
         seq: u16,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<AccessUnit> {
         // New timestamp? Flush/discard any partial frame.
         if let Some(ts) = self.cur_ts {
             if timestamp != ts {
@@ -132,24 +138,24 @@ impl H264Depacketizer {
         self.finish_if_marker(marker)
     }
 
-    fn finish_if_marker(&mut self, marker: bool) -> Option<Vec<u8>> {
+    fn finish_if_marker(&mut self, marker: bool) -> Option<AccessUnit> {
         if !marker {
             return None;
         }
 
         let out = if !self.frame_corrupted && !self.nalus.is_empty() {
-            Some(build_annexb(&self.nalus))
+            Some(AccessUnit {
+                timestamp_90khz: self.cur_ts.unwrap_or(0),
+                nalus: std::mem::take(&mut self.nalus),
+            })
         } else {
             None
         };
 
-        // Reset for next frame (keep timestamp None until next push)
         self.cur_ts = None;
         self.expected_seq = None;
-        self.nalus.clear();
         self.fua = None;
         self.frame_corrupted = false;
-
         out
     }
 
@@ -173,4 +179,228 @@ fn build_annexb(nalus: &[Vec<u8>]) -> Vec<u8> {
         out.extend_from_slice(n);
     }
     out
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------- helpers ----------
+
+    fn mk_nalu(ntype: u8, nri: u8, payload_len: usize) -> Vec<u8> {
+        assert!((1..=23).contains(&ntype));
+        let header = (nri & 0x60) | (ntype & 0x1F); // F=0
+        let mut v = Vec::with_capacity(1 + payload_len);
+        v.push(header);
+        // deterministic payload pattern
+        for i in 0..payload_len {
+            v.push((i as u8).wrapping_mul(3).wrapping_add(1));
+        }
+        v
+    }
+
+    /// Build FU-A fragments from a complete NALU (nalu[0] is the NAL header).
+    /// `splits` are sizes of payload pieces (sum must equal nalu.len()-1).
+    fn mk_fua_from_nalu(nalu: &[u8], splits: &[usize]) -> Vec<Vec<u8>> {
+        assert!(!nalu.is_empty());
+        let hdr = nalu[0];
+        let ntype = hdr & 0x1F;
+        let fu_indicator = (hdr & 0xE0) | 28; // F|NRI|28
+        let payload = &nalu[1..];
+
+        assert_eq!(splits.iter().sum::<usize>(), payload.len());
+
+        let mut out = Vec::with_capacity(splits.len());
+        let mut off = 0usize;
+        for (i, &sz) in splits.iter().enumerate() {
+            let s = if i == 0 { 0x80 } else { 0x00 };
+            let e = if i + 1 == splits.len() { 0x40 } else { 0x00 };
+            let fu_header = s | e | ntype;
+
+            let mut pkt = Vec::with_capacity(2 + sz);
+            pkt.push(fu_indicator);
+            pkt.push(fu_header);
+            pkt.extend_from_slice(&payload[off..off + sz]);
+            out.push(pkt);
+
+            off += sz;
+        }
+        out
+    }
+
+    fn push_seq(
+        d: &mut H264Depacketizer,
+        payload: &[u8],
+        marker: bool,
+        ts: u32,
+        seq: &mut u16,
+    ) -> Option<AccessUnit> {
+        let out = d.push_rtp(payload, marker, ts, *seq);
+        *seq = seq.wrapping_add(1);
+        out
+    }
+
+    // ---------- tests ----------
+
+    #[test]
+    fn single_small_nalu_emits_on_marker() {
+        let mut d = H264Depacketizer::new();
+        let ts = 1234;
+        let mut seq = 1000;
+
+        let nalu = mk_nalu(5, 0x40, 8); // IDR
+        // Not last yet
+        assert!(push_seq(&mut d, &nalu, false, ts, &mut seq).is_none());
+        // Last
+        let au = push_seq(&mut d, &nalu, true, ts, &mut seq).expect("AU expected");
+        assert_eq!(au.timestamp_90khz, ts);
+        assert_eq!(au.nalus.len(), 1);
+        assert_eq!(au.nalus[0], nalu);
+    }
+
+    #[test]
+    fn two_nalus_in_one_frame() {
+        let mut d = H264Depacketizer::new();
+        let ts = 9999;
+        let mut seq = 42;
+
+        let sps = mk_nalu(7, 0x60, 4);
+        let pps = mk_nalu(8, 0x60, 3);
+
+        assert!(push_seq(&mut d, &sps, false, ts, &mut seq).is_none());
+        let au = push_seq(&mut d, &pps, true, ts, &mut seq).expect("AU expected");
+        assert_eq!(au.nalus.len(), 2);
+        assert_eq!(au.nalus[0], sps);
+        assert_eq!(au.nalus[1], pps);
+    }
+
+    #[test]
+    fn fua_three_fragments_reassembles() {
+        let mut d = H264Depacketizer::new();
+        let ts = 321;
+        let mut seq = 10;
+
+        let idr = mk_nalu(5, 0x40, 15);
+        // split payload (len 15) into 3 fragments: 5|6|4
+        let frags = mk_fua_from_nalu(&idr, &[5, 6, 4]);
+
+        assert!(push_seq(&mut d, &frags[0], false, ts, &mut seq).is_none());
+        assert!(push_seq(&mut d, &frags[1], false, ts, &mut seq).is_none());
+        let au = push_seq(&mut d, &frags[2], true, ts, &mut seq).expect("AU expected");
+
+        assert_eq!(au.nalus.len(), 1);
+        assert_eq!(
+            au.nalus[0], idr,
+            "FU-A should reconstruct the exact original NALU"
+        );
+    }
+
+    #[test]
+    fn fua_missing_middle_fragment_drops_frame() {
+        let mut d = H264Depacketizer::new();
+        let ts = 777;
+        let mut seq = 500;
+
+        let idr = mk_nalu(5, 0x40, 12);
+        let frags = mk_fua_from_nalu(&idr, &[4, 4, 4]);
+
+        // send start, skip the middle, then end
+        assert!(push_seq(&mut d, &frags[0], false, ts, &mut seq).is_none());
+        // gap here -> simulate loss by bumping seq
+        seq = seq.wrapping_add(1);
+        assert!(push_seq(&mut d, &frags[2], true, ts, &mut seq).is_none());
+    }
+
+    #[test]
+    fn empty_payload_marks_corrupted() {
+        let mut d = H264Depacketizer::new();
+        let ts = 2025;
+        let mut seq = 1;
+
+        // empty payload
+        assert!(push_seq(&mut d, &[], false, ts, &mut seq).is_none());
+        // even with a valid NAL after, the frame is corrupted until marker
+        let nalu = mk_nalu(1, 0x20, 6);
+        assert!(push_seq(&mut d, &nalu, true, ts, &mut seq).is_none());
+    }
+
+    #[test]
+    fn sequence_gap_drops_frame_on_marker() {
+        let mut d = H264Depacketizer::new();
+        let ts = 55;
+        let mut seq = 10;
+
+        let a = mk_nalu(1, 0x20, 5);
+        let b = mk_nalu(1, 0x20, 5);
+
+        assert!(push_seq(&mut d, &a, false, ts, &mut seq).is_none());
+        // skip a seq -> simulate loss
+        seq = seq.wrapping_add(1);
+        assert!(push_seq(&mut d, &b, true, ts, &mut seq).is_none());
+    }
+
+    #[test]
+    fn timestamp_switch_resets_state() {
+        let mut d = H264Depacketizer::new();
+        let ts1 = 1000;
+        let ts2 = 2000;
+        let mut seq = 300;
+
+        let n1 = mk_nalu(1, 0x20, 5);
+        let n2 = mk_nalu(1, 0x20, 6);
+
+        // start a frame at ts1 but never finish it
+        assert!(push_seq(&mut d, &n1, false, ts1, &mut seq).is_none());
+        // new timestamp -> previous partial is dropped/reset
+        assert!(push_seq(&mut d, &n2, false, ts2, &mut seq).is_none());
+        // now finish ts2
+        let au = push_seq(&mut d, &n2, true, ts2, &mut seq).expect("AU expected");
+        assert_eq!(au.timestamp_90khz, ts2);
+        assert_eq!(au.nalus.len(), 1);
+        assert_eq!(au.nalus[0], n2);
+    }
+
+    #[test]
+    fn stap_a_is_ignored_and_does_not_corrupt() {
+        let mut d = H264Depacketizer::new();
+        let ts = 4040;
+        let mut seq = 77;
+
+        // Minimal STAP-A payload: header only (type=24). Our depacketizer ignores it.
+        let stap_a = vec![0x18]; // F=0, NRI=0, Type=24
+        assert!(push_seq(&mut d, &stap_a, false, ts, &mut seq).is_none());
+
+        // Then send a valid small NAL and finish
+        let n = mk_nalu(1, 0x20, 3);
+        let au = push_seq(&mut d, &n, true, ts, &mut seq).expect("AU expected");
+        assert_eq!(au.nalus.len(), 1);
+        assert_eq!(au.nalus[0], n);
+    }
+
+    #[test]
+    fn sequence_wrap_around_ok() {
+        let mut d = H264Depacketizer::new();
+        let ts = 31415;
+        let mut seq = u16::MAX - 1;
+
+        let n = mk_nalu(1, 0x20, 2);
+
+        assert!(push_seq(&mut d, &n, false, ts, &mut seq).is_none()); // seq = 65534
+        assert!(push_seq(&mut d, &n, false, ts, &mut seq).is_none()); // seq = 65535
+        let au = push_seq(&mut d, &n, true, ts, &mut seq).expect("AU expected"); // seq wraps to 0
+        assert_eq!(au.nalus.len(), 1);
+        assert_eq!(au.nalus[0], n);
+    }
+
+    #[test]
+    fn fua_end_without_start_drops_frame() {
+        let mut d = H264Depacketizer::new();
+        let ts = 7777;
+        let mut seq = 900;
+
+        let idr = mk_nalu(5, 0x40, 9);
+        // craft "end" fragment without sending "start"
+        let frags = mk_fua_from_nalu(&idr, &[4, 5]);
+        // send only the last one (E=1)
+        assert!(push_seq(&mut d, &frags[1], true, ts, &mut seq).is_none());
+    }
 }
