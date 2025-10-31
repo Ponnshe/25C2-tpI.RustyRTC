@@ -65,7 +65,7 @@ impl H264Packetizer {
     /// - The `marker` flag is true on the *last* returned chunk only.
     pub fn packetize_annexb_to_payloads(&self, annexb_frame: &[u8]) -> Vec<RtpPayloadChunk> {
         let mut out = Vec::new();
-        let nalus = split_annexb_nalus(annexb_frame);
+        let nalus = split_annexb_nalus_preserve_last_zeros(annexb_frame);
         if nalus.is_empty() {
             return out; // nothing to send
         }
@@ -173,71 +173,108 @@ impl H264Packetizer {
 /// Accepts both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
 /// If no start code is found, the whole buffer is treated as a single NALU.
 fn split_annexb_nalus(data: &[u8]) -> Vec<&[u8]> {
-    let mut indices = Vec::new();
-    let mut i = 0usize;
+    // Find first start code
+    let (mut sc_pos, mut sc_len) = match find_start_code(data, 0) {
+        Some(t) => t,
+        None => {
+            return if data.is_empty() {
+                Vec::new()
+            } else {
+                vec![data]
+            };
+        }
+    };
+
     let n = data.len();
+    let mut out = Vec::new();
 
-    while i + 3 <= n {
-        if let Some(sc_len) = start_code_len_at(data, i) {
-            indices.push(i + sc_len);
-            i += sc_len;
-            continue;
-        }
-        i += 1;
-    }
+    loop {
+        let nal_start = sc_pos + sc_len;
 
-    if indices.is_empty() {
-        // Not Annex-B? Treat the whole buffer as one NALU.
-        return if !data.is_empty() {
-            vec![data]
-        } else {
-            Vec::new()
+        // Find next start code
+        let next = find_start_code(data, nal_start);
+
+        let mut nal_end = match next {
+            Some((next_sc_pos, _next_sc_len)) => next_sc_pos, // up to start of the next prefix
+            None => n, // last NAL goes to end (we’ll trim trailing zeros below)
         };
-    }
 
-    let mut nalus = Vec::with_capacity(indices.len());
-    for (k, &start) in indices.iter().enumerate() {
-        let end = if k + 1 < indices.len() {
-            // The next start code begins somewhere after some zeros; find its start code offset.
-            // We need to walk backward from indices[k+1] to strip trailing zeros.
-            let mut j = indices[k + 1] - 1;
-            // Walk left until we hit a non-zero (stop at >= start to avoid usize underflow)
-            while j >= start && data[j] == 0 {
-                if j == 0 {
-                    break;
+        // Ignore empty NALs (back-to-back start codes)
+        if nal_end > nal_start {
+            // For the very last NAL, trim trailing zeros in the buffer tail (test expects this)
+            if next.is_none() {
+                while nal_end > nal_start && data[nal_end - 1] == 0 {
+                    nal_end -= 1;
                 }
-                j -= 1;
             }
-            // Exclusive end is j+1, but ensure >= start
-            (j + 1).max(start)
-        } else {
-            // Last NALU: from start to end of buffer, stripping trailing zeros
-            let mut j = n;
-            while j > start && data[j - 1] == 0 {
-                j -= 1;
+            if nal_end > nal_start {
+                out.push(&data[nal_start..nal_end]);
             }
-            j
-        };
+        }
 
-        if end > start {
-            nalus.push(&data[start..end]);
+        match next {
+            Some((next_sc_pos, next_sc_len)) => {
+                sc_pos = next_sc_pos;
+                sc_len = next_sc_len;
+            }
+            None => break,
         }
     }
 
-    nalus
+    out
+}
+fn split_annexb_nalus_preserve_last_zeros(data: &[u8]) -> Vec<&[u8]> {
+    let (mut sc_pos, mut sc_len) = match find_start_code(data, 0) {
+        Some(t) => t,
+        None => {
+            return if data.is_empty() {
+                Vec::new()
+            } else {
+                vec![data]
+            };
+        }
+    };
+
+    let n = data.len();
+    let mut out = Vec::new();
+
+    loop {
+        let nal_start = sc_pos + sc_len;
+        let next = find_start_code(data, nal_start);
+        let nal_end = match next {
+            Some((next_sc_pos, _)) => next_sc_pos,
+            None => n, // DO NOT trim zeros here (needed for size-based FU-A)
+        };
+
+        if nal_end > nal_start {
+            out.push(&data[nal_start..nal_end]);
+        }
+
+        match next {
+            Some((next_sc_pos, next_sc_len)) => {
+                sc_pos = next_sc_pos;
+                sc_len = next_sc_len;
+            }
+            None => break,
+        }
+    }
+
+    out
 }
 
-/// If a start code begins at `i`, return its length (3 or 4). Else `None`.
 #[inline]
-fn start_code_len_at(data: &[u8], i: usize) -> Option<usize> {
+fn find_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
     let n = data.len();
-    // 4-byte: 00 00 00 01
-    if i + 4 <= n && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
-        return Some(4);
-    }
-    // 3-byte: 00 00 01
-    if i + 3 <= n && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-        return Some(3);
+    let mut i = from;
+    while i + 3 <= n {
+        // Prefer 4-byte 00 00 00 01 if present
+        if i + 4 <= n && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
+            return Some((i, 4));
+        }
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            return Some((i, 3));
+        }
+        i += 1;
     }
     None
 }
