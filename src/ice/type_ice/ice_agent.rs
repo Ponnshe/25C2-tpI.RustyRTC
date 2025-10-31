@@ -422,7 +422,7 @@ impl IceAgent {
     /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
     /// Cambia el estado de los pares a 'InProgress'.
     pub fn start_checks(&mut self) {
-        println!("ICE: Iniciando 'connectivity checks'...");
+        println!("ICE: Starting connectivity checks...");
         for pair in self.candidate_pairs.iter_mut() {
             if !matches!(pair.state, CandidatePairState::Waiting) {
                 continue;
@@ -458,16 +458,16 @@ impl IceAgent {
             .iter_mut()
             .find(|p| p.remote.address == from_addr)
         else {
-            eprintln!("Paquete recibido de un 'remote' desconocido: {}", from_addr);
+            eprintln!("[ICE] Ignoring unknown packet received from: {}", from_addr);
             return;
         };
 
         if packet == BINDING_RESPONSE {
-            println!("Received BINDING-RESPONSE from {}", from_addr);
+            println!("[ICE] Received BINDING-RESPONSE from {}", from_addr);
             if !matches!(pair.state, CandidatePairState::Succeeded) {
                 pair.state = CandidatePairState::Succeeded;
                 println!(
-                    "Par actualizado a Succeeded: [local={}, remote={}]",
+                    "[ICE] Candidate Peer Succeeded: [local={}, remote={}]",
                     pair.local.address, pair.remote.address
                 );
 
@@ -479,7 +479,7 @@ impl IceAgent {
 
                     if should_nominate {
                         println!(
-                            "Nominating pair: [local={}, remote={}]",
+                            "[ICE] Nominating pair: [local={}, remote={}]",
                             pair.local.address, pair.remote.address
                         );
                         pair.is_nominated = true;
@@ -490,21 +490,24 @@ impl IceAgent {
                                 local_sock.send_to(NOMINATION_REQUEST, pair.remote.address)
                             {
                                 eprintln!(
-                                    "Error sending NOMINATION_REQUEST to {}: {}",
+                                    "[ICE] Error sending NOMINATION_REQUEST to {}: {}",
                                     pair.remote.address, e
                                 );
                             } else {
-                                println!("Sent NOMINATION_REQUEST to {}", pair.remote.address);
+                                println!(
+                                    "[ICE] Sent NOMINATION_REQUEST to {}",
+                                    pair.remote.address
+                                );
                             }
                         } else {
-                            eprintln!("Cannot nominate: No local socket for pair.");
+                            eprintln!("[ICE] Cannot nominate: No local socket for pair.");
                         }
                     }
                 }
             }
         } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST {
             if self.role == IceRole::Controlled && packet == NOMINATION_REQUEST {
-                println!("Received NOMINATION_REQUEST from {}", from_addr);
+                println!("[ICE] Received NOMINATION_REQUEST from {}", from_addr);
                 if self.nominated_pair.as_ref().map_or(true, |np| {
                     np.local.address != pair.local.address
                         || np.remote.address != pair.remote.address
@@ -513,28 +516,31 @@ impl IceAgent {
                     pair.state = CandidatePairState::Succeeded;
                     self.nominated_pair = Some(pair.clone_light());
                     println!(
-                        "Pair nominated by peer: [local={}, remote={}]",
+                        "[ICE] Pair nominated by peer: [local={}, remote={}]",
                         pair.local.address, pair.remote.address
                     );
                 }
             } else {
-                println!("Received BINDING-REQUEST from {}", from_addr);
+                println!("[ICE] Received BINDING-REQUEST from {}", from_addr);
             }
 
             let Some(local_sock) = &pair.local.socket else {
                 eprintln!(
-                    "No socket para responder al BINDING-REQUEST: {}",
+                    "[ICE] No socket available to answer BINDING-REQUEST: {}",
                     pair.local.address
                 );
                 return;
             };
             if let Err(e) = local_sock.send_to(BINDING_RESPONSE, from_addr) {
-                eprintln!("Error enviando BINDING-RESPONSE a {}: {}", from_addr, e);
+                eprintln!(
+                    "[ICE] Socket error sending INDING-RESPONSE a {}: {}",
+                    from_addr, e
+                );
             } else {
-                println!("Enviado BINDING-RESPONSE a {}", from_addr);
+                println!("[ICE] Sending BINDING-RESPONSE to {}", from_addr);
             }
         } else {
-            eprintln!("Paquete desconocido de {}: {:?}", from_addr, packet);
+            eprintln!("[ICE] Unknown packet from {}: {:?}", from_addr, packet);
         }
     }
 
@@ -581,12 +587,12 @@ impl IceAgent {
     pub fn update_pair_state(&mut self, pair_index: usize, new_state: CandidatePairState) {
         if let Some(pair) = self.candidate_pairs.get_mut(pair_index) {
             println!(
-                "Updating pair {} [{} → {:?}]",
+                "[ICE] Updating pair {} [{} → {:?}]",
                 pair_index, pair.local.address, new_state
             );
             pair.state = new_state;
         } else {
-            eprintln!("Invalid pair index: {}", pair_index);
+            eprintln!("[ICE] Invalid pair index: {}", pair_index);
         }
     }
 
