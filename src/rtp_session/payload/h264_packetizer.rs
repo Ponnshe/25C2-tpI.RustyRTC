@@ -26,15 +26,7 @@
 //! Or build full RTP packets (keeps `seq` locally and returns the next value):
 //!   let (pkts, next_seq) = p.packetize_annexb_to_rtp(annexb_frame, pt, ts, ssrc, seq_start);
 
-use crate::rtp::rtp_packet::RtpPacket;
-
-/// A single RTP payload chunk plus whether it carries the end-of-frame marker.
-#[derive(Debug, Clone)]
-pub struct RtpPayloadChunk {
-    pub bytes: Vec<u8>,
-    /// true only for the *last* chunk of the access unit (frame)
-    pub marker: bool,
-}
+use crate::{rtp::rtp_packet::RtpPacket, rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk};
 
 /// H.264 (RFC 6184) packetizer.
 #[derive(Debug, Clone)]
