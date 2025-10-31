@@ -49,6 +49,8 @@ pub struct IceAgent {
     pub role: IceRole,
     ufrag: String,
     pwd: String,
+    remote_ufrag: String,
+    remote_pwd: String,
     pub nominated_pair: Option<CandidatePair>,
 }
 
@@ -71,6 +73,8 @@ impl IceAgent {
             // TODO: Aniadir remote_frag y remote_ufrag para STUN. Crear setters y
             // usarlos en connection manager
             pwd,
+            remote_ufrag: String::new(),
+            remote_pwd: String::new(),
             nominated_pair: None,
         }
     }
@@ -592,6 +596,14 @@ impl IceAgent {
             .iter()
             .filter(|p| matches!(p.state, CandidatePairState::Succeeded))
             .collect()
+    }
+
+    pub fn set_remote_ufrag(&mut self, remote_ufrag: String) {
+        self.remote_ufrag = remote_ufrag;
+    }
+
+    pub fn set_remote_pwd(&mut self, remote_pwd: String) {
+        self.remote_pwd = remote_pwd;
     }
 }
 
