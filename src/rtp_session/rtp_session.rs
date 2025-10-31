@@ -15,7 +15,6 @@ use super::{
     rtp_recv_config::RtpRecvConfig, rtp_recv_stream::RtpRecvStream, rtp_send_config::RtpSendConfig,
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
-use crate::rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket};
 use crate::{
     core::events::EngineEvent,
     rtcp::{
@@ -23,6 +22,10 @@ use crate::{
         sdes::Sdes,
     },
     rtp::rtp_packet::RtpPacket,
+};
+use crate::{
+    rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
+    rtp_session::h264_packetizer::RtpPayloadChunk,
 };
 use rand::{RngCore, rngs::OsRng};
 
@@ -335,6 +338,66 @@ impl RtpSession {
         if let Some(st) = self.send_streams.lock().unwrap().get_mut(&local_ssrc) {
             f(st);
         }
+    }
+    pub fn send_rtp_payload(
+        &self,
+        local_ssrc: u32,
+        payload: &[u8],
+        timestamp: u32,
+        marker: bool,
+    ) -> Result<(), RtpSessionError> {
+        let mut g = self.send_streams.lock()?;
+        let st = g
+            .get_mut(&local_ssrc)
+            .ok_or(RtpSessionError::SendStreamMissing { ssrc: local_ssrc })?;
+        st.send_rtp_payload(payload, timestamp, marker)
+            .map_err(|source| RtpSessionError::SendStream {
+                source,
+                ssrc: local_ssrc,
+            })
+    }
+
+    /// Batch convenience: send all fragments for one frame timestamp.
+    pub fn send_rtp_payloads_for_frame(
+        &self,
+        local_ssrc: u32,
+        chunks: &[(&[u8], bool)],
+        timestamp: u32,
+    ) -> Result<(), RtpSessionError> {
+        let mut g = self.send_streams.lock()?;
+        let st = g
+            .get_mut(&local_ssrc)
+            .ok_or(RtpSessionError::SendStreamMissing { ssrc: local_ssrc })?;
+        for (i, (bytes, marker)) in chunks.iter().enumerate() {
+            let m = if i + 1 == chunks.len() { true } else { *marker };
+            st.send_rtp_payload(bytes, timestamp, m).map_err(|source| {
+                RtpSessionError::SendStream {
+                    source,
+                    ssrc: local_ssrc,
+                }
+            })?;
+        }
+        Ok(())
+    }
+    pub fn send_rtp_chunks_for_frame(
+        &self,
+        local_ssrc: u32,
+        chunks: &[RtpPayloadChunk],
+        timestamp: u32,
+    ) -> Result<(), RtpSessionError> {
+        let mut g = self.send_streams.lock()?;
+        let st = g
+            .get_mut(&local_ssrc)
+            .ok_or(RtpSessionError::SendStreamMissing { ssrc: local_ssrc })?;
+
+        for ch in chunks {
+            st.send_rtp_payload(&ch.bytes, timestamp, ch.marker)
+                .map_err(|source| RtpSessionError::SendStream {
+                    source,
+                    ssrc: local_ssrc,
+                })?;
+        }
+        Ok(())
     }
 }
 

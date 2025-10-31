@@ -12,7 +12,11 @@ use std::{
 
 use crate::{
     core::{events::EngineEvent, session::Session},
-    rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
+    rtp_session::{
+        h264_packetizer::{H264Packetizer, RtpPayloadChunk},
+        outbound_track_handle::OutboundTrackHandle,
+        rtp_codec::RtpCodec,
+    },
 };
 
 type Result<T> = std::result::Result<T, MediaAgentError>;
@@ -84,6 +88,7 @@ pub struct MediaAgent {
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
     h264_decoder: Mutex<H264Decoder>,
+    h264_packetizer: H264Packetizer,
     local_frame_rx: Option<Receiver<VideoFrame>>,
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -100,6 +105,9 @@ impl MediaAgent {
         if let Some(msg) = status {
             let _ = tx_evt.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
+        // Recommended WebRTC-safe MTU for UDP path: ~1200 total bytes.
+        // Overhead defaults to 12 (RTP header); bump if we add SRTP/DTLS/exts.
+        let h264_packetizer = H264Packetizer::new(1200); // .with_overhead(12) is default
 
         Self {
             tx_evt,
@@ -110,6 +118,7 @@ impl MediaAgent {
             local_frame: Arc::new(Mutex::new(None)),
             remote_frame: Arc::new(Mutex::new(None)),
             last_local_frame_sent: None,
+            h264_packetizer,
         }
     }
 
@@ -197,6 +206,7 @@ impl MediaAgent {
             return Ok(());
         }
 
+        // simple pacing (you can later move to real vsync)
         let now = Instant::now();
         if let Some(last) = self.last_local_frame_sent {
             if now.duration_since(last) < Duration::from_millis(200) {
@@ -204,15 +214,34 @@ impl MediaAgent {
             }
         }
 
+        // 1) Pick one outbound video track (H264 PT=96)
         let handle = match self.outbound_tracks.values().next() {
             Some(h) => h,
             None => return Ok(()),
         };
 
-        let payload = encode_h264_stub(&frame);
+        // 2) Encode to an Annex-B access unit (SPS/PPS/IDR/etc.)
+        //replace with real OpenH264 encoder output (Annex-B).
+        let annexb_frame: Vec<u8> = encode_h264_stub(&frame);
+
+        // 3) Packetize (Single NALU or FU-A fragments; marker set only on last chunk)
+        let chunks: Vec<RtpPayloadChunk> = self
+            .h264_packetizer
+            .packetize_annexb_to_payloads(&annexb_frame);
+
+        if chunks.is_empty() {
+            // Nothing to send (e.g., degenerate MTU/overhead); just bail gracefully
+            return Ok(());
+        }
+
+        // 4) Timestamp (90 kHz); keep SAME ts for all fragments of this frame
+        let ts90k = (frame.timestamp_ms as u32).wrapping_mul(90);
+
+        // 5) Send all fragments in one call (locks once inside the session)
         session
-            .send_media_frame(handle, &payload)
+            .send_rtp_chunks_for_frame(handle, &chunks, ts90k)
             .map_err(MediaAgentError::Send)?;
+
         self.last_local_frame_sent = Some(now);
         Ok(())
     }

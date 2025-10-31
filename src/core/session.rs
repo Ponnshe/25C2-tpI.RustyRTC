@@ -12,13 +12,16 @@ use std::{
 
 use rand::{RngCore, rngs::OsRng};
 
-use crate::core::{
-    events::EngineEvent,
-    protocol::{self, AppMsg},
-};
 use crate::rtp_session::{
     outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
     rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
+};
+use crate::{
+    core::{
+        events::EngineEvent,
+        protocol::{self, AppMsg},
+    },
+    rtp_session::h264_packetizer::RtpPayloadChunk,
 };
 
 #[derive(Clone, Copy)]
@@ -358,6 +361,7 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    /// Method for legacy. Should not be used preferably anymore.
     pub fn send_media_frame(
         &self,
         handle: &OutboundTrackHandle,
@@ -372,6 +376,59 @@ impl Session {
             .ok_or_else(|| "rtp session not running".to_string())?;
         session
             .send_frame(handle.local_ssrc, payload)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Method for legacy. Should not be used preferably anymore.
+    pub fn send_rtp_payload(
+        &self,
+        handle: &OutboundTrackHandle,
+        payload: &[u8],
+        timestamp: u32,
+        marker: bool,
+    ) -> Result<(), String> {
+        let guard = self
+            .rtp_session
+            .lock()
+            .map_err(|_| "rtp session lock poisoned".to_string())?;
+        let rtp = guard
+            .as_ref()
+            .ok_or_else(|| "rtp session not running".to_string())?;
+        rtp.send_rtp_payload(handle.local_ssrc, payload, timestamp, marker)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn send_rtp_payloads_for_frame(
+        &self,
+        handle: &OutboundTrackHandle,
+        chunks: &[(&[u8], bool)],
+        timestamp: u32,
+    ) -> Result<(), String> {
+        let guard = self
+            .rtp_session
+            .lock()
+            .map_err(|_| "rtp session lock poisoned".to_string())?;
+        let rtp = guard
+            .as_ref()
+            .ok_or_else(|| "rtp session not running".to_string())?;
+        rtp.send_rtp_payloads_for_frame(handle.local_ssrc, chunks, timestamp)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn send_rtp_chunks_for_frame(
+        &self,
+        handle: &OutboundTrackHandle,
+        chunks: &[RtpPayloadChunk],
+        timestamp: u32,
+    ) -> Result<(), String> {
+        let guard = self
+            .rtp_session
+            .lock()
+            .map_err(|_| "rtp session lock poisoned".to_string())?;
+        let rtp = guard
+            .as_ref()
+            .ok_or_else(|| "rtp session not running".to_string())?;
+        rtp.send_rtp_chunks_for_frame(handle.local_ssrc, chunks, timestamp)
             .map_err(|e| e.to_string())
     }
 
