@@ -1,7 +1,7 @@
 use super::{conn_state::ConnState, gui_error::GuiError};
 use crate::{
     core::{engine::Engine, events::EngineEvent},
-    media_agent::VideoFrame,
+    media_agent::video_frame::VideoFrame,
 };
 use eframe::{App, Frame, egui};
 use std::collections::VecDeque;

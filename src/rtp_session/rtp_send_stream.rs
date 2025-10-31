@@ -17,8 +17,8 @@ pub struct RtpSendStream {
     pub codec: RtpCodec,
     pub local_ssrc: u32,
     seq: u16,
-    ts: u32,
-    pkt_count: u32,
+    timestamp: u32,
+    packet_count: u32,
     octet_count: u32,
 
     sock: Arc<UdpSocket>,
@@ -37,8 +37,8 @@ impl RtpSendStream {
             codec: cfg.codec,
             local_ssrc: cfg.local_ssrc,
             seq: (OsRng.next_u32() as u16),
-            ts: OsRng.next_u32(),
-            pkt_count: 0,
+            timestamp: OsRng.next_u32(),
+            packet_count: 0,
             octet_count: 0,
             sock,
             peer,
@@ -57,7 +57,7 @@ impl RtpSendStream {
             self.codec.payload_type,
             false,
             self.seq,
-            self.ts,
+            self.timestamp,
             self.local_ssrc,
             payload.into(),
         );
@@ -69,7 +69,7 @@ impl RtpSendStream {
 
         // ——— accounting ———
         self.seq = self.seq.wrapping_add(1);
-        self.pkt_count = self.pkt_count.wrapping_add(1);
+        self.packet_count = self.packet_count.wrapping_add(1);
         self.octet_count = self.octet_count.wrapping_add(payload.len() as u32);
 
         Ok(())
@@ -78,12 +78,12 @@ impl RtpSendStream {
     /// Advance RTP timestamp by `samples` in codec clock units.
     /// Call this according to your pacing (e.g., for audio: samples per packet; for video: frame-based tick).
     pub fn advance_timestamp(&mut self, samples: u32) {
-        self.ts = self.ts.wrapping_add(samples);
+        self.timestamp = self.timestamp.wrapping_add(samples);
     }
 
     /// Optionally set an absolute RTP timestamp (e.g., after a keyframe or clock reset).
     pub fn set_timestamp(&mut self, ts: u32) {
-        self.ts = ts;
+        self.timestamp = ts;
     }
 
     /// Build a Sender Report if we have sent packets since the last SR.
@@ -101,8 +101,8 @@ impl RtpSendStream {
         let sender_info = SenderInfo::new(
             ntp_most_sw,
             now_least_sw,
-            self.ts,
-            self.pkt_count,
+            self.timestamp,
+            self.packet_count,
             self.octet_count,
         );
 
@@ -127,12 +127,55 @@ impl RtpSendStream {
         format!(
             "SSRC={:#010x} sent={} pkts, {} bytes; remote_lost={} (frac={}), remote_jitter={}, RTT={}",
             self.local_ssrc,
-            self.pkt_count,
+            self.packet_count,
             self.octet_count,
             self.tx.remote_cum_lost,
             self.tx.remote_fraction_lost,
             self.tx.remote_jitter,
             rtt,
         )
+    }
+    /// Send one RTP payload with explicit timestamp & marker.
+    /// Increments seqno and updates SR counters. Does NOT change pacing itself.
+    pub fn send_rtp_payload(
+        &mut self,
+        payload: &[u8],
+        timestamp: u32,
+        marker: bool,
+    ) -> Result<(), RtpSendError> {
+        let pkt = RtpPacket::simple(
+            self.codec.payload_type,
+            marker,
+            self.seq,
+            timestamp,
+            self.local_ssrc,
+            payload.to_vec(),
+        );
+        let encoded = pkt.encode()?;
+        self.sock.send_to(&encoded, self.peer)?;
+        self.last_pkt_sent = Instant::now();
+
+        // Accounting
+        self.seq = self.seq.wrapping_add(1);
+        self.packet_count = self.packet_count.wrapping_add(1);
+        self.octet_count = self.octet_count.wrapping_add(payload.len() as u32);
+
+        // Track last timestamp used so SRs reflect the current media clock
+        self.timestamp = timestamp;
+        Ok(())
+    }
+
+    /// Optional convenience for video: send many payloads for a single frame timestamp.
+    pub fn send_rtp_payloads_for_frame(
+        &mut self,
+        chunks: &[(&[u8], bool)], // (payload, marker)
+        timestamp: u32,
+    ) -> Result<(), RtpSendError> {
+        for (i, (bytes, marker)) in chunks.iter().enumerate() {
+            // enforce marker only on the last one if you want:
+            let m = if i + 1 == chunks.len() { true } else { *marker };
+            self.send_rtp_payload(bytes, timestamp, m)?;
+        }
+        Ok(())
     }
 }

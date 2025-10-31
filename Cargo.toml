@@ -12,7 +12,6 @@ openh264 = "0.9"
 [features]
 default = []
 test-support = []
-openh264 = []
 
 
 [lints.clippy]

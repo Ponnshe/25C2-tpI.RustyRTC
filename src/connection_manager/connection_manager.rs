@@ -8,6 +8,8 @@ use crate::ice::{
     gathering_service,
     type_ice::ice_agent::IceRole::{Controlled, Controlling},
 };
+use crate::media_agent::codec_descriptor::CodecDescriptor;
+use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
@@ -17,7 +19,7 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
-use crate::{media_agent::CodecDescriptor, rtp_session::rtp_codec::RtpCodec};
+
 use std::collections::HashSet;
 use std::{
     io::ErrorKind,

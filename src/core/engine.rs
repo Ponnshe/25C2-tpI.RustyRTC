@@ -5,14 +5,17 @@ use std::{
     time::Duration,
 };
 
-use crate::connection_manager::{
-    ConnectionManager, OutboundSdp, connection_error::ConnectionError,
+use crate::{
+    connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
+    media_agent::media_agent::MediaAgent,
 };
-use crate::core::{
-    events::EngineEvent,
-    session::{Session, SessionConfig},
+use crate::{
+    core::{
+        events::EngineEvent,
+        session::{Session, SessionConfig},
+    },
+    media_agent::video_frame::VideoFrame,
 };
-use crate::media_agent::{MediaAgent, VideoFrame};
 
 pub struct Engine {
     cm: ConnectionManager,
