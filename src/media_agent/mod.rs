@@ -1,18 +1,16 @@
 use std::{
-    collections::HashMap,
-    fs,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
-    thread,
-    time::{Duration, Instant, SystemTime},
+    collections::HashMap, error::Error, fs, path::PathBuf, sync::{
+        mpsc::{self, Receiver, Sender}, Arc, Mutex
+    }, thread, time::{Duration, Instant, SystemTime}
 };
 
 use crate::{
     core::{events::EngineEvent, session::Session},
     rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
+};
+
+use openh264::{
+    decoder::{DecodedYUV, Decoder}, encoder::Encoder, formats::YUVSource, nal_units
 };
 
 type Result<T> = std::result::Result<T, MediaAgentError>;
@@ -30,6 +28,42 @@ pub enum FrameFormat {
     Yuv420,
 }
 
+/// Implementa YUVSource para un slice en memoria (I420)
+struct YuvView<'a> {
+    width: i32,
+    height: i32,
+    y: &'a [u8],
+    u: &'a [u8],
+    v: &'a [u8],
+    stride_y: i32,
+    stride_u: i32,
+    stride_v: i32,
+}
+
+impl<'a> YUVSource for YuvView<'a> {
+    fn dimensions_i32(&self) -> (i32, i32) {
+        (self.width, self.height)
+    }
+
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width as usize, self.height as usize)
+    }
+
+    fn strides(&self) -> (usize, usize, usize) {
+        (self.stride_y as usize, self.stride_u as usize, self.stride_v as usize)
+    }
+
+    fn strides_i32(&self) -> (i32, i32, i32) {
+        (self.stride_y, self.stride_u, self.stride_v)
+    }
+
+    fn y(&self) -> &[u8] { self.y }
+    fn u(&self) -> &[u8] { self.u }
+    fn v(&self) -> &[u8] { self.v }
+
+    // write_rgb* not required for YUVSource trait; the trait in the crate defines the above
+}
+
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub width: u32,
@@ -37,6 +71,28 @@ pub struct VideoFrame {
     pub timestamp_ms: u128,
     pub format: FrameFormat,
     pub bytes: Arc<Vec<u8>>,
+}
+
+impl YUVSource for VideoFrame {
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    fn strides(&self) -> (usize, usize, usize) {
+        todo!()
+    }
+
+    fn y(&self) -> &[u8] {
+        todo!()
+    }
+
+    fn u(&self) -> &[u8] {
+        todo!()
+    }
+
+    fn v(&self) -> &[u8] {
+        todo!()
+    }
 }
 
 impl VideoFrame {
@@ -83,7 +139,8 @@ pub struct MediaAgent {
     tx_evt: Sender<EngineEvent>,
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
-    h264_decoder: Mutex<H264Decoder>,
+    h264_decoder: Mutex<Decoder>,
+    h264_encoder: Mutex<Encoder>,
     local_frame_rx: Option<Receiver<VideoFrame>>,
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -105,7 +162,8 @@ impl MediaAgent {
             tx_evt,
             payload_map,
             outbound_tracks: HashMap::new(),
-            h264_decoder: Mutex::new(H264Decoder::new()),
+            h264_decoder: Mutex::new(Decoder::new()?),
+            h264_encoder: Mutex::new(Encoder::new()?),
             local_frame_rx: Some(rx),
             local_frame: Arc::new(Mutex::new(None)),
             remote_frame: Arc::new(Mutex::new(None)),
@@ -209,7 +267,7 @@ impl MediaAgent {
             None => return Ok(()),
         };
 
-        let payload = encode_h264_stub(&frame);
+        let payload = encode_h264(&frame);
         session
             .send_media_frame(handle, &payload)
             .map_err(MediaAgentError::Send)?;
@@ -235,10 +293,18 @@ impl MediaAgent {
             return;
         }
         match self.decode_h264(bytes) {
-            Ok(frame) => {
+            Ok(Some(frame)) => {
                 if let Ok(mut guard) = self.remote_frame.lock() {
                     *guard = Some(frame);
                 }
+            }
+            Ok(None) => {
+                // No frame listo todavía: probablemente el decodificador
+                // está esperando más fragmentos o slices.
+                // Puedes registrar un log en nivel debug, pero no es error.
+                let _ = self.tx_evt.send(EngineEvent::Log(
+                    "[MediaAgent] waiting for more H264 data (incomplete frame)".into(),
+                ));
             }
             Err(e) => {
                 let _ = self.tx_evt.send(EngineEvent::Log(format!(
@@ -247,21 +313,34 @@ impl MediaAgent {
             }
         }
     }
-
-    fn decode_h264(&self, bytes: &[u8]) -> Result<VideoFrame> {
+    fn decode_h264(&self, bytes: &[u8]) -> Result<Option<VideoFrame>> {
+        // Bloqueás el decoder porque está compartido
         let mut guard = self
             .h264_decoder
             .lock()
             .map_err(|_| MediaAgentError::Codec("decoder poisoned".into()))?;
-        guard.decode(bytes)
+
+        // Recorres las NALUs
+        for nalu in nal_units(bytes) {
+            // Cada decode puede devolver Ok(Some(frame)), Ok(None), o Err(_)
+            match guard.decode(nalu) {
+                Ok(Some(yuv)) => {
+                    let video_frame = decodedyuv_to_rgbframe(&yuv);
+                    return Ok(Some(video_frame))
+                }, // frame completo listo
+                Ok(None) => continue,                  // todavía no hay frame
+                Err(e) => return Err(MediaAgentError::Codec(format!("decode error: {e}").into())),
+            }
+        }
+
+        Ok(None) // No hubo frame todavía
     }
 }
 
-fn encode_h264_stub(frame: &VideoFrame) -> Vec<u8> {
-    let mut out = Vec::with_capacity(frame.bytes.len() + 4);
-    out.extend_from_slice(&[0, 0, 0, 1]);
-    out.extend_from_slice(frame.bytes.as_slice());
-    out
+fn encode_h264(frame: &VideoFrame) -> Vec<u8> {
+    if frame.format != FrameFormat::Yuv420{
+        return Vec::new()
+    }
 }
 
 fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
@@ -308,6 +387,21 @@ fn now_millis() -> u128 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or_default()
+}
+
+fn decodedyuv_to_rgbframe(yuv: &DecodedYUV) -> VideoFrame {
+    let (width, height) = yuv.dimensions();
+    let rgb_len = yuv.rgb8_len();
+    let mut rgb = vec![0u8; rgb_len];
+    yuv.write_rgb8(&mut rgb);
+
+    VideoFrame {
+        width: width as u32,
+        height: height as u32,
+        timestamp_ms: yuv.timestamp().as_millis() as u128,
+        format: FrameFormat::Rgb,
+        bytes: Arc::new(rgb),
+    }
 }
 
 struct H264Decoder {
@@ -363,3 +457,4 @@ impl H264Decoder {
         })
     }
 }
+
