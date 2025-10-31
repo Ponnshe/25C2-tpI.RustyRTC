@@ -161,13 +161,33 @@ impl App for RtcApp {
             }
         }
 
-        // Ventana independiente para la cámara
-        if let Some(texture) = &self.camera_texture {
-            egui::Window::new("Local Camera Feed")
-                .default_size([640.0, 480.0])
+        // Mostrar ventana de cámara solo si la conexión está establecida
+        if matches!(self.conn_state, ConnState::Running) {
+            egui::Window::new("Camera View")
+                .default_size([800.0, 400.0])
                 .resizable(true)
                 .show(ctx, |ui| {
-                    ui.image(texture);
+                    ui.horizontal(|ui| {
+                        // Mitad izquierda: cámara local
+                        if let Some(local_tex) = &self.camera_texture {
+                            let size = local_tex.size_vec2();
+                            let aspect_ratio = size.x / size.y;
+                            ui.add(
+                                egui::Image::new(local_tex)
+                                    .fit_to_exact_size(egui::vec2(400.0, 400.0 / aspect_ratio))
+                            );
+                        } else {
+                            ui.colored_label(egui::Color32::GRAY, "No local camera");
+                        }
+
+                        // Mitad derecha: remoto (placeholder negro)
+                        ui.separator();
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(400.0, 400.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+                    });
                 });
         }
 
