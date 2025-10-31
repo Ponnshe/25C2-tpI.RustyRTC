@@ -7,10 +7,12 @@ edition = "2024"
 rand = "0.8"
 eframe = { version = "0.28", features = ["wgpu"] }
 egui = "0.28"
+openh264 = "0.9"
 
 [features]
 default = []
 test-support = []
+openh264 = []
 
 
 [lints.clippy]
