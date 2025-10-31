@@ -4,7 +4,6 @@ use crate::rtcp::{
     rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
-const MAX_CHUNKS: usize = 31;
 /// SDES items (subset, extend as needed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdesItem {

@@ -5,7 +5,6 @@ use crate::rtcp::{
     rtcp_error::RtcpError,
 };
 
-const MAX_SOURCES: usize = 31;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bye {
     pub sources: Vec<u32>,

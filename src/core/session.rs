@@ -21,7 +21,7 @@ use crate::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
-    rtp_session::h264_packetizer::RtpPayloadChunk,
+    rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk,
 };
 
 #[derive(Clone, Copy)]
