@@ -213,10 +213,19 @@ impl MediaAgent {
             return;
         }
         match self.decode_h264(bytes) {
-            Ok(frame) => {
+            Ok(Some(frame)) => {
                 if let Ok(mut guard) = self.remote_frame.lock() {
                     *guard = Some(frame);
                 }
+            }
+
+            Ok(None) => {
+                // No frame listo todavía: probablemente el decodificador
+                // está esperando más fragmentos o slices.
+                // Puedes registrar un log en nivel debug, pero no es error.
+                let _ = self.tx_evt.send(EngineEvent::Log(
+                    "[MediaAgent] waiting for more H264 data (incomplete frame)".into(),
+                ));
             }
             Err(e) => {
                 let _ = self.tx_evt.send(EngineEvent::Log(format!(
@@ -226,7 +235,7 @@ impl MediaAgent {
         }
     }
 
-    fn decode_h264(&self, bytes: &[u8]) -> Result<VideoFrame> {
+    fn decode_h264(&self, bytes: &[u8]) -> Result<Option<VideoFrame>> {
         let mut guard = self
             .h264_decoder
             .lock()
