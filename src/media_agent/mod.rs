@@ -1,100 +1,365 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
 
-use std::sync::mpsc::Sender;
+use crate::{
+    core::{events::EngineEvent, session::Session},
+    rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
+};
 
-use crate::core::{events::EngineEvent, session::Session};
-use crate::rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec};
+type Result<T> = std::result::Result<T, MediaAgentError>;
 
-pub struct MockMediaAgent {
-    tx_evt: Sender<EngineEvent>,
-    outbound_tracks: Vec<OutboundTrackHandle>,
-    last_frame_sent: Option<Instant>,
-    frame_interval: Duration,
+#[derive(Debug)]
+pub enum MediaAgentError {
+    Camera(String),
+    Codec(String),
+    Send(String),
 }
 
-impl MockMediaAgent {
+#[derive(Debug, Clone, Copy)]
+pub enum FrameFormat {
+    Rgb,
+    Yuv420,
+}
+
+#[derive(Debug, Clone)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub timestamp_ms: u128,
+    pub format: FrameFormat,
+    pub bytes: Arc<Vec<u8>>,
+}
+
+impl VideoFrame {
+    fn synthetic(width: u32, height: u32, tick: u8) -> Self {
+        let mut data = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let r = x as u8 ^ tick;
+                let g = y as u8 ^ tick;
+                let b = (x.wrapping_add(y)) as u8 ^ tick;
+                data.push(r);
+                data.push(g);
+                data.push(b);
+            }
+        }
+        Self {
+            width,
+            height,
+            format: FrameFormat::Rgb,
+            bytes: Arc::new(data),
+            timestamp_ms: now_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodecDescriptor {
+    pub name: &'static str,
+    pub rtp: RtpCodec,
+    pub fmtp: Option<String>,
+}
+
+impl CodecDescriptor {
+    pub fn h264_dynamic(pt: u8) -> Self {
+        Self {
+            name: "H264",
+            rtp: RtpCodec::with_name(pt, 90_000, "H264"),
+            fmtp: Some("profile-level-id=42e01f;packetization-mode=1".into()),
+        }
+    }
+}
+
+pub struct MediaAgent {
+    tx_evt: Sender<EngineEvent>,
+    payload_map: HashMap<u8, CodecDescriptor>,
+    outbound_tracks: HashMap<u8, OutboundTrackHandle>,
+    h264_decoder: Mutex<H264Decoder>,
+    local_frame_rx: Option<Receiver<VideoFrame>>,
+    local_frame: Arc<Mutex<Option<VideoFrame>>>,
+    remote_frame: Arc<Mutex<Option<VideoFrame>>>,
+    last_local_frame_sent: Option<Instant>,
+}
+
+impl MediaAgent {
     pub fn new(tx_evt: Sender<EngineEvent>) -> Self {
+        let mut payload_map = HashMap::new();
+        let pt = 96;
+        payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
+
+        let (rx, status) = spawn_camera_worker();
+        if let Some(msg) = status {
+            let _ = tx_evt.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
+        }
+
         Self {
             tx_evt,
-            outbound_tracks: Vec::new(),
-            last_frame_sent: None,
-            frame_interval: Duration::from_millis(1500),
+            payload_map,
+            outbound_tracks: HashMap::new(),
+            h264_decoder: Mutex::new(H264Decoder::new()),
+            local_frame_rx: Some(rx),
+            local_frame: Arc::new(Mutex::new(None)),
+            remote_frame: Arc::new(Mutex::new(None)),
+            last_local_frame_sent: None,
         }
     }
 
-    pub fn on_engine_event(&mut self, evt: &EngineEvent, session: Option<&Session>) {
+    pub fn payload_mapping(&self) -> &HashMap<u8, CodecDescriptor> {
+        &self.payload_map
+    }
+
+    pub fn local_rtp_codecs(&self) -> Vec<RtpCodec> {
+        self.payload_map.values().map(|c| c.rtp.clone()).collect()
+    }
+
+    pub fn codec_descriptors(&self) -> Vec<CodecDescriptor> {
+        self.payload_map.values().cloned().collect()
+    }
+
+    pub fn handle_engine_event(&mut self, evt: &EngineEvent, session: Option<&Session>) {
         match evt {
             EngineEvent::Established => {
                 if let Some(sess) = session {
-                    self.ensure_track(sess);
+                    if let Err(e) = self.ensure_outbound_tracks(sess) {
+                        let _ = self
+                            .tx_evt
+                            .send(EngineEvent::Error(format!("media tracks: {e:?}")));
+                    }
                 }
             }
             EngineEvent::Closed | EngineEvent::Closing { .. } => {
                 self.outbound_tracks.clear();
-                self.last_frame_sent = None;
+                self.last_local_frame_sent = None;
             }
+            EngineEvent::RtpMedia { pt, bytes } => self.handle_remote_rtp(*pt, bytes),
             _ => {}
         }
     }
 
     pub fn tick(&mut self, session: Option<&Session>) {
-        let Some(sess) = session else { return };
+        self.drain_local_frames();
+        if let Some(sess) = session {
+            if let Err(e) = self.maybe_send_local_frame(sess) {
+                let _ = self.tx_evt.send(EngineEvent::Error(format!(
+                    "[MediaAgent] send local frame failed: {e:?}"
+                )));
+            }
+        }
+    }
+
+    pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
+        let local = self
+            .local_frame
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned());
+        let remote = self
+            .remote_frame
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned());
+        (local, remote)
+    }
+
+    fn ensure_outbound_tracks(&mut self, session: &Session) -> Result<()> {
+        for (pt, codec) in &self.payload_map {
+            if self.outbound_tracks.contains_key(pt) {
+                continue;
+            }
+            let handle = session
+                .register_outbound_track(codec.rtp.clone())
+                .map_err(MediaAgentError::Send)?;
+            self.outbound_tracks.insert(*pt, handle);
+        }
+        Ok(())
+    }
+
+    fn maybe_send_local_frame(&mut self, session: &Session) -> Result<()> {
+        let Some(frame) = self
+            .local_frame
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+        else {
+            return Ok(());
+        };
+
         if self.outbound_tracks.is_empty() {
-            return;
+            return Ok(());
         }
 
         let now = Instant::now();
-        let should_send = self
-            .last_frame_sent
-            .map(|last| now.duration_since(last) >= self.frame_interval)
-            .unwrap_or(true);
-        if !should_send {
-            return;
-        }
-
-        for track in &self.outbound_tracks {
-            // Dummy payload for testing.
-            let payload = vec![track.payload_type(); 1200];
-            match sess.send_media_frame(track, &payload) {
-                Ok(()) => {
-                    let _ = self.tx_evt.send(EngineEvent::Log(format!(
-                        "[MockMediaAgent] sent {} bytes on ssrc={:#010x} (PT={})",
-                        payload.len(),
-                        track.local_ssrc,
-                        track.payload_type()
-                    )));
-                }
-                Err(e) => {
-                    let _ = self.tx_evt.send(EngineEvent::Error(format!(
-                        "[MockMediaAgent] send failed for ssrc={:#010x}: {e}",
-                        track.local_ssrc
-                    )));
-                }
+        if let Some(last) = self.last_local_frame_sent {
+            if now.duration_since(last) < Duration::from_millis(200) {
+                return Ok(());
             }
         }
 
-        self.last_frame_sent = Some(now);
+        let handle = match self.outbound_tracks.values().next() {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+
+        let payload = encode_h264_stub(&frame);
+        session
+            .send_media_frame(handle, &payload)
+            .map_err(MediaAgentError::Send)?;
+        self.last_local_frame_sent = Some(now);
+        Ok(())
     }
 
-    fn ensure_track(&mut self, session: &Session) {
-        if !self.outbound_tracks.is_empty() {
+    fn drain_local_frames(&mut self) {
+        if let Some(rx) = &self.local_frame_rx {
+            while let Ok(frame) = rx.try_recv() {
+                if let Ok(mut guard) = self.local_frame.lock() {
+                    *guard = Some(frame);
+                }
+            }
+        }
+    }
+
+    fn handle_remote_rtp(&self, payload_type: u8, bytes: &[u8]) {
+        if !self.payload_map.contains_key(&payload_type) {
+            let _ = self.tx_evt.send(EngineEvent::Log(format!(
+                "[MediaAgent] ignoring payload type {payload_type}"
+            )));
             return;
         }
-        let codec = RtpCodec::new(96, 90_000);
-        match session.register_outbound_track(codec) {
-            Ok(handle) => {
-                let _ = self.tx_evt.send(EngineEvent::Log(format!(
-                    "[MockMediaAgent] registered outbound track ssrc={:#010x} PT={}",
-                    handle.local_ssrc,
-                    handle.payload_type()
-                )));
-                self.outbound_tracks.push(handle);
+        match self.decode_h264(bytes) {
+            Ok(frame) => {
+                if let Ok(mut guard) = self.remote_frame.lock() {
+                    *guard = Some(frame);
+                }
             }
             Err(e) => {
-                let _ = self.tx_evt.send(EngineEvent::Error(format!(
-                    "[MockMediaAgent] failed to register outbound track: {e}"
+                let _ = self.tx_evt.send(EngineEvent::Log(format!(
+                    "[MediaAgent] decode error: {e:?}"
                 )));
             }
         }
+    }
+
+    fn decode_h264(&self, bytes: &[u8]) -> Result<VideoFrame> {
+        let mut guard = self
+            .h264_decoder
+            .lock()
+            .map_err(|_| MediaAgentError::Codec("decoder poisoned".into()))?;
+        guard.decode(bytes)
+    }
+}
+
+fn encode_h264_stub(frame: &VideoFrame) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frame.bytes.len() + 4);
+    out.extend_from_slice(&[0, 0, 0, 1]);
+    out.extend_from_slice(frame.bytes.as_slice());
+    out
+}
+
+fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
+    let (tx, rx) = mpsc::channel();
+    let status = discover_camera_path()
+        .map(|p| format!("using camera source {}", p.display()))
+        .or_else(|| Some("no physical camera detected, using test pattern".into()));
+
+    thread::Builder::new()
+        .name("media-agent-camera".into())
+        .spawn(move || {
+            if let Err(e) = camera_loop(tx) {
+                eprintln!("camera loop stopped: {e:?}");
+            }
+        })
+        .ok();
+
+    (rx, status)
+}
+
+fn camera_loop(tx: Sender<VideoFrame>) -> Result<()> {
+    let mut phase = 0u8;
+    loop {
+        let frame = VideoFrame::synthetic(320, 240, phase);
+        phase = phase.wrapping_add(1);
+        tx.send(frame)
+            .map_err(|e| MediaAgentError::Camera(e.to_string()))?;
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn discover_camera_path() -> Option<PathBuf> {
+    for idx in 0..4 {
+        let path = PathBuf::from(format!("/dev/video{idx}"));
+        if fs::metadata(&path).is_ok() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default()
+}
+
+struct H264Decoder {
+    #[cfg(feature = "openh264")]
+    inner: Option<openh264::decoder::Decoder>,
+}
+
+impl H264Decoder {
+    fn new() -> Self {
+        #[cfg(feature = "openh264")]
+        {
+            let inner = openh264::decoder::Decoder::new().ok();
+            Self { inner }
+        }
+        #[cfg(not(feature = "openh264"))]
+        {
+            Self {}
+        }
+    }
+
+    fn decode(&mut self, payload: &[u8]) -> Result<VideoFrame> {
+        #[cfg(feature = "openh264")]
+        {
+            if let Some(decoder) = self.inner.as_mut() {
+                match decoder.decode(payload) {
+                    Ok(result) => {
+                        if let Some(image) = result.image {
+                            let plane = image.to_rgb();
+                            return Ok(VideoFrame {
+                                width: plane.width(),
+                                height: plane.height(),
+                                format: FrameFormat::Rgb,
+                                bytes: Arc::new(plane.as_slice().to_vec()),
+                                timestamp_ms: now_millis(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        return Err(MediaAgentError::Codec(format!(
+                            "openh264 decode error: {e:?}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(VideoFrame {
+            width: 0,
+            height: 0,
+            format: FrameFormat::Rgb,
+            bytes: Arc::new(payload.to_vec()),
+            timestamp_ms: now_millis(),
+        })
     }
 }
