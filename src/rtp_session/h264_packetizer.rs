@@ -253,6 +253,8 @@ fn start_code_len_at(data: &[u8], i: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rtp::rtp_error::RtpError;
+    use crate::rtp::rtp_packet::RtpPacket;
 
     // Helper to build Annex-B: [SC][NALU][SC][NALU]...
     fn annexb(nalus: &[&[u8]]) -> Vec<u8> {
@@ -274,6 +276,42 @@ mod tests {
     }
 
     #[test]
+    fn split_no_start_code_treats_all_as_one_nalu() {
+        let buf = vec![0x65, 1, 2, 3, 4]; // no 00 00 01
+        let v = split_annexb_nalus(&buf);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], buf.as_slice());
+    }
+
+    #[test]
+    fn split_mixed_3_and_4_byte_start_codes_and_trailing_zeros() {
+        // 4-byte then 3-byte start code; trailing zeros after last NALU
+        let mut a = Vec::new();
+        a.extend_from_slice(&[0, 0, 0, 1, 0x67, 0xAA]); // SPS-like
+        a.extend_from_slice(&[0, 0, 1, 0x68, 0xBB]); // PPS-like
+        a.extend_from_slice(&[0, 0]); // trailing zeros
+        let v = split_annexb_nalus(&a);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], &[0x67, 0xAA]);
+        assert_eq!(v[1], &[0x68, 0xBB]);
+    }
+
+    #[test]
+    fn split_ignores_empty_nalus_from_back_to_back_start_codes() {
+        // Back-to-back start codes produce empty NALUs; ensure they are ignored.
+        let a = [
+            0, 0, 1, // 3B start
+            0, 0, 1, // 3B start immediately again (empty)
+            0x65, 1, 2, 0, 0, 0, 1, // 4B start
+            0x41, 3,
+        ];
+        let v = split_annexb_nalus(&a);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], &[0x65, 1, 2]);
+        assert_eq!(v[1], &[0x41, 3]);
+    }
+
+    #[test]
     fn packetize_small_nalus_single() {
         let p = H264Packetizer::new(1200);
         let a = annexb(&[&[0x65, 1, 2], &[0x41, 3]]);
@@ -283,6 +321,141 @@ mod tests {
         assert!(chunks[1].marker);
         assert_eq!(chunks[0].bytes, &[0x65, 1, 2]);
         assert_eq!(chunks[1].bytes, &[0x41, 3]);
+    }
+
+    #[test]
+    fn packetize_exactly_at_max_payload_stays_single() {
+        // max_payload = mtu - overhead = 30 - 12 = 18
+        let p = H264Packetizer::new(30).with_overhead(12);
+        // NALU length exactly 18 -> remains single-nalu (no FU-A)
+        let mut nalu = vec![0x41];
+        nalu.extend(std::iter::repeat(0u8).take(17));
+        let a = annexb(&[&nalu]);
+        let chunks = p.packetize_annexb_to_payloads(&a);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].bytes.len(), 18);
+        // Single NALU payload should start with original header (0x41), not FU-A indicator (type 28)
+        assert_ne!(chunks[0].bytes[0] & 0x1F, 28);
+        assert!(chunks[0].marker);
+    }
+
+    #[test]
+    fn packetize_one_over_max_payload_uses_fu_a_two_frags_min() {
+        // max_payload = 18, nalu len = 19 -> FU-A of 2 fragments (since FU adds 2B overhead)
+        let p = H264Packetizer::new(30).with_overhead(12);
+        let mut nalu = vec![0x65]; // IDR
+        nalu.extend(std::iter::repeat(0u8).take(18)); // total 19
+        let a = annexb(&[&nalu]);
+        let chunks = p.packetize_annexb_to_payloads(&a);
+        assert!(chunks.len() >= 2);
+        // Check FU-A headers
+        for (i, ch) in chunks.iter().enumerate() {
+            assert_eq!(ch.bytes[0] & 0x1F, 28); // FU-A
+            let fu_hdr = ch.bytes[1];
+            let s = fu_hdr & 0x80 != 0;
+            let e = fu_hdr & 0x40 != 0;
+            if i == 0 {
+                assert!(s && !e);
+            } else if i == chunks.len() - 1 {
+                assert!(!s && e);
+            } else {
+                assert!(!s && !e);
+            }
+        }
+        assert!(chunks.last().unwrap().marker);
+    }
+
+    #[test]
+    fn degenerate_payload_budget_yields_no_fragments() {
+        // mtu==overhead => max_payload==0; the code should skip NALU safely (no infinite loop)
+        let p = H264Packetizer::new(12).with_overhead(12);
+        let a = annexb(&[&[0x65, 1, 2, 3, 4, 5]]);
+        let chunks = p.packetize_annexb_to_payloads(&a);
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn marker_on_last_chunk_even_if_last_nalu_is_fragmented() {
+        let p = H264Packetizer::new(22).with_overhead(12); // max_payload = 10
+        let small1 = vec![0x61, 1, 2]; // single
+        let mut big_last = Vec::with_capacity(1 + 21);
+        big_last.push(0x65);
+        big_last.extend((0u8..21u8).map(|x| x.wrapping_add(1))); // will fragment
+        let a = annexb(&[&small1, &big_last]);
+        let chunks = p.packetize_annexb_to_payloads(&a);
+
+        assert!(chunks.len() >= 3);
+        // All but the last must have marker=false; last true
+        for (i, ch) in chunks.iter().enumerate() {
+            if i + 1 == chunks.len() {
+                assert!(ch.marker);
+            } else {
+                assert!(!ch.marker);
+            }
+        }
+    }
+
+    #[test]
+    fn packetize_to_rtp_and_decode_roundtrip() {
+        let p = H264Packetizer::new(22).with_overhead(12); // max_payload=10
+        let mut big = Vec::with_capacity(1 + 25);
+        big.push(0x65); // IDR
+        big.extend((0u8..25u8).map(|x| x.wrapping_add(1)));
+        let a = annexb(&[&big]);
+
+        let pt = 96u8;
+        let ts = 123_456u32;
+        let ssrc = 0x11223344;
+        let seq0 = 5000u16;
+
+        let (pkts, next_seq) = p.packetize_annexb_to_rtp(&a, pt, ts, ssrc, seq0);
+        assert!(pkts.len() >= 3);
+        assert_eq!(next_seq, seq0.wrapping_add(pkts.len() as u16));
+        for (i, pkt) in pkts.iter().enumerate() {
+            assert_eq!(pkt.header.payload_type, pt);
+            assert_eq!(pkt.header.timestamp, ts);
+            assert_eq!(pkt.header.ssrc, ssrc);
+            let expected_marker = i + 1 == pkts.len();
+            assert_eq!(pkt.header.marker, expected_marker);
+
+            // Encode + decode sanity
+            let bytes = pkt.encode().expect("encode");
+            let dec = RtpPacket::decode(&bytes).expect("decode");
+            assert_eq!(dec, *pkt);
+        }
+    }
+
+    #[test]
+    fn rtp_decode_rejects_bad_version_variants() {
+        // Build a valid small RTP packet first
+        let pkt = RtpPacket::simple(
+            96,         // PT
+            true,       // M
+            1000,       // seq
+            4242,       // ts
+            0xAABBCCDD, // ssrc
+            vec![0x65, 1, 2],
+        );
+        let bytes = pkt.encode().expect("encode");
+
+        // Helper to force version in top 2 bits of first byte
+        let set_version = |b: &mut [u8], v: u8| {
+            b[0] = (b[0] & 0x3F) | ((v & 0b11) << 6);
+        };
+
+        for bad in [0u8, 1u8, 3u8] {
+            let mut corrupted = bytes.clone();
+            set_version(&mut corrupted, bad);
+            match RtpPacket::decode(&corrupted) {
+                Err(RtpError::BadVersion(v)) => assert_eq!(v, bad),
+                other => panic!("expected BadVersion({bad}), got {:?}", other),
+            }
+        }
+
+        // Sanity: version=2 should decode fine
+        let mut ok = bytes.clone();
+        set_version(&mut ok, 2);
+        let _ = RtpPacket::decode(&ok).expect("version=2 must decode");
     }
 
     #[test]
