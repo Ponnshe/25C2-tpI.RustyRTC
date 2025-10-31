@@ -8,6 +8,7 @@ rand = "0.8"
 eframe = { version = "0.28", features = ["wgpu"] }
 egui = "0.28"
 openh264 = "0.9"
+opencv = "0.97"
 
 [features]
 default = []
