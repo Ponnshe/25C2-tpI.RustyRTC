@@ -1,4 +1,4 @@
-use crate::core::events::EngineEvent;
+use crate::core::events::{EngineEvent, RtpIn};
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
@@ -62,12 +62,15 @@ impl RtpRecvStream {
             .on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
 
         // 4) Emit media event (prefer owned bytes over borrows; see note below)
-        let payload_type = packet.payload_type();
-        let payload = packet.payload;
-        let _ = self.event_transmitter.send(EngineEvent::RtpMedia {
-            pt: payload_type,
-            bytes: payload,
+        let evt = EngineEvent::RtpIn(RtpIn {
+            pt: packet.payload_type(),
+            marker: packet.marker(),
+            timestamp_90khz: packet.timestamp(),
+            seq: packet.seq(),
+            ssrc: packet.ssrc(),
+            payload: packet.payload, // payload only, no header
         });
+        let _ = self.event_transmitter.send(evt);
     }
 
     /// Called by the *session* when an SR for this remote SSRC arrives.
