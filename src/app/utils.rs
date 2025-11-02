@@ -1,8 +1,5 @@
-use crate::{
-    core::{engine::Engine, events::EngineEvent},
-    media_agent::video_frame::VideoFrame,
-};
-use eframe::{App, Frame, egui};
+use crate::media_agent::video_frame::VideoFrame;
+use eframe::egui;
 
 pub fn update_camera_texture(
     ctx: &egui::Context,

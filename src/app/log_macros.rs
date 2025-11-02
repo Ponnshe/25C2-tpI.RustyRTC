@@ -23,6 +23,28 @@ macro_rules! log_ev {
         );
     }};
 }
+/// Direct logging via anything that implements `LogSink`
+/// (e.g., Arc<dyn LogSink>, LoggerHandle, NoopLogSink, TestLogSink).
+#[macro_export]
+macro_rules! sink_log {
+    ($sink:expr, $lvl:expr, $($arg:tt)*) => {{
+        // One formatting allocation; pass &str to the trait method.
+        let __msg = format!($($arg)*);
+        // Method-call syntax works for Arc<dyn LogSink> and for concrete types that implement the trait.
+        $sink.log($lvl, &__msg, module_path!());
+    }};
+}
+
+#[macro_export]
+macro_rules! sink_trace { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Trace, $($arg)*); } }
+#[macro_export]
+macro_rules! sink_debug { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Debug, $($arg)*); } }
+#[macro_export]
+macro_rules! sink_info  { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Info,  $($arg)*); } }
+#[macro_export]
+macro_rules! sink_warn  { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Warn,  $($arg)*); } }
+#[macro_export]
+macro_rules! sink_error { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Error, $($arg)*); } }
 
 /// Shorthands for common levels via EngineEvent
 #[macro_export]

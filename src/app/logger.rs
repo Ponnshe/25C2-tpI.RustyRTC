@@ -1,21 +1,21 @@
-use crate::app::{log_level::LogLevel, log_msg::LogMsg};
+use crate::app::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
 
 use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
-    thread::{self, JoinHandle},
+    sync::mpsc::{self, TrySendError},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Bounded, non-blocking logger that writes to a per-process log file,
 /// and provides a sampled "UI tap" channel for lightweight UI display.
 pub struct Logger {
-    log_tx: SyncSender<LogMsg>,
-    ui_log_rx: Receiver<String>,
-    handle: Option<JoinHandle<()>>,
-    file_path: PathBuf,
+    handle: LoggerHandle,
+    ui_log_rx: std::sync::mpsc::Receiver<String>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    file_path: std::path::PathBuf,
     sample_every: u32,
 }
 
@@ -49,9 +49,10 @@ impl Logger {
 
         let (tx, rx) = mpsc::sync_channel::<LogMsg>(cap);
         let (ui_tx, ui_rx) = mpsc::sync_channel::<String>(ui_cap);
+        let handle_for_field = LoggerHandle { tx: tx.clone() };
         let file_path_clone = file_path.clone();
 
-        let handle = thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("logger-worker".into())
             .spawn(move || {
                 // open file (append, create), buffered writes
@@ -101,9 +102,9 @@ impl Logger {
             .ok();
 
         Self {
-            log_tx: tx,
+            handle: handle_for_field,
             ui_log_rx: ui_rx,
-            handle,
+            thread,
             file_path,
             sample_every,
         }
@@ -116,13 +117,11 @@ impl Logger {
         text: S,
         target: &'static str,
     ) -> Result<(), TrySendError<LogMsg>> {
-        let msg = LogMsg {
-            level,
-            ts_ms: crate::media_agent::utils::now_millis(),
-            text: text.into(),
-            target,
-        };
-        self.log_tx.try_send(msg)
+        self.handle.try_log(level, text, target)
+    }
+    /// Give modules a cloneable sink they can keep.
+    pub fn handle(&self) -> LoggerHandle {
+        self.handle.clone()
     }
 
     /// Pull one sampled UI line (if any).
@@ -133,21 +132,6 @@ impl Logger {
     /// Optional: expose the chosen file path (nice for debugging).
     pub fn file_path(&self) -> &Path {
         &self.file_path
-    }
-
-    /// Graceful stop (optional — dropping also stops it).
-    pub fn stop(mut self) {
-        drop(self.log_tx.clone()); // disconnect sender -> worker exits
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-    }
-}
-
-impl Drop for Logger {
-    fn drop(&mut self) {
-        // Disconnect; worker will exit its recv loop and flush.
-        let _ = self.log_tx.clone();
     }
 }
 
