@@ -2,7 +2,6 @@ use super::{conn_state::ConnState, gui_error::GuiError};
 use crate::{
     core::{engine::Engine, events::EngineEvent},
     media_agent::video_frame::VideoFrame,
-    camera_manager::camera_manager::CameraManager,
 };
 use eframe::{App, Frame, egui};
 use std::collections::VecDeque;
@@ -176,7 +175,7 @@ impl App for RtcApp {
                             let aspect_ratio = size.x / size.y;
                             ui.add(
                                 egui::Image::new(local_tex)
-                                    .fit_to_exact_size(egui::vec2(400.0, 400.0 / aspect_ratio))
+                                    .fit_to_exact_size(egui::vec2(400.0, 400.0 / aspect_ratio)),
                             );
                         } else {
                             ui.colored_label(egui::Color32::GRAY, "No local camera");
@@ -184,10 +183,8 @@ impl App for RtcApp {
 
                         // Mitad derecha: remoto (placeholder negro)
                         ui.separator();
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(400.0, 400.0),
-                            egui::Sense::hover(),
-                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(400.0, 400.0), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
                     });
                 });
@@ -301,4 +298,3 @@ impl App for RtcApp {
         });
     }
 }
-

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::events::RtpIn;
 use crate::{
     camera_manager::camera_manager::CameraManager,
     core::{events::EngineEvent, session::Session},
@@ -32,10 +33,9 @@ use crate::{
         rtp_codec::RtpCodec,
     },
 };
-use crate::core::events::RtpIn;
 
 use opencv::{
-    core::{AlgorithmHint, Mat},
+    core::{AlgorithmHint, CV_8UC3, Mat},
     imgproc,
     prelude::*,
 };
@@ -397,22 +397,22 @@ fn camera_loop(
 /// Always returns tightly packed RGB (len = width*height*3), regardless of stride/continuity.
 fn tight_rgb_bytes(mat: &Mat, width: u32, height: u32) -> opencv::Result<Vec<u8>> {
     // Ensure 8UC3
-    if mat.typ()? != core::CV_8UC3 {
+    if mat.typ() != CV_8UC3 {
         let mut fixed = Mat::default();
-        mat.convert_to(&mut fixed, core::CV_8UC3, 1.0, 0.0)?;
+        mat.convert_to(&mut fixed, CV_8UC3, 1.0, 0.0)?;
         return tight_rgb_bytes(&fixed, width, height);
     }
 
     // Force a continuous buffer if needed
-    let m = if mat.is_continuous()? {
+    let m = if mat.is_continuous() {
         mat.try_clone()?
     } else {
-        mat.clone()?
+        mat.clone()
     };
 
     let w = width as usize;
     let h = height as usize;
-    let ch = m.channels()? as usize; // 3
+    let ch = m.channels() as usize; // 3
     let expected = w * h * ch;
 
     let data = m.data_bytes()?;

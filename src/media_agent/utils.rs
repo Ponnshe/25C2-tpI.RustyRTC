@@ -1,14 +1,8 @@
-use std::time::SystemTime;
 use opencv::{
+    core::{AlgorithmHint, Mat, MatTraitConstManual, prelude::*},
     imgproc,
-    core::{
-        prelude::*, 
-        Mat, 
-        MatTrait, 
-        MatTraitConstManual,
-        AlgorithmHint,
-    },
 };
+use std::time::SystemTime;
 
 pub fn now_millis() -> u128 {
     SystemTime::now()
@@ -25,7 +19,13 @@ pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
 
     // Convertimos BGR → RGBA
     let mut rgba = Mat::default();
-    if let Err(e) = imgproc::cvt_color(mat, &mut rgba, imgproc::COLOR_BGR2RGBA, 0, AlgorithmHint::ALGO_HINT_DEFAULT) {
+    if let Err(e) = imgproc::cvt_color(
+        mat,
+        &mut rgba,
+        imgproc::COLOR_BGR2RGBA,
+        0,
+        AlgorithmHint::ALGO_HINT_DEFAULT,
+    ) {
         eprintln!("Color conversion failed: {:?}", e);
         return None;
     }
@@ -73,4 +73,3 @@ pub fn i420_to_rgb(yuv_bytes: &[u8], width: u32, height: u32) -> Vec<u8> {
 
     rgb
 }
-
