@@ -6,6 +6,7 @@
 target/
 /target/
 debug/
+debug/logs
 /**/*.rs.bk
 
 # For library crates you typically DO NOT commit Cargo.lock.

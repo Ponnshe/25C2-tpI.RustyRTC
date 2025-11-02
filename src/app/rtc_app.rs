@@ -1,29 +1,38 @@
 use super::{conn_state::ConnState, gui_error::GuiError};
 use crate::{
-    core::{engine::Engine, events::EngineEvent},
+    app::{log_level::LogLevel, logger::Logger},
+    core::{engine::Engine, events::EngineEvent::*},
     media_agent::video_frame::VideoFrame,
 };
 use eframe::{App, Frame, egui};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::mpsc::TrySendError, time::Instant};
 
 pub struct RtcApp {
     // UI text areas
     remote_sdp_text: String,
     local_sdp_text: String,
+    pending_remote_sdp: Option<String>,
 
     status_line: String,
 
-    // New orchestrator
+    // orchestrator
     engine: Engine,
 
-    // local UI flags
+    // JSEP state
     has_remote_description: bool,
     has_local_description: bool,
     is_local_offerer: bool,
     conn_state: ConnState,
 
-    // UI log plumbing
+    // UI log
+    logger: Logger,
     ui_logs: VecDeque<String>,
+    bg_dropped: usize,
+
+    // RTP summaries
+    rtp_pkts: u64,
+    rtp_bytes: u64,
+    rtp_last_report: Instant,
 
     //CONCEPT TEST
     camera_texture: Option<egui::TextureHandle>,
@@ -32,29 +41,57 @@ pub struct RtcApp {
 
 impl RtcApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let logger = Logger::start_default("roomrtc", 4096, 256, 50);
         Self {
             remote_sdp_text: String::new(),
             local_sdp_text: String::new(),
+            pending_remote_sdp: None,
             status_line: "Ready.".into(),
             engine: Engine::new(),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
             conn_state: ConnState::Idle,
-            ui_logs: VecDeque::with_capacity(256),
             //CONCEPT TEST
             camera_texture: None,
-            //END CONCEPT TEST
+            logger,
+            ui_logs: VecDeque::with_capacity(256),
+            bg_dropped: 0,
+            rtp_pkts: 0,
+            rtp_bytes: 0,
+            rtp_last_report: Instant::now(),
         }
     }
 
-    fn push_log<T: Into<String>>(&mut self, s: T) {
+    fn push_ui_log<T: Into<String>>(&mut self, s: T) {
+        // Only keep a small tail in the UI
         if self.ui_logs.len() == 256 {
             self.ui_logs.pop_front();
         }
         self.ui_logs.push_back(s.into());
     }
 
+    fn background_log<L: Into<String>>(&mut self, level: LogLevel, text: L) {
+        match self.logger.try_log(level, text) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.bg_dropped += 1;
+                if self.bg_dropped % 100 == 0 {
+                    self.push_ui_log(format!(
+                        "(logger) dropped {} background log lines",
+                        self.bg_dropped
+                    ));
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => { /* worker gone; ignore */ }
+        }
+    }
+
+    fn drain_ui_log_tap(&mut self) {
+        while let Some(line) = self.logger.try_recv_ui() {
+            self.push_ui_log(line);
+        }
+    }
     fn summarize_frame(frame: Option<&VideoFrame>) -> String {
         match frame {
             Some(f) if f.width > 0 && f.height > 0 => {
@@ -62,6 +99,20 @@ impl RtcApp {
             }
             Some(f) => format!("{} bytes (pending decode)", f.bytes.len()),
             None => "no frame".into(),
+        }
+    }
+
+    fn push_kbps_log_from_rtp_packets(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.rtp_last_report).as_millis() >= 500 {
+            let kbps = (self.rtp_bytes as f64 * 8.0) / 1000.0 * 2.0; // rough since 0.5s window
+            self.push_ui_log(format!(
+                "RTP: {} pkts, {:.1} kbps (last 0.5s)",
+                self.rtp_pkts, kbps
+            ));
+            self.rtp_pkts = 0;
+            self.rtp_bytes = 0;
+            self.rtp_last_report = now;
         }
     }
 
@@ -107,39 +158,63 @@ impl RtcApp {
 
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        if let Some(sdp) = self.pending_remote_sdp.take() {
+            match self.set_remote_sdp(&sdp) {
+                Ok(_) => self.status_line = "Remote SDP processed.".to_owned(),
+                Err(e) => self.status_line = format!("Failed to set remote SDP: {e:?}"),
+            }
+        }
+
+        // Drain sampled logs coming from the worker
+        self.drain_ui_log_tap();
+
         // Poll engine events
         for ev in self.engine.poll() {
             match ev {
-                EngineEvent::Status(s) | EngineEvent::Log(s) => self.push_log(s),
-                EngineEvent::Established => {
+                Status(s) | Log(s) => {
+                    self.background_log(LogLevel::Info, &s);
+                    // keep a small echo in UI:
+                    self.push_ui_log(&s);
+                }
+                Established => {
                     self.conn_state = ConnState::Running;
                     self.status_line = "Established.".into();
                 }
-                EngineEvent::Closing { graceful: _ } => {
+                Closing { graceful: _ } => {
                     self.conn_state = ConnState::Stopped;
                 }
-                EngineEvent::Closed => {
+                Closed => {
                     self.conn_state = ConnState::Stopped;
                     self.status_line = "Closed.".into();
                 }
-                EngineEvent::Payload(s) => self.push_log(format!("[RECV] {s}")),
-                EngineEvent::RtpIn(r) => {
-                    self.push_log(format!(
-                        "[RTP] received {} [B] payload (PT={})",
-                        r.payload.len(),
-                        r.pt
-                    ));
+                Payload(s) => self.background_log(LogLevel::Info, format!("[RECV] {s}")),
+                RtpIn(r) => {
+                    self.rtp_pkts += 1;
+                    self.rtp_bytes += r.payload.len() as u64;
+                    self.background_log(
+                        LogLevel::Debug,
+                        format!("[RTP] {} bytes PT={}", r.payload.len(), r.pt),
+                    );
                 }
-                EngineEvent::RtpMedia { pt, bytes } => {
-                    self.push_log(format!("[RTP] received {} bytes (PT={})", bytes.len(), pt));
+                RtpMedia { pt, bytes } => {
+                    self.rtp_pkts += 1;
+                    self.rtp_bytes += bytes.len() as u64;
+                    self.background_log(
+                        LogLevel::Debug,
+                        format!("[RTP] {} bytes PT={}", bytes.len(), pt),
+                    );
                 }
-                EngineEvent::Error(e) => {
+                Error(e) => {
                     self.status_line = format!("Error: {e}");
-                    self.push_log(e);
+                    self.background_log(LogLevel::Error, &e);
+                    self.push_ui_log(e);
                 }
-                EngineEvent::IceNominated { local, remote } => {
+                IceNominated { local, remote } => {
                     self.status_line = "ICE nominated. Press Start.".into();
-                    self.push_log(format!("[ICE] nominated local={local} remote={remote}"));
+                    self.background_log(
+                        LogLevel::Info,
+                        format!("[ICE] nominated local={local} remote={remote}"),
+                    );
                 }
             }
         }
@@ -164,6 +239,7 @@ impl App for RtcApp {
 
         // Mostrar ventana de cámara solo si la conexión está establecida
         if matches!(self.conn_state, ConnState::Running) {
+            self.push_kbps_log_from_rtp_packets();
             egui::Window::new("Camera View")
                 .default_size([800.0, 400.0])
                 .resizable(true)
@@ -220,11 +296,7 @@ impl App for RtcApp {
                     .add_enabled(can_set, egui::Button::new("Enter SDP message (Set Remote)"))
                     .clicked()
                 {
-                    let sdp = self.remote_sdp_text.trim().to_owned();
-                    match self.set_remote_sdp(sdp.as_str()) {
-                        Ok(_) => self.status_line = "Remote SDP processed.".to_owned(),
-                        Err(e) => self.status_line = format!("Failed to set remote SDP: {e:?}"),
-                    }
+                    self.pending_remote_sdp = Some(self.remote_sdp_text.trim().to_owned());
                 }
                 if ui.button("Clear").clicked() {
                     self.remote_sdp_text.clear();
