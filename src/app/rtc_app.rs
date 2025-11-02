@@ -1,4 +1,8 @@
-use super::{conn_state::ConnState, gui_error::GuiError};
+use super::{
+    conn_state::ConnState,
+    gui_error::GuiError,
+    utils::{show_camera_in_ui, update_camera_texture},
+};
 use crate::{
     core::{engine::Engine, events::EngineEvent},
     media_agent::video_frame::VideoFrame,
@@ -25,9 +29,8 @@ pub struct RtcApp {
     // UI log plumbing
     ui_logs: VecDeque<String>,
 
-    //CONCEPT TEST
-    camera_texture: Option<egui::TextureHandle>,
-    //END CONCEPT TEST
+    local_camera_texture: Option<egui::TextureHandle>,
+    remote_camera_texture: Option<egui::TextureHandle>,
 }
 
 impl RtcApp {
@@ -42,9 +45,8 @@ impl RtcApp {
             is_local_offerer: false,
             conn_state: ConnState::Idle,
             ui_logs: VecDeque::with_capacity(256),
-            //CONCEPT TEST
-            camera_texture: None,
-            //END CONCEPT TEST
+            local_camera_texture: None,
+            remote_camera_texture: None,
         }
     }
 
@@ -143,23 +145,14 @@ impl App for RtcApp {
                 }
             }
         }
-
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
 
         if let Some(local_frame) = &local_frame {
-            // Asegurarte de tener formato RGB
-            let rgb_bytes = local_frame.bytes.clone();
+            update_camera_texture(ctx, local_frame, &mut self.local_camera_texture);
+        }
 
-            let image = egui::ColorImage::from_rgb(
-                [local_frame.width as usize, local_frame.height as usize],
-                &rgb_bytes,
-            );
-
-            if let Some(tex) = &mut self.camera_texture {
-                tex.set(image, Default::default());
-            } else {
-                self.camera_texture = Some(ctx.load_texture("camera", image, Default::default()));
-            }
+        if let Some(remote_frame) = &remote_frame {
+            update_camera_texture(ctx, remote_frame, &mut self.remote_camera_texture);
         }
 
         // Mostrar ventana de cámara solo si la conexión está establecida
@@ -169,23 +162,10 @@ impl App for RtcApp {
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        // Mitad izquierda: cámara local
-                        if let Some(local_tex) = &self.camera_texture {
-                            let size = local_tex.size_vec2();
-                            let aspect_ratio = size.x / size.y;
-                            ui.add(
-                                egui::Image::new(local_tex)
-                                    .fit_to_exact_size(egui::vec2(400.0, 400.0 / aspect_ratio)),
-                            );
-                        } else {
-                            ui.colored_label(egui::Color32::GRAY, "No local camera");
-                        }
-
-                        // Mitad derecha: remoto (placeholder negro)
+                        show_camera_in_ui(ui, &self.local_camera_texture, 400.0, 400.0);
                         ui.separator();
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(400.0, 400.0), egui::Sense::hover());
-                        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+
+                        show_camera_in_ui(ui, &self.remote_camera_texture, 400.0, 400.0);
                     });
                 });
         }
