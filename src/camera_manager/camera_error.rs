@@ -9,21 +9,23 @@ pub enum CameraError {
     OpenCvError(CvError),
     NotFrame,
     CameraOff,
+    InvalidDeviceId(usize),
 }
 
 impl fmt::Display for CameraError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CameraError::InitializationFailed(msg) => {
-                write!(f, "Camera initialization failed: {}", msg)
+                write!(f, "Camera initialization failed: {msg}")
             }
             CameraError::OpenFailed(id) => {
-                write!(f, "Failed to open camera with device_id: {}", id)
+                write!(f, "Failed to open camera with device_id: {id}")
             }
-            CameraError::CaptureFailed(msg) => write!(f, "Failed to capture frame: {}", msg),
-            CameraError::OpenCvError(e) => write!(f, "OpenCV error: {}", e),
+            CameraError::CaptureFailed(msg) => write!(f, "Failed to capture frame: {msg}"),
+            CameraError::OpenCvError(e) => write!(f, "OpenCV error: {e}"),
             CameraError::NotFrame => write!(f, "No valid frame available"),
             CameraError::CameraOff => write!(f, "Camera not initialized"),
+            CameraError::InvalidDeviceId(id) => write!(f, "Invalid Device ID: {id}"),
         }
     }
 }

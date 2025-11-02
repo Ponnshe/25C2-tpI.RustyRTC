@@ -1,2 +1,2 @@
 pub mod camera_error;
-pub mod camera_manager;
+pub mod camera_manager_c;

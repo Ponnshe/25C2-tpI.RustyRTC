@@ -12,6 +12,7 @@ pub struct TimeDesc {
 }
 
 impl TimeDesc {
+    #[must_use]
     /// Full constructor.
     ///
     /// # Parameters
@@ -28,6 +29,7 @@ impl TimeDesc {
         }
     }
 
+    #[must_use]
     /// Default constructor (placeholder).
     ///
     /// Default values:
@@ -45,21 +47,25 @@ impl TimeDesc {
     }
 
     // --- GETTERS ---
+    #[must_use]
     /// Returns the start time.
     pub const fn start(&self) -> u64 {
         self.start
     }
 
+    #[must_use]
     /// Returns the end time.
     pub const fn stop(&self) -> u64 {
         self.stop
     }
 
+    #[must_use]
     /// Returns the repetition r= lines.
     pub const fn repeats(&self) -> &Vec<String> {
         &self.repeats
     }
 
+    #[must_use]
     /// Returns the z= time zone (if present).
     pub const fn zone(&self) -> Option<&String> {
         self.zone.as_ref()

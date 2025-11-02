@@ -19,11 +19,11 @@ pub struct H264Encoder {
 }
 
 impl H264Encoder {
-    pub fn new(target_fps: u32, target_bps: u32, keyint: u32) -> Self {
+    pub fn new(frame_rate: u32, bit_rate: u32, keyint: u32) -> Self {
         let mut me = Self {
             enc: None,
-            target_fps,
-            target_bps,
+            target_fps: frame_rate,
+            target_bps: bit_rate,
             keyint,
         };
         me.init_encoder();

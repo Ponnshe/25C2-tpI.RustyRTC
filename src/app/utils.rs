@@ -1,8 +1,5 @@
-use crate::{
-    core::{engine::Engine, events::EngineEvent},
-    media_agent::video_frame::VideoFrame,
-};
-use eframe::{App, Frame, egui};
+use crate::media_agent::video_frame::VideoFrame;
+use eframe::egui;
 
 pub fn update_camera_texture(
     ctx: &egui::Context,
@@ -16,15 +13,15 @@ pub fn update_camera_texture(
         egui::ColorImage::from_rgb([frame.width as usize, frame.height as usize], &rgb_bytes);
 
     if let Some(tex) = tex_handle {
-        tex.set(image, Default::default());
+        tex.set(image, egui::TextureOptions::default());
     } else {
-        *tex_handle = Some(ctx.load_texture("camera", image, Default::default()));
+        *tex_handle = Some(ctx.load_texture("camera", image, egui::TextureOptions::default()));
     }
 }
 
 pub fn show_camera_in_ui(
     ui: &mut egui::Ui,
-    tex_handle: &Option<egui::TextureHandle>,
+    tex_handle: Option<&egui::TextureHandle>,
     width: f32,
     height: f32,
 ) {

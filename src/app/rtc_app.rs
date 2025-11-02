@@ -5,11 +5,23 @@ use super::{
 };
 use crate::{
     app::{log_level::LogLevel, logger::Logger},
-    core::{engine::Engine, events::EngineEvent::*},
+    core::{engine::Engine, events::EngineEvent::{
+        Status,
+        Log,
+        Closing,
+        Payload,
+        RtpIn,
+        RtpMedia,
+        Error,
+        IceNominated,
+        Closed,
+        Established,
+    }},
     media_agent::video_frame::VideoFrame,
 };
 use eframe::{App, Frame, egui};
 use std::{collections::VecDeque, sync::mpsc::TrySendError, time::Instant};
+
 
 pub struct RtcApp {
     // UI text areas
@@ -43,6 +55,14 @@ pub struct RtcApp {
 }
 
 impl RtcApp {
+
+    const HEADER_TITLE: &str = "RoomRTC • SDP Messenger";
+    const CAMERAS_WINDOW_WIDTH: f32 = 800.0;
+    const CAMERAS_WINDOW_HEIGHT: f32 = 400.0;
+    const LOCAL_CAMERA_SIZE: f32 = 400.0;
+    const REMOTE_CAMERA_SIZE: f32 = 400.0;
+
+    #[must_use]
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
         Self {
@@ -76,17 +96,16 @@ impl RtcApp {
 
     fn background_log<L: Into<String>>(&mut self, level: LogLevel, text: L) {
         match self.logger.try_log(level, text) {
-            Ok(()) => {}
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
             Err(TrySendError::Full(_)) => {
                 self.bg_dropped += 1;
-                if self.bg_dropped % 100 == 0 {
+                if self.bg_dropped.is_multiple_of(100) {
                     self.push_ui_log(format!(
                         "(logger) dropped {} background log lines",
                         self.bg_dropped
                     ));
                 }
             }
-            Err(TrySendError::Disconnected(_)) => { /* worker gone; ignore */ }
         }
     }
 
@@ -156,21 +175,10 @@ impl RtcApp {
         }
         self.has_remote_description = true;
         Ok(())
+
     }
-}
 
-impl App for RtcApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        if let Some(sdp) = self.pending_remote_sdp.take() {
-            match self.set_remote_sdp(&sdp) {
-                Ok(_) => self.status_line = "Remote SDP processed.".to_owned(),
-                Err(e) => self.status_line = format!("Failed to set remote SDP: {e:?}"),
-            }
-        }
-
-        // Drain sampled logs coming from the worker
-        self.drain_ui_log_tap();
-
+    fn poll_engine_events(&mut self) {
         // Poll engine events
         for ev in self.engine.poll() {
             match ev {
@@ -221,7 +229,9 @@ impl App for RtcApp {
                 }
             }
         }
-        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+    }
+
+    fn render_camera_view(&mut self, ctx: &egui::Context, local_frame: Option<&VideoFrame>, remote_frame: Option<&VideoFrame>){
 
         if let Some(local_frame) = &local_frame {
             update_camera_texture(ctx, local_frame, &mut self.local_camera_texture);
@@ -235,119 +245,178 @@ impl App for RtcApp {
         if matches!(self.conn_state, ConnState::Running) {
             self.push_kbps_log_from_rtp_packets();
             egui::Window::new("Camera View")
-                .default_size([800.0, 400.0])
+                .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        show_camera_in_ui(ui, &self.local_camera_texture, 400.0, 400.0);
+                        show_camera_in_ui(
+                            ui, 
+                            self.local_camera_texture.as_ref(), 
+                            Self::LOCAL_CAMERA_SIZE, 
+                            Self::LOCAL_CAMERA_SIZE
+                        );
                         ui.separator();
-
-                        show_camera_in_ui(ui, &self.remote_camera_texture, 400.0, 400.0);
+                        show_camera_in_ui(
+                            ui, 
+                            self.remote_camera_texture.as_ref(), 
+                            Self::REMOTE_CAMERA_SIZE, 
+                            Self::REMOTE_CAMERA_SIZE
+                        );
                     });
                 });
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading("RoomRTC • SDP Messenger");
-                ui.add_space(10.);
-            });
+    }
 
+    const fn can_start(&self) -> bool {
+        self.has_remote_description
+            && self.has_local_description
+            && matches!(self.conn_state, ConnState::Idle | ConnState::Stopped)
+    }
+
+    fn render_header(ui: &mut egui::Ui){
+        ui.vertical_centered(|ui| {
+            ui.heading(Self::HEADER_TITLE);
+            ui.add_space(10.);
+        });
+    }
+
+    fn render_video_summary(ui: &mut egui::Ui, local_frame: Option<&VideoFrame>, remote_frame: Option<&VideoFrame>){
             ui.separator();
             ui.label(format!(
                 "Local video: {}",
-                Self::summarize_frame(local_frame.as_ref())
+                Self::summarize_frame(local_frame)
             ));
             ui.label(format!(
                 "Remote video: {}",
-                Self::summarize_frame(remote_frame.as_ref())
+                Self::summarize_frame(remote_frame)
             ));
-            ui.separator();
-            ui.label("1) Paste remote SDP (offer or answer):");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.remote_sdp_text)
-                    .desired_rows(15)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Paste remote SDP here…")
-                    .lock_focus(true),
-            );
-            ui.horizontal(|ui| {
-                let can_set = !self.remote_sdp_text.trim().is_empty();
-                if ui
-                    .add_enabled(can_set, egui::Button::new("Enter SDP message (Set Remote)"))
-                    .clicked()
-                {
-                    self.pending_remote_sdp = Some(self.remote_sdp_text.trim().to_owned());
+    }
+
+    fn render_remote_sdp_input(&mut self, ui: &mut egui::Ui){
+        ui.separator();
+        ui.label("1) Paste remote SDP (offer or answer):");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.remote_sdp_text)
+                .desired_rows(15)
+                .desired_width(f32::INFINITY)
+                .hint_text("Paste remote SDP here…")
+                .lock_focus(true),
+        );
+        ui.horizontal(|ui| {
+            let can_set = !self.remote_sdp_text.trim().is_empty();
+            if ui
+                .add_enabled(can_set, egui::Button::new("Enter SDP message (Set Remote)"))
+                .clicked()
+            {
+                self.pending_remote_sdp = Some(self.remote_sdp_text.trim().to_owned());
+            }
+            if ui.button("Clear").clicked() {
+                self.remote_sdp_text.clear();
+            }
+        });
+    }
+
+    fn render_local_sdp_output(&mut self, ui: &mut egui::Ui){
+        ui.separator();
+        ui.label("2) Create local SDP and share it (offer/renegotiation):");
+        ui.horizontal(|ui| {
+            if ui.button("Create SDP message").clicked() {
+                if let Err(e) = self.create_or_renegotiate_local_sdp() {
+                    self.status_line = format!("Failed to create local SDP: {e:?}");
+                } else {
+                    self.status_line = String::from("Local SDP generated.");
                 }
-                if ui.button("Clear").clicked() {
-                    self.remote_sdp_text.clear();
+            }
+            if ui.button("Copy to clipboard").clicked() {
+                ui.output_mut(|o| o.copied_text = String::from(&self.local_sdp_text));
+                self.status_line = String::from("Copied local SDP to clipboard.");
+            }
+        });
+        ui.add(
+            egui::TextEdit::multiline(&mut self.local_sdp_text)
+                .desired_rows(15)
+                .desired_width(f32::INFINITY)
+                .hint_text("Your local SDP (Offer/Answer) will appear here…"),
+        );
+
+    }
+
+    fn render_connection_controls(&mut self, ui: &mut egui::Ui){
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.can_start(), egui::Button::new("Start Connection"))
+                .clicked() && let Err(e) = self.engine.start()
+            {
+                self.status_line = format!("Failed to start: {e}");
+            }
+            if ui
+                .add_enabled(
+                    matches!(self.conn_state, ConnState::Running),
+                    egui::Button::new("Stop"),
+                )
+                .clicked()
+            {
+                self.engine.stop();
+            }
+            ui.label(format!("State: {:?}", self.conn_state));
+        });
+    }
+
+    fn render_log_section(&self, ui: &mut egui::Ui){
+        ui.separator();
+        ui.label("Logs:");
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .max_height(180.0)
+            .show(ui, |ui| {
+                for line in &self.ui_logs {
+                    ui.monospace(line);
                 }
             });
+    }
 
-            ui.separator();
-            ui.label("2) Create local SDP and share it (offer/renegotiation):");
-            ui.horizontal(|ui| {
-                if ui.button("Create SDP message").clicked() {
-                    if let Err(e) = self.create_or_renegotiate_local_sdp() {
-                        self.status_line = format!("Failed to create local SDP: {e:?}");
-                    } else {
-                        self.status_line = "Local SDP generated.".to_owned();
-                    }
-                }
-                if ui.button("Copy to clipboard").clicked() {
-                    ui.output_mut(|o| o.copied_text = self.local_sdp_text.clone());
-                    self.status_line = "Copied local SDP to clipboard.".to_owned();
-                }
-            });
-            ui.add(
-                egui::TextEdit::multiline(&mut self.local_sdp_text)
-                    .desired_rows(15)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Your local SDP (Offer/Answer) will appear here…"),
-            );
+    fn render_status_line(&self, ui: &mut egui::Ui){
+        ui.separator();
+        ui.label(&self.status_line);
+    }
+}
 
-            ui.separator();
-            ui.label(&self.status_line);
-            ui.separator();
+impl App for RtcApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        if let Some(sdp) = self.pending_remote_sdp.take() {
+            match self.set_remote_sdp(&sdp) {
+                Ok(()) => self.status_line = String::from("Remote SDP processed."),
+                Err(e) => self.status_line = format!("Failed to set remote SDP: {e:?}"),
+            }
+        }
 
-            let can_start = self.has_remote_description
-                && self.has_local_description
-                && matches!(self.conn_state, ConnState::Idle | ConnState::Stopped);
+        self.poll_engine_events();
 
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(can_start, egui::Button::new("Start Connection"))
-                    .clicked()
-                {
-                    if let Err(e) = self.engine.start() {
-                        self.status_line = format!("Failed to start: {e}");
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        matches!(self.conn_state, ConnState::Running),
-                        egui::Button::new("Stop"),
-                    )
-                    .clicked()
-                {
-                    self.engine.stop();
-                }
-                ui.label(format!("State: {:?}", self.conn_state));
-            });
+        // Drain sampled logs coming from the worker
+        self.drain_ui_log_tap();
 
-            ui.separator();
-            ui.label("Logs:");
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(180.0)
-                .show(ui, |ui| {
-                    for line in &self.ui_logs {
-                        ui.monospace(line);
-                    }
-                });
 
-            ui.separator();
-            ui.label(&self.status_line);
+        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+
+        self.render_camera_view(ctx, local_frame.as_ref(), remote_frame.as_ref());
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            Self::render_header(ui);
+
+            Self::render_video_summary(ui, local_frame.as_ref(), remote_frame.as_ref());
+
+            self.render_remote_sdp_input(ui);
+            self.render_local_sdp_output(ui);
+
+
+            self.render_connection_controls(ui);
+
+            self.render_status_line(ui);
+
+            self.render_log_section(ui);
+
         });
     }
 }

@@ -16,6 +16,7 @@ pub enum ConnectionError {
 
 impl fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[allow(clippy::enum_glob_use)]
         use ConnectionError::*;
         match self {
             MediaSpec => write!(f, "Invalid media specification"),

@@ -235,7 +235,6 @@ impl Session {
                                     .and_then(|guard| guard.as_ref().cloned());
                                 if let Some(tx_media) = maybe_tx {
                                     let _ = tx_media.send(pkt);
-                                    continue;
                                 }
                             }
                         }

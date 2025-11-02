@@ -12,7 +12,7 @@ use std::{
 
 use crate::{camera_manager::camera_error::CameraError, core::events::RtpIn};
 use crate::{
-    camera_manager::camera_manager::CameraManager,
+    camera_manager::camera_manager_c::CameraManager,
     core::{events::EngineEvent, session::Session},
     media_agent::{
         codec_descriptor::CodecDescriptor,

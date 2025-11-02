@@ -19,6 +19,7 @@ pub struct Logger {
 }
 
 impl Logger {
+    #[must_use]
     /// Create logs/ directory next to the executable and start the logger there.
     /// Example: target/debug/logs/roomrtc-20251102_023045-pid1234.log
     pub fn start_default(app_name: &str, cap: usize, ui_cap: usize, sample_every: u32) -> Self {
@@ -76,7 +77,7 @@ impl Logger {
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);
-                        n % sample_every == 0
+                        n.is_multiple_of(sample_every)
                     };
 
                     if forward
@@ -108,7 +109,41 @@ impl Logger {
         }
     }
 
-    /// Non-blocking logging. Drops if queue is full.
+    /// Attempts to enqueue a log message without blocking the current thread.
+    ///
+    /// This method sends the message to the logger’s internal synchronous channel.
+    /// If the channel is full, the message is **dropped** and an error is returned.
+    ///
+    /// This function never blocks — use [`log`](Self::log) for the blocking variant.
+    ///
+    /// # Parameters
+    /// - `level`: The severity level of the message (e.g. `Info`, `Warn`, `Error`).
+    /// - `text`: Any type convertible into a `String`, containing the log message.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the message was successfully enqueued for logging.
+    /// Otherwise, returns a [`TrySendError<LogMsg>`] indicating that the internal
+    /// queue was full and the message was **not sent**.
+    ///
+    /// # Errors
+    /// Returns `Err(TrySendError::Full)` if the logger’s internal bounded queue
+    /// has reached its capacity.
+    /// This error means the message was **dropped** — no retry is performed.
+    ///
+    /// # Examples
+    /// ```
+    /// use crate::logger::{Logger, LogLevel};
+    ///
+    /// let logger = Logger::start_in_dir("logs", "app", 100, 10, 1);
+    /// let _ = logger.try_log(LogLevel::Info, "Background task started");
+    /// ```
+    ///
+    /// # See also
+    /// - [`std::sync::mpsc::SyncSender::try_send`]
+    /// - [`Self::log`] for the blocking variant
+    ///
+    /// # Panics
+    /// This function never panics.
     pub fn try_log<S: Into<String>>(
         &self,
         level: LogLevel,
@@ -122,11 +157,13 @@ impl Logger {
         self.log_tx.try_send(msg)
     }
 
+    #[must_use]
     /// Pull one sampled UI line (if any).
     pub fn try_recv_ui(&self) -> Option<String> {
         self.ui_log_rx.try_recv().ok()
     }
 
+    #[must_use]
     /// Optional: expose the chosen file path (nice for debugging).
     pub fn file_path(&self) -> &Path {
         &self.file_path
@@ -152,12 +189,12 @@ impl Drop for Logger {
 fn exe_dir_fallback_cwd() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 /// Human-ish timestamp for filenames without extra deps.
-/// Example: "20251102_023045"
+/// Example: `20251102_023045`
 fn timestamp_for_filename() -> String {
     // If you want pretty local time, consider the `time` crate.
     // This simple version uses UTC seconds since epoch -> formatted into yyyymmdd_hhmmss.
@@ -186,7 +223,8 @@ struct SimpleUtc {
 }
 
 // Tiny UTC conversion (no leap seconds). Adapted from civil-time arithmetic.
-fn unix_to_utc(mut s: u64) -> SimpleUtc {
+const fn unix_to_utc(mut s: u64) -> SimpleUtc {
+    #![allow(clippy::many_single_char_names)]
     let sec = (s % 60) as u32;
     s /= 60;
     let min = (s % 60) as u32;
@@ -195,10 +233,10 @@ fn unix_to_utc(mut s: u64) -> SimpleUtc {
     s /= 24;
 
     // Days since epoch
-    let mut z = s as i64 + 719468; // shift to civil date epoch (0000-03-01 base)
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let z = s as i64 + 719_468; // shift to civil date epoch (0000-03-01 base)
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
