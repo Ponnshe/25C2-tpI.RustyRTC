@@ -41,7 +41,7 @@ use opencv::{
 };
 
 pub struct MediaAgent {
-    tx_evt: Sender<EngineEvent>,
+    event_tx: Sender<EngineEvent>,
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
     h264_decoder: Mutex<H264Decoder>,
@@ -52,26 +52,32 @@ pub struct MediaAgent {
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
     last_local_frame_sent: Option<Instant>,
+    rtp_ts: u32,
+    rtp_ts_step: u32, // 90_000 / fps
+    sent_any_frame: bool,
+    last_sent_local_ts_ms: Option<u128>,
 }
 
 impl MediaAgent {
     pub fn new(tx_evt: Sender<EngineEvent>) -> Self {
         let mut payload_map = HashMap::new();
         let pt = 96;
+        let target_fps = 30;
         payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
 
-        let (rx, status) = spawn_camera_worker();
+        let (rx, status) = spawn_camera_worker(target_fps);
         if let Some(msg) = status {
             let _ = tx_evt.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
         // Recommended WebRTC-safe MTU for UDP path: ~1200 total bytes.
         // Overhead defaults to 12 (RTP header); bump if we add SRTP/DTLS/exts.
+        //
+        let h264_encoder = H264Encoder::new(target_fps, 800_000, 60);
         let h264_packetizer = H264Packetizer::new(1200); // .with_overhead(12) is default
         let h264_depacketizer = H264Depacketizer::new();
-        let h264_encoder = H264Encoder::new(30, 800_000, 60);
 
         Self {
-            tx_evt,
+            event_tx: tx_evt,
             payload_map,
             outbound_tracks: HashMap::new(),
             h264_decoder: Mutex::new(H264Decoder::new()),
@@ -82,6 +88,10 @@ impl MediaAgent {
             last_local_frame_sent: None,
             h264_packetizer,
             h264_depacketizer,
+            rtp_ts: rand::random::<u32>(), // random start, per RFC 3550
+            rtp_ts_step: 90_000 / target_fps, // e.g. 3000 for 30 fps
+            sent_any_frame: false,
+            last_sent_local_ts_ms: None,
         }
     }
 
@@ -103,7 +113,7 @@ impl MediaAgent {
                 if let Some(sess) = session {
                     if let Err(e) = self.ensure_outbound_tracks(sess) {
                         let _ = self
-                            .tx_evt
+                            .event_tx
                             .send(EngineEvent::Error(format!("media tracks: {e:?}")));
                     }
                 }
@@ -131,9 +141,9 @@ impl MediaAgent {
 
     pub fn tick(&mut self, session: Option<&Session>) {
         self.drain_local_frames();
-        if let Some(sess) = session {
-            if let Err(e) = self.maybe_send_local_frame(sess) {
-                let _ = self.tx_evt.send(EngineEvent::Error(format!(
+        if let Some(session_handle) = session {
+            if let Err(e) = self.maybe_send_local_frame(session_handle) {
+                let _ = self.event_tx.send(EngineEvent::Error(format!(
                     "[MediaAgent] send local frame failed: {e:?}"
                 )));
             }
@@ -168,11 +178,12 @@ impl MediaAgent {
     }
 
     fn maybe_send_local_frame(&mut self, session: &Session) -> Result<()> {
+        // 1) snapshot the newest local frame (set by drain_local_frames)
         let Some(frame) = self
             .local_frame
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().cloned())
+            .and_then(|g| g.as_ref().cloned())
         else {
             return Ok(());
         };
@@ -181,46 +192,52 @@ impl MediaAgent {
             return Ok(());
         }
 
-        // simple pacing (you can later move to real vsync)
-        let now = Instant::now();
-        if let Some(last) = self.last_local_frame_sent {
-            if now.duration_since(last) < Duration::from_millis(200) {
-                return Ok(());
-            }
+        // 2) avoid re-sending the same frame
+        if self.last_sent_local_ts_ms == Some(frame.timestamp_ms) {
+            return Ok(());
         }
 
-        // 1) Pick one outbound video track (H264 PT=96)
+        // 3) pick the outbound H.264 track
         let handle = match self.outbound_tracks.values().next() {
             Some(h) => h,
             None => return Ok(()),
         };
 
-        // 2) Encode to an Annex-B access unit (SPS/PPS/IDR/etc.)
+        // 4) ensure the very first frame is a keyframe (before encode)
+        if !self.sent_any_frame {
+            if let Ok(mut enc) = self.h264_encoder.lock() {
+                enc.request_keyframe();
+            }
+        }
+
+        // 5) encode RGB -> Annex-B H.264 (SPS/PPS/IDR…)
         let annexb_frame: Vec<u8> = {
             let mut enc = self
                 .h264_encoder
                 .lock()
                 .map_err(|_| MediaAgentError::Codec("encoder poisoned".into()))?;
             enc.encode_frame_to_h264(&frame)?
-        }; // 3) Packetize (Single NALU or FU-A fragments; marker set only on last chunk)
+        };
+
+        // 6) packetize (Single NALU / FU-A); marker set on last chunk by packetizer
         let chunks: Vec<RtpPayloadChunk> = self
             .h264_packetizer
             .packetize_annexb_to_payloads(&annexb_frame);
-
         if chunks.is_empty() {
-            // Nothing to send (e.g., degenerate MTU/overhead); just bail gracefully
             return Ok(());
         }
 
-        // 4) Timestamp (90 kHz); keep SAME ts for all fragments of this frame
-        let ts90k = (frame.timestamp_ms as u32).wrapping_mul(90);
+        // 7) use stable 90kHz RTP ts (same for every chunk of this AU)
+        let ts90k = self.rtp_ts;
 
-        // 5) Send all fragments in one call (locks once inside the session)
         session
             .send_rtp_chunks_for_frame(handle, &chunks, ts90k)
             .map_err(MediaAgentError::Send)?;
 
-        self.last_local_frame_sent = Some(now);
+        // 8) advance RTP clock and book-keeping
+        self.rtp_ts = self.rtp_ts.wrapping_add(self.rtp_ts_step);
+        self.sent_any_frame = true;
+        self.last_sent_local_ts_ms = Some(frame.timestamp_ms);
         Ok(())
     }
 
@@ -237,7 +254,7 @@ impl MediaAgent {
     fn handle_remote_rtp(&mut self, pkt: &RtpIn) {
         // Ignore unknown payload types
         if !self.payload_map.contains_key(&pkt.pt) {
-            let _ = self.tx_evt.send(EngineEvent::Log(format!(
+            let _ = self.event_tx.send(EngineEvent::Log(format!(
                 "[MediaAgent] ignoring payload type {}",
                 pkt.pt
             )));
@@ -256,12 +273,12 @@ impl MediaAgent {
                     }
                 }
                 Ok(None) => {
-                    let _ = self.tx_evt.send(EngineEvent::Log(
+                    let _ = self.event_tx.send(EngineEvent::Log(
                         "[MediaAgent] decoder needs more NALs for this AU".into(),
                     ));
                 }
                 Err(e) => {
-                    let _ = self.tx_evt.send(EngineEvent::Log(format!(
+                    let _ = self.event_tx.send(EngineEvent::Log(format!(
                         "[MediaAgent] decode error: {e:?}"
                     )));
                 }
@@ -278,9 +295,9 @@ impl MediaAgent {
     }
 }
 
-fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
-    let (tx, rx) = mpsc::channel();
-    let camera_manager = CameraManager::new(0); // Assuming device_id 0
+fn spawn_camera_worker(target_fps: u32) -> (Receiver<VideoFrame>, Option<String>) {
+    let (local_frame_tx, local_frame_rx) = mpsc::channel();
+    let camera_manager = CameraManager::new(0);
 
     let status = match &camera_manager {
         Ok(cam) => Some(format!(
@@ -295,22 +312,21 @@ fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
         .name("media-agent-camera".into())
         .spawn(move || {
             if let Ok(cam) = camera_manager {
-                if let Err(e) = camera_loop(cam, tx) {
+                if let Err(e) = camera_loop(cam, local_frame_tx, target_fps) {
                     eprintln!("camera loop stopped: {e:?}");
                 }
-            } else {
-                // Fallback to synthetic pattern if camera fails
-                if let Err(e) = synthetic_loop(tx) {
-                    eprintln!("synthetic loop stopped: {e:?}");
-                }
+            } else if let Err(e) = synthetic_loop(local_frame_tx, target_fps) {
+                eprintln!("synthetic loop stopped: {e:?}");
             }
         })
         .ok();
 
-    (rx, status)
+    (local_frame_rx, status)
 }
 
-fn synthetic_loop(tx: Sender<VideoFrame>) -> Result<()> {
+fn synthetic_loop(tx: Sender<VideoFrame>, target_fps: u32) -> Result<()> {
+    let fps = target_fps.clamp(1, 120);
+    let period = Duration::from_millis(1_000 / fps as u64);
     let mut phase = 0u8;
     loop {
         let frame = VideoFrame::synthetic(320, 240, phase);
@@ -318,46 +334,110 @@ fn synthetic_loop(tx: Sender<VideoFrame>) -> Result<()> {
         if tx.send(frame).is_err() {
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(period);
     }
     Ok(())
 }
 
-fn camera_loop(mut cam: CameraManager, tx: Sender<VideoFrame>) -> Result<()> {
+fn camera_loop(
+    mut cam: CameraManager,
+    local_frame_tx: Sender<VideoFrame>,
+    target_fps: u32,
+) -> Result<()> {
+    let fps = target_fps.clamp(1, 120);
+    let frame_period = Duration::from_nanos(1_000_000_000u64 / fps as u64);
+    let mut next_deadline = Instant::now() + frame_period;
+
+    let (w, h) = (cam.width(), cam.height());
+    let mut bgr_mat = Mat::default();
+    let mut rgb_mat = Mat::default();
+
     loop {
-        if let Some(frame_mat) = cam.get_frame() {
-            // The `frame_mat` from OpenCV is typically in BGR format.
-            // The encoder expects RGB. We need to convert it.
-            let mut rgb_mat = Mat::default();
-            if imgproc::cvt_color(
-                &frame_mat,
+        if let Some(frame) = cam.get_frame() {
+            bgr_mat = frame;
+
+            imgproc::cvt_color(
+                &bgr_mat,
                 &mut rgb_mat,
                 imgproc::COLOR_BGR2RGB,
                 0,
                 AlgorithmHint::ALGO_HINT_DEFAULT,
             )
-            .is_ok()
-            {
-                if let Ok(bytes) = rgb_mat.data_bytes() {
-                    let frame = VideoFrame {
-                        width: cam.width(),
-                        height: cam.height(),
-                        timestamp_ms: now_millis(),
-                        format: FrameFormat::Rgb,
-                        bytes: Arc::new(bytes.to_vec()),
-                    };
-                    if tx.send(frame).is_err() {
-                        // The receiver has been dropped, so we can stop the loop.
-                        break;
-                    }
-                }
+            .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
+
+            let bytes = tight_rgb_bytes(&rgb_mat, w, h)
+                .map_err(|e| MediaAgentError::Io(format!("pack RGB: {e}")))?;
+
+            let vf = VideoFrame {
+                width: w,
+                height: h,
+                timestamp_ms: now_millis(), // UI/reference only; RTP uses its own clock
+                format: FrameFormat::Rgb,
+                bytes: Arc::new(bytes),
+            };
+            if local_frame_tx.send(vf).is_err() {
+                break;
             }
         }
-        // Sleep for a short duration to not saturate the CPU.
-        // The camera's frame rate will naturally limit this loop.
-        thread::sleep(Duration::from_millis(1000 / 30)); // ~30 FPS
+
+        // Pace to target FPS with drift correction
+        let now = Instant::now();
+        if now < next_deadline {
+            thread::sleep(next_deadline - now);
+            next_deadline += frame_period;
+        } else {
+            // we're late; skip ahead exactly one period to prevent accumulating drift
+            next_deadline = now + frame_period;
+        }
     }
+
     Ok(())
+}
+
+/// Always returns tightly packed RGB (len = width*height*3), regardless of stride/continuity.
+fn tight_rgb_bytes(mat: &Mat, width: u32, height: u32) -> opencv::Result<Vec<u8>> {
+    // Ensure 8UC3
+    if mat.typ()? != core::CV_8UC3 {
+        let mut fixed = Mat::default();
+        mat.convert_to(&mut fixed, core::CV_8UC3, 1.0, 0.0)?;
+        return tight_rgb_bytes(&fixed, width, height);
+    }
+
+    // Force a continuous buffer if needed
+    let m = if mat.is_continuous()? {
+        mat.try_clone()?
+    } else {
+        mat.clone()?
+    };
+
+    let w = width as usize;
+    let h = height as usize;
+    let ch = m.channels()? as usize; // 3
+    let expected = w * h * ch;
+
+    let data = m.data_bytes()?;
+
+    // Fast path: already tight
+    if data.len() == expected {
+        return Ok(data.to_vec());
+    }
+
+    // Row-copy using actual step
+    let step_elems = m.step1(0)? as usize;
+    let elem_size = m.elem_size()? as usize;
+    let step_bytes = step_elems * elem_size;
+
+    let cols = m.cols() as usize;
+    let rows = m.rows() as usize;
+    let row_bytes = cols * ch;
+
+    let mut out = vec![0u8; rows * row_bytes];
+    for r in 0..rows {
+        let src = &data[r * step_bytes..r * step_bytes + row_bytes];
+        let dst = &mut out[r * row_bytes..(r + 1) * row_bytes];
+        dst.copy_from_slice(src);
+    }
+    Ok(out)
 }
 
 fn discover_camera_path() -> Option<PathBuf> {
