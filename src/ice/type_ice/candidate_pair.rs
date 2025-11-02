@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use super::ice_agent::IceRole;
-use crate::ice::type_ice::candidate::Candidate;
+use crate::{app::log_sink::LogSink, ice::type_ice::candidate::Candidate, sink_debug};
 
 /// Constants used in the pair priority formula (RFC 8445 §6.1.2.3)
 // 2^32 multiplier
@@ -101,8 +103,9 @@ impl CandidatePair {
 
     /// Prints a detailed summary of the candidate pair state.
     /// Useful for debugging and local ICE connectivity visualization.
-    pub fn debug_state(&self) {
-        println!(
+    pub fn debug_state(&self, logger: &Arc<dyn LogSink>) {
+        sink_debug!(
+            logger,
             "[PAIR] local={}, remote={}, priority={}, state={:?}, nominated={}",
             self.local.address,
             self.remote.address,
