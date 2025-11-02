@@ -11,12 +11,15 @@ use std::{
 };
 
 use crate::{
+    camera_manager::camera_manager::CameraManager,
     core::{events::EngineEvent, session::Session},
     media_agent::{
         codec_descriptor::CodecDescriptor,
+        frame_format::FrameFormat,
         h264_decoder::H264Decoder,
         h264_encoder::H264Encoder,
         media_agent_error::{MediaAgentError, Result},
+        utils::now_millis,
         video_frame::VideoFrame,
     },
     rtp_session::{
@@ -25,6 +28,7 @@ use crate::{
         rtp_codec::RtpCodec,
     },
 };
+use opencv::{core::{AlgorithmHint, Mat}, imgproc, prelude::*};
 
 pub struct MediaAgent {
     tx_evt: Sender<EngineEvent>,
@@ -246,15 +250,29 @@ impl MediaAgent {
 
 fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
     let (tx, rx) = mpsc::channel();
-    let status = discover_camera_path()
-        .map(|p| format!("using camera source {}", p.display()))
-        .or_else(|| Some("no physical camera detected, using test pattern".into()));
+    let camera_manager = CameraManager::new(0); // Assuming device_id 0
+
+    let status = match &camera_manager {
+        Ok(cam) => Some(format!(
+            "Using camera source with resolution {}x{}",
+            cam.width(),
+            cam.height()
+        )),
+        Err(e) => Some(format!("Camera error: {}. Using test pattern.", e)),
+    };
 
     thread::Builder::new()
         .name("media-agent-camera".into())
         .spawn(move || {
-            if let Err(e) = camera_loop(tx) {
-                eprintln!("camera loop stopped: {e:?}");
+            if let Ok(cam) = camera_manager {
+                if let Err(e) = camera_loop(cam, tx) {
+                    eprintln!("camera loop stopped: {e:?}");
+                }
+            } else {
+                // Fallback to synthetic pattern if camera fails
+                if let Err(e) = synthetic_loop(tx) {
+                    eprintln!("synthetic loop stopped: {e:?}");
+                }
             }
         })
         .ok();
@@ -262,15 +280,46 @@ fn spawn_camera_worker() -> (Receiver<VideoFrame>, Option<String>) {
     (rx, status)
 }
 
-fn camera_loop(tx: Sender<VideoFrame>) -> Result<()> {
+fn synthetic_loop(tx: Sender<VideoFrame>) -> Result<()> {
     let mut phase = 0u8;
     loop {
         let frame = VideoFrame::synthetic(320, 240, phase);
         phase = phase.wrapping_add(1);
-        tx.send(frame)
-            .map_err(|e| MediaAgentError::Camera(e.to_string()))?;
+        if tx.send(frame).is_err() {
+            break;
+        }
         thread::sleep(Duration::from_millis(100));
     }
+    Ok(())
+}
+
+fn camera_loop(mut cam: CameraManager, tx: Sender<VideoFrame>) -> Result<()> {
+    loop {
+        if let Some(frame_mat) = cam.get_frame() {
+            // The `frame_mat` from OpenCV is typically in BGR format.
+            // The encoder expects RGB. We need to convert it.
+            let mut rgb_mat = Mat::default();
+            if imgproc::cvt_color(&frame_mat, &mut rgb_mat, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT).is_ok() {
+                if let Ok(bytes) = rgb_mat.data_bytes() {
+                    let frame = VideoFrame {
+                        width: cam.width(),
+                        height: cam.height(),
+                        timestamp_ms: now_millis(),
+                        format: FrameFormat::Rgb,
+                        bytes: Arc::new(bytes.to_vec()),
+                    };
+                    if tx.send(frame).is_err() {
+                        // The receiver has been dropped, so we can stop the loop.
+                        break;
+                    }
+                }
+            }
+        }
+        // Sleep for a short duration to not saturate the CPU.
+        // The camera's frame rate will naturally limit this loop.
+        thread::sleep(Duration::from_millis(1000 / 30)); // ~30 FPS
+    }
+    Ok(())
 }
 
 fn discover_camera_path() -> Option<PathBuf> {
