@@ -1,8 +1,10 @@
 use opencv::{
+    core,
     prelude::*,
     videoio::{self, VideoCapture, VideoCaptureTrait, VideoCaptureTraitConst},
-    core,
 };
+
+use super::camera_error::CameraError;
 
 pub struct CameraManager {
     cam: Option<VideoCapture>,
@@ -11,28 +13,35 @@ pub struct CameraManager {
 }
 
 impl CameraManager {
-    pub fn new(device_id: usize) -> Result<Self, String> {
+    pub fn new(device_id: usize) -> Result<Self, CameraError> {
         let cam = videoio::VideoCapture::new(device_id as i32, videoio::CAP_ANY)
-            .map_err(|e| format!("Failed to create VideoCapture: {}", e))?;
+            .map_err(|e| CameraError::InitializationFailed(e.to_string()))?;
 
         if !cam.is_opened().unwrap_or(false) {
-            return Err(format!("Failed to open camera with device_id: {}", device_id));
+            return Err(CameraError::OpenFailed(device_id));
         }
 
         let width = cam.get(videoio::CAP_PROP_FRAME_WIDTH).unwrap_or(640.0) as u32;
         let height = cam.get(videoio::CAP_PROP_FRAME_HEIGHT).unwrap_or(480.0) as u32;
 
-        Ok(Self { cam: Some(cam), width, height })
+        Ok(Self {
+            cam: Some(cam),
+            width,
+            height,
+        })
     }
 
-    pub fn get_frame(&mut self) -> Option<core::Mat> {
+    pub fn get_frame(&mut self) -> Result<core::Mat, CameraError> {
         if let Some(cam) = &mut self.cam {
             let mut frame = core::Mat::default();
             if cam.read(&mut frame).unwrap_or(false) && !frame.empty() {
-                return Some(frame);
+                Ok(frame)
+            } else {
+                Err(CameraError::NotFrame)
             }
+        } else {
+            Err(CameraError::CameraOff)
         }
-        None
     }
 
     pub fn width(&self) -> u32 {
