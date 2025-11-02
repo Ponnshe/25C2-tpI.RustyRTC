@@ -75,7 +75,8 @@ impl RtcApp {
     }
 
     fn background_log<L: Into<String>>(&mut self, level: LogLevel, text: L) {
-        match self.logger.try_log(level, text) {
+        let target: &'static str = module_path!();
+        match self.logger.try_log(level, text, target) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.bg_dropped += 1;
@@ -174,7 +175,15 @@ impl App for RtcApp {
         // Poll engine events
         for ev in self.engine.poll() {
             match ev {
-                Status(s) | Log(s) => {
+                Log(m) => {
+                    // Send to background file logger with original level
+                    self.background_log(m.level, format!("{} | {}", m.target, m.text));
+                    // UI echo: only warn/error or occasional samples if you want
+                    if matches!(m.level, LogLevel::Warn | LogLevel::Error) {
+                        self.push_ui_log(format!("[{:?}] {} — {}", m.level, m.target, m.text));
+                    }
+                }
+                Status(s) => {
                     self.background_log(LogLevel::Info, &s);
                     // keep a small echo in UI:
                     self.push_ui_log(&s);
@@ -190,21 +199,12 @@ impl App for RtcApp {
                     self.conn_state = ConnState::Stopped;
                     self.status_line = "Closed.".into();
                 }
-                Payload(s) => self.background_log(LogLevel::Info, format!("[RECV] {s}")),
                 RtpIn(r) => {
                     self.rtp_pkts += 1;
                     self.rtp_bytes += r.payload.len() as u64;
                     self.background_log(
                         LogLevel::Debug,
                         format!("[RTP] {} bytes PT={}", r.payload.len(), r.pt),
-                    );
-                }
-                RtpMedia { pt, bytes } => {
-                    self.rtp_pkts += 1;
-                    self.rtp_bytes += bytes.len() as u64;
-                    self.background_log(
-                        LogLevel::Debug,
-                        format!("[RTP] {} bytes PT={}", bytes.len(), pt),
                     );
                 }
                 Error(e) => {

@@ -1,4 +1,5 @@
-use crate::app::log_level::{LogLevel, LogMsg};
+use crate::app::{log_level::LogLevel, log_msg::LogMsg};
+
 use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
@@ -113,11 +114,13 @@ impl Logger {
         &self,
         level: LogLevel,
         text: S,
+        target: &'static str,
     ) -> Result<(), TrySendError<LogMsg>> {
         let msg = LogMsg {
             level,
             ts_ms: crate::media_agent::utils::now_millis(),
             text: text.into(),
+            target,
         };
         self.log_tx.try_send(msg)
     }
@@ -195,7 +198,7 @@ fn unix_to_utc(mut s: u64) -> SimpleUtc {
     s /= 24;
 
     // Days since epoch
-    let mut z = s as i64 + 719468; // shift to civil date epoch (0000-03-01 base)
+    let z = s as i64 + 719468; // shift to civil date epoch (0000-03-01 base)
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = z - era * 146097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]

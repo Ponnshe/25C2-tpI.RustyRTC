@@ -10,7 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{camera_manager::camera_error::CameraError, core::events::RtpIn};
+use crate::{
+    app::log_level::LogLevel, camera_manager::camera_error::CameraError, core::events::RtpIn,
+    log_ev,
+};
 use crate::{
     camera_manager::camera_manager::CameraManager,
     core::{events::EngineEvent, session::Session},
@@ -123,18 +126,6 @@ impl MediaAgent {
                 self.last_local_frame_sent = None;
             }
             EngineEvent::RtpIn(pkt) => self.handle_remote_rtp(pkt),
-            //Legacy
-            EngineEvent::RtpMedia { pt, bytes } => {
-                let shim = RtpIn {
-                    pt: *pt,
-                    marker: true,
-                    timestamp_90khz: 0,
-                    seq: 0,
-                    ssrc: 0,
-                    payload: bytes.clone(),
-                };
-                self.handle_remote_rtp(&shim);
-            }
             _ => {}
         }
     }
@@ -254,10 +245,12 @@ impl MediaAgent {
     fn handle_remote_rtp(&mut self, pkt: &RtpIn) {
         // Ignore unknown payload types
         if !self.payload_map.contains_key(&pkt.pt) {
-            let _ = self.event_tx.send(EngineEvent::Log(format!(
+            log_ev!(
+                &self.event_tx,
+                LogLevel::Debug,
                 "[MediaAgent] ignoring payload type {}",
                 pkt.pt
-            )));
+            );
             return;
         }
 
@@ -273,14 +266,18 @@ impl MediaAgent {
                     }
                 }
                 Ok(None) => {
-                    let _ = self.event_tx.send(EngineEvent::Log(
-                        "[MediaAgent] decoder needs more NALs for this AU".into(),
-                    ));
+                    log_ev!(
+                        &self.event_tx,
+                        LogLevel::Debug,
+                        "[MediaAgent] decoder needs more NALs for this AU"
+                    );
                 }
                 Err(e) => {
-                    let _ = self.event_tx.send(EngineEvent::Log(format!(
+                    log_ev!(
+                        &self.event_tx,
+                        LogLevel::Error,
                         "[MediaAgent] decode error: {e:?}"
-                    )));
+                    );
                 }
             }
         }
