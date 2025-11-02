@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::events::RtpIn;
+use crate::{camera_manager::camera_error::CameraError, core::events::RtpIn};
 use crate::{
     camera_manager::camera_manager::CameraManager,
     core::{events::EngineEvent, session::Session},
@@ -315,8 +315,6 @@ fn spawn_camera_worker(target_fps: u32) -> (Receiver<VideoFrame>, Option<String>
                 if let Err(e) = camera_loop(cam, local_frame_tx, target_fps) {
                     eprintln!("camera loop stopped: {e:?}");
                 }
-            } else if let Err(e) = synthetic_loop(local_frame_tx, target_fps) {
-                eprintln!("synthetic loop stopped: {e:?}");
             }
         })
         .ok();
@@ -353,31 +351,52 @@ fn camera_loop(
     let mut rgb_mat = Mat::default();
 
     loop {
-        if let Some(frame) = cam.get_frame() {
-            bgr_mat = frame;
+        match cam.get_frame() {
+            Ok(frame) => {
+                bgr_mat = frame;
 
-            imgproc::cvt_color(
-                &bgr_mat,
-                &mut rgb_mat,
-                imgproc::COLOR_BGR2RGB,
-                0,
-                AlgorithmHint::ALGO_HINT_DEFAULT,
-            )
-            .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
+                imgproc::cvt_color(
+                    &bgr_mat,
+                    &mut rgb_mat,
+                    imgproc::COLOR_BGR2RGB,
+                    0,
+                    AlgorithmHint::ALGO_HINT_DEFAULT,
+                )
+                .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
 
-            let bytes = tight_rgb_bytes(&rgb_mat, w, h)
-                .map_err(|e| MediaAgentError::Io(format!("pack RGB: {e}")))?;
+                let bytes = tight_rgb_bytes(&rgb_mat, w, h)
+                    .map_err(|e| MediaAgentError::Io(format!("pack RGB: {e}")))?;
 
-            let vf = VideoFrame {
-                width: w,
-                height: h,
-                timestamp_ms: now_millis(), // UI/reference only; RTP uses its own clock
-                format: FrameFormat::Rgb,
-                bytes: Arc::new(bytes),
-            };
-            if local_frame_tx.send(vf).is_err() {
-                break;
+                let vf = VideoFrame {
+                    width: w,
+                    height: h,
+                    timestamp_ms: now_millis(), // UI/reference only; RTP uses its own clock
+                    format: FrameFormat::Rgb,
+                    bytes: Arc::new(bytes),
+                };
+                if local_frame_tx.send(vf).is_err() {
+                    break;
+                }
             }
+            Err(err) => match err {
+                CameraError::NotFrame | CameraError::CaptureFailed(_) => {
+                    // Loggear y continuar, no detiene la app
+                    eprintln!("Warning: camera did not return a valid frame: {}", err);
+                }
+                CameraError::CameraOff | CameraError::InitializationFailed(_) => {
+                    // Mostrar UI o intentar reinicializar la cámara
+                    eprintln!("Critical camera error: {}", err);
+                    // opcional: intentar reinicializar
+                    // cam.reinit()?;
+                }
+                CameraError::OpenCvError(e) => {
+                    // Loggear y decidir si continuar o no
+                    eprintln!("OpenCV error: {}", e);
+                }
+                _ => {
+                    eprintln!("Unexpected camera error: {}", err);
+                }
+            },
         }
 
         // Pace to target FPS with drift correction
