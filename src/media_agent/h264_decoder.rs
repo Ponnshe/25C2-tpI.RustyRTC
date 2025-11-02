@@ -34,18 +34,24 @@ impl H264Decoder {
             ));
         };
 
+        // Reconstruct the Annex-B bitstream from the NALUs.
+        let mut annexb_bitstream = Vec::new();
         for nalu in &au.nalus {
-            match dec.decode(nalu) {
-                Ok(Some(yuv)) => return Ok(Some(yuv_to_rgbframe(&yuv))),
-                Ok(None) => continue,
-                Err(e) => {
-                    return Err(MediaAgentError::Codec(format!(
-                        "openh264 decode error: {e}"
-                    )));
-                }
+            annexb_bitstream.extend_from_slice(&[0, 0, 0, 1]);
+            annexb_bitstream.extend_from_slice(nalu);
+        }
+
+        match dec.decode(&annexb_bitstream) {
+            Ok(Some(yuv)) => Ok(Some(yuv_to_rgbframe(&yuv))),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                // Reinitialize the decoder on error to clear its internal state
+                self.inner = openh264::decoder::Decoder::new().ok();
+                Err(MediaAgentError::Codec(format!(
+                    "openh264 decode error: {e}"
+                )))
             }
         }
-        Ok(None)
     }
 }
 
