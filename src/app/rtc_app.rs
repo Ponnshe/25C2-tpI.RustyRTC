@@ -133,6 +133,13 @@ impl App for RtcApp {
                     self.status_line = "Closed.".into();
                 }
                 EngineEvent::Payload(s) => self.push_log(format!("[RECV] {s}")),
+                EngineEvent::RtpIn(r) => {
+                    self.push_log(format!(
+                        "[RTP] received {} [B] payload (PT={})",
+                        r.payload.len(),
+                        r.pt
+                    ));
+                }
                 EngineEvent::RtpMedia { pt, bytes } => {
                     self.push_log(format!("[RTP] received {} bytes (PT={})", bytes.len(), pt));
                 }

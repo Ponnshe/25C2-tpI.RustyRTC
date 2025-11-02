@@ -24,11 +24,19 @@ use crate::{
     },
     rtp_session::{
         outbound_track_handle::OutboundTrackHandle,
-        payload::{h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk},
+        payload::{
+            h264_depacketizer::{AccessUnit, H264Depacketizer},
+            h264_packetizer::H264Packetizer,
+            rtp_payload_chunk::RtpPayloadChunk,
+        },
         rtp_codec::RtpCodec,
     },
 };
-use opencv::{core::{AlgorithmHint, Mat}, imgproc, prelude::*};
+use opencv::{
+    core::{AlgorithmHint, Mat},
+    imgproc,
+    prelude::*,
+};
 
 pub struct MediaAgent {
     tx_evt: Sender<EngineEvent>,
@@ -37,6 +45,7 @@ pub struct MediaAgent {
     h264_decoder: Mutex<H264Decoder>,
     h264_encoder: Mutex<H264Encoder>,
     h264_packetizer: H264Packetizer,
+    h264_depacketizer: H264Depacketizer,
     local_frame_rx: Option<Receiver<VideoFrame>>,
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -56,6 +65,7 @@ impl MediaAgent {
         // Recommended WebRTC-safe MTU for UDP path: ~1200 total bytes.
         // Overhead defaults to 12 (RTP header); bump if we add SRTP/DTLS/exts.
         let h264_packetizer = H264Packetizer::new(1200); // .with_overhead(12) is default
+        let h264_depacketizer = H264Depacketizer::new();
         let h264_encoder = H264Encoder::new(30, 800_000, 60);
 
         Self {
@@ -69,6 +79,7 @@ impl MediaAgent {
             remote_frame: Arc::new(Mutex::new(None)),
             last_local_frame_sent: None,
             h264_packetizer,
+            h264_depacketizer,
         }
     }
 
@@ -99,7 +110,19 @@ impl MediaAgent {
                 self.outbound_tracks.clear();
                 self.last_local_frame_sent = None;
             }
-            EngineEvent::RtpMedia { pt, bytes } => self.handle_remote_rtp(*pt, bytes),
+            EngineEvent::RtpIn(pkt) => self.handle_remote_rtp(pkt),
+            //Legacy
+            EngineEvent::RtpMedia { pt, bytes } => {
+                let shim = RtpIn {
+                    pt: *pt,
+                    marker: true,
+                    timestamp_90khz: 0,
+                    seq: 0,
+                    ssrc: 0,
+                    payload: bytes.clone(),
+                };
+                self.handle_remote_rtp(&shim);
+            }
             _ => {}
         }
     }
@@ -209,42 +232,47 @@ impl MediaAgent {
         }
     }
 
-    fn handle_remote_rtp(&self, payload_type: u8, bytes: &[u8]) {
-        if !self.payload_map.contains_key(&payload_type) {
+    fn handle_remote_rtp(&mut self, pkt: &RtpIn) {
+        // Ignore unknown payload types
+        if !self.payload_map.contains_key(&pkt.pt) {
             let _ = self.tx_evt.send(EngineEvent::Log(format!(
-                "[MediaAgent] ignoring payload type {payload_type}"
+                "[MediaAgent] ignoring payload type {}",
+                pkt.pt
             )));
             return;
         }
-        match self.decode_h264(bytes) {
-            Ok(Some(frame)) => {
-                if let Ok(mut guard) = self.remote_frame.lock() {
-                    *guard = Some(frame);
-                }
-            }
 
-            Ok(None) => {
-                // No frame listo todavía: probablemente el decodificador
-                // está esperando más fragmentos o slices.
-                // Puedes registrar un log en nivel debug, pero no es error.
-                let _ = self.tx_evt.send(EngineEvent::Log(
-                    "[MediaAgent] waiting for more H264 data (incomplete frame)".into(),
-                ));
-            }
-            Err(e) => {
-                let _ = self.tx_evt.send(EngineEvent::Log(format!(
-                    "[MediaAgent] decode error: {e:?}"
-                )));
+        // H.264 depacketize → AccessUnit → decode
+        if let Some(au) =
+            self.h264_depacketizer
+                .push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
+        {
+            match self.decode_h264(&au) {
+                Ok(Some(frame)) => {
+                    if let Ok(mut guard) = self.remote_frame.lock() {
+                        *guard = Some(frame);
+                    }
+                }
+                Ok(None) => {
+                    let _ = self.tx_evt.send(EngineEvent::Log(
+                        "[MediaAgent] decoder needs more NALs for this AU".into(),
+                    ));
+                }
+                Err(e) => {
+                    let _ = self.tx_evt.send(EngineEvent::Log(format!(
+                        "[MediaAgent] decode error: {e:?}"
+                    )));
+                }
             }
         }
     }
 
-    fn decode_h264(&self, bytes: &[u8]) -> Result<Option<VideoFrame>> {
+    fn decode_h264(&self, access_unit: &AccessUnit) -> Result<Option<VideoFrame>> {
         let mut guard = self
             .h264_decoder
             .lock()
             .map_err(|_| MediaAgentError::Codec("decoder poisoned".into()))?;
-        guard.decode(bytes)
+        guard.decode_au(access_unit)
     }
 }
 
@@ -299,7 +327,15 @@ fn camera_loop(mut cam: CameraManager, tx: Sender<VideoFrame>) -> Result<()> {
             // The `frame_mat` from OpenCV is typically in BGR format.
             // The encoder expects RGB. We need to convert it.
             let mut rgb_mat = Mat::default();
-            if imgproc::cvt_color(&frame_mat, &mut rgb_mat, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT).is_ok() {
+            if imgproc::cvt_color(
+                &frame_mat,
+                &mut rgb_mat,
+                imgproc::COLOR_BGR2RGB,
+                0,
+                AlgorithmHint::ALGO_HINT_DEFAULT,
+            )
+            .is_ok()
+            {
                 if let Ok(bytes) = rgb_mat.data_bytes() {
                     let frame = VideoFrame {
                         width: cam.width(),
