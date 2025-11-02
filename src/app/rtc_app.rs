@@ -2,17 +2,10 @@ use super::{conn_state::ConnState, gui_error::GuiError};
 use crate::{
     core::{engine::Engine, events::EngineEvent},
     media_agent::video_frame::VideoFrame,
+    camera_manager::camera_manager::CameraManager,
 };
 use eframe::{App, Frame, egui};
 use std::collections::VecDeque;
-
-//CONCEPT TEST
-use crate::camera_manager::camera_manager::CameraManager;
-use opencv::core::{prelude::*, Mat, MatTrait, MatTraitConstManual, CV_8UC3};
-use opencv::imgproc;
-use opencv::core::AlgorithmHint;
-use eframe::egui::TextureHandle;
-//END CONCEPT TEST
 
 pub struct RtcApp {
     // UI text areas
@@ -34,8 +27,7 @@ pub struct RtcApp {
     ui_logs: VecDeque<String>,
 
     //CONCEPT TEST
-    camera: Option<CameraManager>,
-    camera_texture: Option<TextureHandle>,
+    camera_texture: Option<egui::TextureHandle>,
     //END CONCEPT TEST
 }
 
@@ -52,7 +44,6 @@ impl RtcApp {
             conn_state: ConnState::Idle,
             ui_logs: VecDeque::with_capacity(256),
             //CONCEPT TEST
-            camera: CameraManager::new(0).ok(),
             camera_texture: None,
             //END CONCEPT TEST
         }
@@ -156,15 +147,19 @@ impl App for RtcApp {
 
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
 
-        if let Some(cam) = &mut self.camera {
-            if let Some(frame) = cam.get_frame() {
-                if let Some(image) = mat_to_color_image(&frame) {
-                    if let Some(tex) = &mut self.camera_texture {
-                        tex.set(image, Default::default());
-                    } else {
-                        self.camera_texture = Some(ctx.load_texture("camera", image, Default::default()));
-                    }
-                }
+        if let Some(local_frame) = &local_frame {
+            // Asegurarte de tener formato RGB
+            let rgb_bytes = local_frame.bytes.clone();
+
+            let image = egui::ColorImage::from_rgb(
+                [local_frame.width as usize, local_frame.height as usize],
+                &rgb_bytes,
+            );
+
+            if let Some(tex) = &mut self.camera_texture {
+                tex.set(image, Default::default());
+            } else {
+                self.camera_texture = Some(ctx.load_texture("camera", image, Default::default()));
             }
         }
 
@@ -307,29 +302,3 @@ impl App for RtcApp {
     }
 }
 
-fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
-    // Si la cámara no devolvió un frame válido
-    if mat.empty() {
-        return None;
-    }
-
-    // Convertimos BGR → RGBA
-    let mut rgba = Mat::default();
-    if let Err(e) = imgproc::cvt_color(mat, &mut rgba, imgproc::COLOR_BGR2RGBA, 0, AlgorithmHint::ALGO_HINT_DEFAULT) {
-        eprintln!("Color conversion failed: {:?}", e);
-        return None;
-    }
-
-    // Obtenemos los bytes
-    let size = rgba.size().ok()?;
-    let width = size.width as usize;
-    let height = size.height as usize;
-
-    // Esto usa el trait MatTraitManual (ya implementado por Mat)
-    let data = rgba.data_bytes().ok()?;
-
-    Some(egui::ColorImage::from_rgba_unmultiplied(
-        [width, height],
-        data,
-    ))
-}

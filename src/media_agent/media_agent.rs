@@ -32,6 +32,8 @@ use crate::{
         rtp_codec::RtpCodec,
     },
 };
+use crate::core::events::RtpIn;
+
 use opencv::{
     core::{AlgorithmHint, Mat},
     imgproc,
