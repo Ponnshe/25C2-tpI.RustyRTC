@@ -1,19 +1,24 @@
+use std::sync::Arc;
+
 use opencv::{
     core,
     prelude::*,
     videoio::{self, VideoCapture, VideoCaptureTrait, VideoCaptureTraitConst},
 };
 
+use crate::app::log_sink::LogSink;
+
 use super::camera_error::CameraError;
 
 pub struct CameraManager {
     cam: Option<VideoCapture>,
+    logger: Arc<dyn LogSink>,
     width: u32,
     height: u32,
 }
 
 impl CameraManager {
-    pub fn new(device_id: usize) -> Result<Self, CameraError> {
+    pub fn new(device_id: usize, logger: Arc<dyn LogSink>) -> Result<Self, CameraError> {
         let cam = videoio::VideoCapture::new(device_id as i32, videoio::CAP_ANY)
             .map_err(|e| CameraError::InitializationFailed(e.to_string()))?;
 
@@ -26,6 +31,7 @@ impl CameraManager {
 
         Ok(Self {
             cam: Some(cam),
+            logger,
             width,
             height,
         })
