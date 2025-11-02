@@ -11,8 +11,10 @@ use std::{
 };
 
 use crate::{
-    app::log_level::LogLevel, camera_manager::camera_error::CameraError, core::events::RtpIn,
-    log_ev,
+    app::{log_level::LogLevel, log_sink::LogSink},
+    camera_manager::camera_error::CameraError,
+    core::events::RtpIn,
+    sink_log,
 };
 use crate::{
     camera_manager::camera_manager_c::CameraManager,
@@ -45,6 +47,7 @@ use opencv::{
 
 pub struct MediaAgent {
     event_tx: Sender<EngineEvent>,
+    logger: Arc<dyn LogSink>,
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
     h264_decoder: Mutex<H264Decoder>,
@@ -62,15 +65,15 @@ pub struct MediaAgent {
 }
 
 impl MediaAgent {
-    pub fn new(tx_evt: Sender<EngineEvent>) -> Self {
+    pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>) -> Self {
         let mut payload_map = HashMap::new();
         let pt = 96;
         let target_fps = 30;
         payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
 
-        let (rx, status) = spawn_camera_worker(target_fps);
+        let (rx, status) = spawn_camera_worker(target_fps, logger.clone());
         if let Some(msg) = status {
-            let _ = tx_evt.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
+            let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
         // Recommended WebRTC-safe MTU for UDP path: ~1200 total bytes.
         // Overhead defaults to 12 (RTP header); bump if we add SRTP/DTLS/exts.
@@ -80,7 +83,8 @@ impl MediaAgent {
         let h264_depacketizer = H264Depacketizer::new();
 
         Self {
-            event_tx: tx_evt,
+            event_tx,
+            logger,
             payload_map,
             outbound_tracks: HashMap::new(),
             h264_decoder: Mutex::new(H264Decoder::new()),
@@ -245,8 +249,8 @@ impl MediaAgent {
     fn handle_remote_rtp(&mut self, pkt: &RtpIn) {
         // Ignore unknown payload types
         if !self.payload_map.contains_key(&pkt.pt) {
-            log_ev!(
-                &self.event_tx,
+            sink_log!(
+                &self.logger,
                 LogLevel::Debug,
                 "[MediaAgent] ignoring payload type {}",
                 pkt.pt
@@ -266,15 +270,15 @@ impl MediaAgent {
                     }
                 }
                 Ok(None) => {
-                    log_ev!(
-                        &self.event_tx,
+                    sink_log!(
+                        &self.logger,
                         LogLevel::Debug,
                         "[MediaAgent] decoder needs more NALs for this AU"
                     );
                 }
                 Err(e) => {
-                    log_ev!(
-                        &self.event_tx,
+                    sink_log!(
+                        &self.logger,
                         LogLevel::Error,
                         "[MediaAgent] decode error: {e:?}"
                     );
@@ -292,9 +296,12 @@ impl MediaAgent {
     }
 }
 
-fn spawn_camera_worker(target_fps: u32) -> (Receiver<VideoFrame>, Option<String>) {
+fn spawn_camera_worker(
+    target_fps: u32,
+    logger: Arc<dyn LogSink>,
+) -> (Receiver<VideoFrame>, Option<String>) {
     let (local_frame_tx, local_frame_rx) = mpsc::channel();
-    let camera_manager = CameraManager::new(0);
+    let camera_manager = CameraManager::new(0, logger);
 
     let status = match &camera_manager {
         Ok(cam) => Some(format!(

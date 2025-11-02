@@ -2,6 +2,8 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
+use crate::app::log_sink::LogSink;
+use crate::connection_manager::config::*;
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::ice::{
@@ -10,15 +12,14 @@ use crate::ice::{
 };
 use crate::media_agent::codec_descriptor::CodecDescriptor;
 use crate::rtp_session::rtp_codec::RtpCodec;
-use crate::sdp::addr_type::AddrType as SDPAddrType;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
 use crate::sdp::media::Media as SDPMedia;
-use crate::sdp::media::MediaKind as SDPMediaKind;
 use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
+use crate::sink_error;
 
 use std::collections::HashSet;
 use std::{
@@ -28,13 +29,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DEFAULT_PORT: u16 = 9;
-const DEAFULT_PROTO: &str = "UDP/TLS/RTP/SAVPF";
-const DEFAULT_FMT: &str = "96";
-const DEFAULT_NET_TYPE: &str = "IN";
-const DEFAULT_ADDR_TYPE: SDPAddrType = SDPAddrType::IP4;
-const DEFAULT_CONN_ADDR: &str = "0.0.0.0";
-const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 
 /// Manages ICE, SDP negotiation, and RTP codec configuration for a single peer connection.
 ///
@@ -43,8 +37,9 @@ const DEFAULT_MEDIA_KIND: SDPMediaKind = SDPMediaKind::Video;
 /// - ICE candidate gathering and connectivity checks
 /// - RTP codec negotiation
 /// - SDP offer/answer flow control
+// ----------------- ConnectionManager --------------------
 pub struct ConnectionManager {
-    /// ICE agent managing candidate pairs and connectivity checks
+    pub logger_handle: Arc<dyn LogSink>,
     pub ice_agent: IceAgent,
     /// Current signaling state of the connection (`Stable`, `HaveLocalOffer`, etc.)
     signaling: SignalingState,
@@ -62,20 +57,15 @@ pub struct ConnectionManager {
     ice_worker: Option<IceWorker>,
 }
 
-impl Default for ConnectionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ConnectionManager {
     /// Constructs a new `ConnectionManager` with default values.
     /// 
     /// The ICE agent is initialized in the `Controlling` role.
     #[must_use]
-    pub fn new() -> Self {
-        let ice_agent = IceAgent::new(IceRole::Controlling);
+    pub fn new(logger_handle: Arc<dyn LogSink>) -> Self {
+        let ice_agent = IceAgent::with_logger(IceRole::Controlling, logger_handle.clone());
         Self {
+            logger_handle,
             ice_agent,
             signaling: SignalingState::Stable,
             local_description: None,
@@ -157,7 +147,7 @@ impl ConnectionManager {
         };
 
         if out.is_ok() && let Err(e) = self.maybe_start_ice() {
-                eprintln!("ICE start failed: {e}");
+                sink_error!(&self.logger_handle, "ICE start failed: {e}");
         }
         out
     }

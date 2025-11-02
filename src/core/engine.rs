@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    app::log_sink::LogSink,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     media_agent::media_agent::MediaAgent,
 };
@@ -18,22 +19,24 @@ use crate::{
 };
 
 pub struct Engine {
+    logger_sink: Arc<dyn LogSink>,
     cm: ConnectionManager,
     session: Option<Session>,
-    tx_evt: Sender<EngineEvent>,
-    rx_evt: Receiver<EngineEvent>,
+    event_tx: Sender<EngineEvent>,
+    event_rx: Receiver<EngineEvent>,
     media_agent: MediaAgent,
 }
 
 impl Engine {
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-        let media_agent = MediaAgent::new(tx.clone());
+    pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
+        let (event_tx, event_rx) = mpsc::channel();
+        let media_agent = MediaAgent::new(event_tx.clone(), logger_sink.clone());
         Self {
-            cm: ConnectionManager::new(),
+            cm: ConnectionManager::new(logger_sink.clone()),
+            logger_sink,
             session: None,
-            tx_evt: tx,
-            rx_evt: rx,
+            event_tx,
+            event_rx,
             media_agent,
         }
     }
@@ -87,13 +90,13 @@ impl Engine {
                 // connect, then create session (but do NOT start until UI says so)
                 if let Err(e) = sock.connect(peer) {
                     let _ = self
-                        .tx_evt
+                        .event_tx
                         .send(EngineEvent::Error(format!("socket.connect: {e}")));
                 } else {
                     let local = sock
                         .local_addr()
                         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-                    let _ = self.tx_evt.send(EngineEvent::IceNominated {
+                    let _ = self.event_tx.send(EngineEvent::IceNominated {
                         local,
                         remote: peer,
                     });
@@ -101,7 +104,8 @@ impl Engine {
                         Arc::clone(&sock),
                         peer,
                         self.cm.remote_codecs().clone(),
-                        self.tx_evt.clone(),
+                        self.event_tx.clone(),
+                        self.logger_sink.clone(),
                         SessionConfig {
                             handshake_timeout: Duration::from_secs(10),
                             resend_every: Duration::from_millis(250),
@@ -115,7 +119,7 @@ impl Engine {
         }
 
         let mut out = Vec::new();
-        while let Ok(ev) = self.rx_evt.try_recv() {
+        while let Ok(ev) = self.event_rx.try_recv() {
             self.media_agent
                 .handle_engine_event(&ev, self.session.as_ref());
             out.push(ev);

@@ -10,6 +10,10 @@ use opencv::{
     videoio::{self, VideoCapture, VideoCaptureTrait, VideoCaptureTraitConst},
 };
 
+use std::sync::Arc;
+
+use crate::app::log_sink::LogSink;
+
 use super::camera_error::CameraError;
 
 /// Struct responsible for managing a single camera device.
@@ -18,6 +22,7 @@ use super::camera_error::CameraError;
 /// when no longer needed.
 pub struct CameraManager {
     cam: Option<VideoCapture>,
+    logger: Arc<dyn LogSink>,
     width: u32,
     height: u32,
 }
@@ -42,7 +47,7 @@ impl CameraManager {
     /// let camera = CameraManager::new(0)?;
     /// # Ok::<(), CameraError>(())
     /// ```
-    pub fn new(device_id: usize) -> Result<Self, CameraError> {
+    pub fn new(device_id: usize, logger: Arc<dyn LogSink>) -> Result<Self, CameraError> {
         let device_id_i32 = i32::try_from(device_id)
             .map_err(|_| CameraError::InvalidDeviceId(device_id))?;
         let cam = videoio::VideoCapture::new(device_id_i32, videoio::CAP_ANY)
@@ -69,6 +74,7 @@ impl CameraManager {
 
         Ok(Self {
             cam: Some(cam),
+            logger,
             width,
             height,
         })

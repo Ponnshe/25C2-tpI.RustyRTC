@@ -1,8 +1,10 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
+use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
+use crate::{sink_debug, sink_error, sink_info, sink_warn};
 use rand::{Rng, rngs::OsRng};
 use std::sync::Arc;
 use std::{io::Error, net::SocketAddr, net::UdpSocket, time::Duration};
@@ -37,8 +39,9 @@ pub enum IceRole {
 }
 
 /// It's responsible for orchestrating the flow of gathering, checks, nomination, etc.
-#[derive(Debug)]
 pub struct IceAgent {
+    /// logger handle
+    logger: Arc<dyn LogSink>,
     /// set of local candidates.
     pub local_candidates: Vec<Candidate>,
     /// set of remote candidates.
@@ -62,16 +65,20 @@ impl IceAgent {
     ///
     /// # Return
     /// A new ice agent.
+    /// Default used by unit tests: no-op logging.
     pub fn new(role: IceRole) -> Self {
+        Self::with_logger(role, Arc::new(NoopLogSink::default()))
+    }
+    /// Production/integration: inject your real logger (or a test logger).
+    pub fn with_logger(role: IceRole, logger: Arc<dyn LogSink>) -> Self {
         let (ufrag, pwd) = Self::fresh_credentials();
         Self {
+            logger,
             local_candidates: vec![],
             remote_candidates: vec![],
             candidate_pairs: vec![],
             role,
             ufrag,
-            // TODO: Aniadir remote_frag y remote_ufrag para STUN. Crear setters y
-            // usarlos en connection manager
             pwd,
             remote_ufrag: String::new(),
             remote_pwd: String::new(),
@@ -92,8 +99,9 @@ impl IceAgent {
     ///
     /// #Error
     /// Err(String) - If any error occurs in any of the steps
+
     pub fn start_data_channel(&mut self) -> Result<(), String> {
-        println!("🔹 Starting ICE data channel...");
+        sink_info!(self.logger, "🔹 Starting ICE data channel...");
 
         if self.nominated_pair.is_none() {
             return Err("Cannot start data channel: no nominated pair available.".into());
@@ -103,18 +111,16 @@ impl IceAgent {
             .get_data_channel_socket()
             .map_err(|e| format!("Failed to open UDP channel: {}", e))?;
 
-        // "Connect" the socket to nominate default peer
         socket
             .connect(remote_addr)
             .map_err(|e| format!("Failed to connect UDP channel: {}", e))?;
 
-        // Note the &*socket to coerce Arc<UdpSocket> -> &UdpSocket
         self.send_test_message(&*socket, "hola ICE")
             .map_err(|e| format!("Failed to send test message: {}", e))?;
 
-        match IceAgent::receive_test_message(&*socket) {
+        match self.receive_test_message(&*socket) {
             Ok(msg) if msg.contains("BINDING-ACK") => {
-                println!("ICE Data Channel established successfully!");
+                sink_info!(self.logger, "ICE Data Channel established successfully!");
                 Ok(())
             }
             Ok(msg) => Err(format!(
@@ -151,7 +157,13 @@ impl IceAgent {
 
         match socket.send_to(payload.as_bytes(), remote_addr) {
             Ok(sent) => {
-                println!("[SEND] Sent {} bytes → {} ({})", sent, remote_addr, payload);
+                sink_debug!(
+                    self.logger,
+                    "[SEND] Sent {} bytes → {} ({})",
+                    sent,
+                    remote_addr,
+                    payload
+                );
                 Ok(())
             }
             Err(e) => Err(format!(
@@ -160,7 +172,6 @@ impl IceAgent {
             )),
         }
     }
-
     /// Waits for a response message ("BINDING-ACK") from the remote peer.
     ///
     /// # Arguments
@@ -171,7 +182,7 @@ impl IceAgent {
     ///
     /// # Error
     /// * `Err(String)` - Timeout or read error.
-    pub fn receive_test_message(socket: &UdpSocket) -> Result<String, String> {
+    pub fn receive_test_message(&self, socket: &UdpSocket) -> Result<String, String> {
         socket
             .set_read_timeout(Some(Duration::from_secs(1)))
             .map_err(|e| format!("Failed to set timeout: {}", e))?;
@@ -180,16 +191,22 @@ impl IceAgent {
         match socket.recv_from(&mut buf) {
             Ok((size, src)) => {
                 let msg = String::from_utf8_lossy(&buf[..size]).to_string();
-                println!("[RECV] From {} → \"{}\"", src, msg);
+                sink_debug!(self.logger, "[RECV] From {} → \"{}\"", src, msg);
                 Ok(msg)
             }
-            Err(e) => Err(format!(
-                "Timeout or error while receiving UDP message: {}",
-                e
-            )),
+            Err(e) => {
+                sink_warn!(
+                    self.logger,
+                    "Timeout or error while receiving UDP message: {}",
+                    e
+                );
+                Err(format!(
+                    "Timeout or error while receiving UDP message: {}",
+                    e
+                ))
+            }
         }
     }
-
     /// Returns a clone of the Arc'd UDP socket associated with the local candidate of the nominated pair.
     /// # Description
     /// This function provides access to the already bound UDP socket intended for the data channel.
@@ -246,21 +263,27 @@ impl IceAgent {
     pub fn run_role_logic(&mut self) {
         match self.role {
             IceRole::Controlling => {
-                println!("Role: CONTROLLING — selecting the nominated pair...");
+                sink_debug!(
+                    self.logger,
+                    "Role: CONTROLLING — selecting the nominated pair..."
+                );
                 if let Some(pair) = self.select_valid_pair() {
-                    println!(
+                    sink_debug!(
+                        self.logger,
                         "Nominated pair: [local={}, remote={}, prio={}]",
-                        pair.local.address, pair.remote.address, pair.priority
+                        pair.local.address,
+                        pair.remote.address,
+                        pair.priority
                     );
                 } else {
-                    eprintln!("No valid pair available for nomination.");
+                    sink_warn!(self.logger, "No valid pair available for nomination.");
                 }
             }
-
             IceRole::Controlled => {
-                println!("Role: CONTROLLED — Waiting for nomination from controlling peer...");
-                // El agente controlado es PASIVO. No hace nada, solo espera
-                // la nominación, que será manejada por un evento de red (en un paso futuro).
+                sink_debug!(
+                    self.logger,
+                    "Role: CONTROLLED — Waiting for nomination from controlling peer..."
+                );
             }
         }
     }
@@ -276,7 +299,6 @@ impl IceAgent {
     /// #Errors
     ///
     pub fn select_valid_pair(&mut self) -> Option<&CandidatePair> {
-        // Filter indices of succeeded pairs
         let succeeded_indices: Vec<usize> = self
             .candidate_pairs
             .iter()
@@ -291,11 +313,10 @@ impl IceAgent {
             .collect();
 
         if succeeded_indices.is_empty() {
-            eprintln!("WARN: No succeeded pairs available for nomination.");
+            sink_warn!(self.logger, "No succeeded pairs available for nomination.");
             return None;
         }
 
-        // Find index of the highest-priority succeeded pair
         let best_index = succeeded_indices
             .into_iter()
             .max_by_key(|&i| self.candidate_pairs[i].priority);
@@ -305,7 +326,6 @@ impl IceAgent {
                 let pair = &mut self.candidate_pairs[idx];
                 pair.is_nominated = true;
 
-                // Store reference safely
                 self.nominated_pair = Some(CandidatePair {
                     local: pair.local.clone_light(),
                     remote: pair.remote.clone_light(),
@@ -314,16 +334,14 @@ impl IceAgent {
                     is_nominated: true,
                 });
 
-                // Return immutable reference
                 self.candidate_pairs.get(idx)
             }
             None => {
-                eprintln!("ERROR: Could not determine nominated pair index.");
+                sink_error!(self.logger, "Could not determine nominated pair index.");
                 None
             }
         }
     }
-
     pub fn add_local_candidate(&mut self, candidate: Candidate) {
         self.local_candidates.push(candidate);
     }
@@ -366,9 +384,9 @@ impl IceAgent {
             for remote in self.remote_candidates.iter() {
                 let priority = CandidatePair::calculate_pair_priority(local, remote, &self.role);
 
-                // skip incompatible address families (IPv4 ↔ IPv6)
                 if local.address.is_ipv4() != remote.address.is_ipv4() {
-                    eprintln!(
+                    sink_error!(
+                        self.logger,
                         "{}",
                         error_message(&format!(
                             "Incompatible address families (local={}, remote={})",
@@ -378,9 +396,9 @@ impl IceAgent {
                     continue;
                 }
 
-                // skip different transport protocols (e.g., UDP ↔ TCP)
                 if local.transport != remote.transport {
-                    eprintln!(
+                    sink_error!(
+                        self.logger,
                         "{}",
                         error_message(&format!(
                             "Incompatible transport protocols (local={}, remote={})",
@@ -391,9 +409,12 @@ impl IceAgent {
                 }
 
                 if priority < MIN_PRIORITY_THRESHOLD {
-                    eprintln!(
-                        "WARN: Par ignorado por prioridad inválida (local={}, remote={}, prio={})",
-                        local.address, remote.address, priority
+                    sink_warn!(
+                        self.logger,
+                        "Ignored pair because of invalid priority (local={}, remote={}, prio={})",
+                        local.address,
+                        remote.address,
+                        priority
                     );
                     continue;
                 }
@@ -401,8 +422,9 @@ impl IceAgent {
                 pairs.push(CandidatePair::new(local.clone(), remote.clone(), priority));
 
                 if pairs.len() >= MAX_PAIR_LIMIT {
-                    eprintln!(
-                        "WARN: Límite máximo de pares alcanzado ({}). Truncando lista.",
+                    sink_warn!(
+                        self.logger,
+                        "Límite máximo de pares alcanzado ({}). Truncando lista.",
                         MAX_PAIR_LIMIT
                     );
                     break;
@@ -410,7 +432,6 @@ impl IceAgent {
             }
         }
 
-        //sorted by descending priority
         pairs.sort_by(|a, b| b.priority.cmp(&a.priority));
 
         let count = pairs.len();
@@ -422,22 +443,29 @@ impl IceAgent {
     /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
     /// Cambia el estado de los pares a 'InProgress'.
     pub fn start_checks(&mut self) {
-        println!("ICE: Starting connectivity checks...");
+        sink_info!(self.logger, "ICE: Starting connectivity checks...");
         for pair in self.candidate_pairs.iter_mut() {
             if !matches!(pair.state, CandidatePairState::Waiting) {
                 continue;
             }
 
             let Some(local_sock) = &pair.local.socket else {
-                eprintln!("No socket for local candidate: {}", pair.local.address);
+                sink_warn!(
+                    self.logger,
+                    "No socket for local candidate: {}",
+                    pair.local.address
+                );
                 pair.state = CandidatePairState::Failed;
                 continue;
             };
 
             if let Err(e) = local_sock.send_to(BINDING_REQUEST, pair.remote.address) {
-                eprintln!(
+                sink_error!(
+                    self.logger,
                     "Send failed from {} → {}: {}",
-                    pair.local.address, pair.remote.address, e
+                    pair.local.address,
+                    pair.remote.address,
+                    e
                 );
                 pair.state = CandidatePairState::Failed;
             } else {
@@ -458,17 +486,27 @@ impl IceAgent {
             .iter_mut()
             .find(|p| p.remote.address == from_addr)
         else {
-            eprintln!("[ICE] Ignoring unknown packet received from: {}", from_addr);
+            sink_warn!(
+                self.logger,
+                "[ICE] Ignoring unknown packet received from: {}",
+                from_addr
+            );
             return;
         };
 
         if packet == BINDING_RESPONSE {
-            println!("[ICE] Received BINDING-RESPONSE from {}", from_addr);
+            sink_info!(
+                self.logger,
+                "[ICE] Received BINDING-RESPONSE from {}",
+                from_addr
+            );
             if !matches!(pair.state, CandidatePairState::Succeeded) {
                 pair.state = CandidatePairState::Succeeded;
-                println!(
+                sink_info!(
+                    self.logger,
                     "[ICE] Candidate Peer Succeeded: [local={}, remote={}]",
-                    pair.local.address, pair.remote.address
+                    pair.local.address,
+                    pair.remote.address
                 );
 
                 if self.role == IceRole::Controlling {
@@ -478,9 +516,11 @@ impl IceAgent {
                     };
 
                     if should_nominate {
-                        println!(
+                        sink_info!(
+                            self.logger,
                             "[ICE] Nominating pair: [local={}, remote={}]",
-                            pair.local.address, pair.remote.address
+                            pair.local.address,
+                            pair.remote.address
                         );
                         pair.is_nominated = true;
                         self.nominated_pair = Some(pair.clone_light());
@@ -489,25 +529,35 @@ impl IceAgent {
                             if let Err(e) =
                                 local_sock.send_to(NOMINATION_REQUEST, pair.remote.address)
                             {
-                                eprintln!(
+                                sink_error!(
+                                    self.logger,
                                     "[ICE] Error sending NOMINATION_REQUEST to {}: {}",
-                                    pair.remote.address, e
+                                    pair.remote.address,
+                                    e
                                 );
                             } else {
-                                println!(
+                                sink_info!(
+                                    self.logger,
                                     "[ICE] Sent NOMINATION_REQUEST to {}",
                                     pair.remote.address
                                 );
                             }
                         } else {
-                            eprintln!("[ICE] Cannot nominate: No local socket for pair.");
+                            sink_warn!(
+                                self.logger,
+                                "[ICE] Cannot nominate: No local socket for pair."
+                            );
                         }
                     }
                 }
             }
         } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST {
             if self.role == IceRole::Controlled && packet == NOMINATION_REQUEST {
-                println!("[ICE] Received NOMINATION_REQUEST from {}", from_addr);
+                sink_info!(
+                    self.logger,
+                    "[ICE] Received NOMINATION_REQUEST from {}",
+                    from_addr
+                );
                 if self.nominated_pair.as_ref().map_or(true, |np| {
                     np.local.address != pair.local.address
                         || np.remote.address != pair.remote.address
@@ -515,35 +565,52 @@ impl IceAgent {
                     pair.is_nominated = true;
                     pair.state = CandidatePairState::Succeeded;
                     self.nominated_pair = Some(pair.clone_light());
-                    println!(
+                    sink_info!(
+                        self.logger,
                         "[ICE] Pair nominated by peer: [local={}, remote={}]",
-                        pair.local.address, pair.remote.address
+                        pair.local.address,
+                        pair.remote.address
                     );
                 }
             } else {
-                println!("[ICE] Received BINDING-REQUEST from {}", from_addr);
+                sink_debug!(
+                    self.logger,
+                    "[ICE] Received BINDING-REQUEST from {}",
+                    from_addr
+                );
             }
 
             let Some(local_sock) = &pair.local.socket else {
-                eprintln!(
+                sink_warn!(
+                    self.logger,
                     "[ICE] No socket available to answer BINDING-REQUEST: {}",
                     pair.local.address
                 );
                 return;
             };
             if let Err(e) = local_sock.send_to(BINDING_RESPONSE, from_addr) {
-                eprintln!(
-                    "[ICE] Socket error sending INDING-RESPONSE a {}: {}",
-                    from_addr, e
+                sink_error!(
+                    self.logger,
+                    "[ICE] Socket error sending BINDING-RESPONSE to {}: {}",
+                    from_addr,
+                    e
                 );
             } else {
-                println!("[ICE] Sending BINDING-RESPONSE to {}", from_addr);
+                sink_debug!(
+                    self.logger,
+                    "[ICE] Sending BINDING-RESPONSE to {}",
+                    from_addr
+                );
             }
         } else {
-            eprintln!("[ICE] Unknown packet from {}: {:?}", from_addr, packet);
+            sink_warn!(
+                self.logger,
+                "[ICE] Unknown packet from {}: {:?}",
+                from_addr,
+                packet
+            );
         }
     }
-
     pub(crate) fn local_credentials(&self) -> (String, String) {
         (self.ufrag.clone(), self.pwd.clone())
     }
@@ -566,15 +633,14 @@ impl IceAgent {
     //print every state of candidates pair
     pub fn print_pair_states(&self) {
         if self.candidate_pairs.is_empty() {
-            println!("No candidate pairs available.");
+            sink_warn!(self.logger, "No candidate pairs available.");
             return;
         }
-        println!("=== Candidate Pair States ===");
+        sink_info!(self.logger, "=== Candidate Pair States ===");
         for pair in &self.candidate_pairs {
-            pair.debug_state();
+            pair.debug_state(&self.logger);
         }
     }
-
     /// Updates the state of a candidate pair by index.
     ///
     /// # Arguments
@@ -586,16 +652,18 @@ impl IceAgent {
     /// - If it's out of bounds, prints a warning.
     pub fn update_pair_state(&mut self, pair_index: usize, new_state: CandidatePairState) {
         if let Some(pair) = self.candidate_pairs.get_mut(pair_index) {
-            println!(
+            sink_info!(
+                self.logger,
                 "[ICE] Updating pair {} [{} → {:?}]",
-                pair_index, pair.local.address, new_state
+                pair_index,
+                pair.local.address,
+                new_state
             );
             pair.state = new_state;
         } else {
-            eprintln!("[ICE] Invalid pair index: {}", pair_index);
+            sink_warn!(self.logger, "[ICE] Invalid pair index: {}", pair_index);
         }
     }
-
     /// Returns all successfully validated candidate pairs.
     pub fn get_valid_pairs(&self) -> Vec<&CandidatePair> {
         self.candidate_pairs
@@ -761,7 +829,7 @@ mod tests {
         let send_result = agent.send_test_message(&socket_a, msg_send);
         assert!(send_result.is_ok(), "{ERROR_MSG1}");
 
-        let recv_result = IceAgent::receive_test_message(&socket_a);
+        let recv_result = agent.receive_test_message(&socket_a);
         assert!(recv_result.is_ok(), "{ERROR_MSG2}");
 
         let msg = recv_result.unwrap();

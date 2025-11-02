@@ -1,11 +1,13 @@
 use crate::app::log_level::LogLevel;
+use crate::app::log_sink::LogSink;
 use crate::core::events::{EngineEvent, RtpIn};
-use crate::log_ev;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
+use crate::{log_ev, sink_log};
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
+use std::sync::Arc;
 use std::{sync::mpsc::Sender, time::Instant};
 
 pub struct RtpRecvStream {
@@ -16,10 +18,15 @@ pub struct RtpRecvStream {
     last_activity: Instant,
 
     event_transmitter: Sender<EngineEvent>,
+    logger: Arc<dyn LogSink>,
 }
 
 impl RtpRecvStream {
-    pub fn new(cfg: RtpRecvConfig, event_transmitter: Sender<EngineEvent>) -> Self {
+    pub fn new(
+        cfg: RtpRecvConfig,
+        event_transmitter: Sender<EngineEvent>,
+        logger: Arc<dyn LogSink>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             codec: cfg.codec,
@@ -28,6 +35,7 @@ impl RtpRecvStream {
             epoch: now,
             last_activity: now,
             event_transmitter,
+            logger,
         }
     }
 
@@ -100,8 +108,8 @@ impl RtpRecvStream {
 
         // surface for logs/metrics
         //
-        log_ev!(
-            &self.event_transmitter,
+        sink_log!(
+            &self.logger,
             LogLevel::Debug,
             "[RTCP][SR] ssrc={:#010x} rtp_ts={} pkt={} octets={}",
             sender_ssrc,

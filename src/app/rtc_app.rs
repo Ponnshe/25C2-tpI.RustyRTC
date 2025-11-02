@@ -18,7 +18,11 @@ use crate::{
     media_agent::video_frame::VideoFrame,
 };
 use eframe::{App, Frame, egui};
-use std::{collections::VecDeque, sync::mpsc::TrySendError, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, mpsc::TrySendError},
+    time::Instant,
+};
 
 
 pub struct RtcApp {
@@ -68,7 +72,7 @@ impl RtcApp {
             local_sdp_text: String::new(),
             pending_remote_sdp: None,
             status_line: "Ready.".into(),
-            engine: Engine::new(),
+            engine: Engine::new(Arc::new(logger.handle())),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
