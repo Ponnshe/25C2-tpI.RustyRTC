@@ -1,4 +1,6 @@
+use crate::app::log_level::LogLevel;
 use crate::core::events::{EngineEvent, RtpIn};
+use crate::log_ev;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
@@ -96,11 +98,17 @@ impl RtpRecvStream {
         self.rx
             .on_sr_received(info.ntp_most_sw, info.now_least_sw, arrival_ntp);
 
-        // (Optional) surface for logs/metrics
-        let _ = self.event_transmitter.send(EngineEvent::Log(format!(
+        // surface for logs/metrics
+        //
+        log_ev!(
+            &self.event_transmitter,
+            LogLevel::Debug,
             "[RTCP][SR] ssrc={:#010x} rtp_ts={} pkt={} octets={}",
-            sender_ssrc, info.rtp_ts, info.packet_count, info.octet_count
-        )));
+            sender_ssrc,
+            info.rtp_ts,
+            info.packet_count,
+            info.octet_count
+        );
     }
 
     /// Build one RTCP ReportBlock for this remote SSRC.

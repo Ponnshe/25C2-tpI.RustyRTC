@@ -16,7 +16,9 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
+    app::log_level::LogLevel,
     core::events::EngineEvent,
+    log_ev,
     rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
@@ -147,7 +149,7 @@ impl RtpSession {
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(pkt) => {
                         if pkt.len() < 2 {
-                            let _ = tx_evt.send(EngineEvent::Log("[RTP] packet too short".into()));
+                            log_ev!(&tx_evt, LogLevel::Error, "[RTP] packet too short");
                             continue;
                         }
 
@@ -156,16 +158,14 @@ impl RtpSession {
                             if let Err(e) =
                                 handle_rtcp(&pkt, &recv_map, &pending_recv, &send_map, &tx_evt)
                             {
-                                let _ =
-                                    tx_evt.send(EngineEvent::Log(format!("[RTCP] error: {e:?}")));
+                                log_ev!(&tx_evt, LogLevel::Error, "[RTCP] error: {e:?}");
                             }
                             continue;
                         }
 
                         // ---- RTP fast-path ----
                         if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
-                            let _ = tx_evt
-                                .send(EngineEvent::Log("[RTP] invalid header/version".into()));
+                            log_ev!(&tx_evt, LogLevel::Error, "[RTP] invalid header/version");
                             continue;
                         }
 
@@ -173,7 +173,7 @@ impl RtpSession {
                         let rtp = match RtpPacket::decode(&pkt) {
                             Ok(p) => p,
                             Err(_) => {
-                                let _ = tx_evt.send(EngineEvent::Log("[RTP] decode failed".into()));
+                                log_ev!(&tx_evt, LogLevel::Error, " RTP] decode failed");
                                 continue;
                             }
                         };
@@ -208,10 +208,15 @@ impl RtpSession {
                         }
 
                         // 3) Unknown SSRC/PT
-                        let _ = tx_evt.send(EngineEvent::Log(format!(
+                        //
+
+                        log_ev!(
+                            &tx_evt,
+                            LogLevel::Debug,
                             "[RTP] unknown remote SSRC={:#010x} PT={}",
-                            ssrc, pt
-                        )));
+                            ssrc,
+                            pt
+                        );
                     }
                     Err(_) => { /* timeout */ }
                 }
@@ -241,16 +246,22 @@ impl RtpSession {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
                             if let Err(e) = sr.encode_into(&mut sr_bytes) {
-                                let _ = tx_evt2.send(EngineEvent::Log(format!(
+                                log_ev!(
+                                    &tx_evt2,
+                                    LogLevel::Error,
                                     "[RTCP] failed to encode SR: {e}"
-                                )));
+                                );
                                 continue;
                             }
+
                             comp_pkt.extend_from_slice(&sr_bytes);
-                            let _ = tx_evt2.send(EngineEvent::Log(format!(
+
+                            log_ev!(
+                                &tx_evt2,
+                                LogLevel::Error,
                                 "[RTCP] tx SR ssrc={:#010x}",
                                 st.local_ssrc
-                            )));
+                            );
                         }
                     }
                 }
@@ -270,11 +281,11 @@ impl RtpSession {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
                     if let Err(e) = rr.encode_into(&mut rr_bytes) {
-                        let _ = tx_evt2
-                            .send(EngineEvent::Log(format!("[RTCP] failed to encode RR: {e}")));
+                        log_ev!(&tx_evt2, LogLevel::Error, "[RTCP] failed to encode RR: {e}");
                     } else {
                         comp_pkt.extend_from_slice(&rr_bytes);
-                        let _ = tx_evt2.send(EngineEvent::Log("[RTCP] tx RR".into()));
+
+                        log_ev!(&tx_evt2, LogLevel::Debug, "[RTCP] tx RR",);
                     }
                 }
 
@@ -283,9 +294,11 @@ impl RtpSession {
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
-                    let _ = tx_evt2.send(EngineEvent::Log(format!(
+                    log_ev!(
+                        &tx_evt2,
+                        LogLevel::Error,
                         "[RTCP] failed to encode SDES: {e}"
-                    )));
+                    );
                 } else {
                     comp_pkt.extend_from_slice(&sdes_bytes);
                 }
@@ -310,9 +323,11 @@ impl RtpSession {
         let mut buf = Vec::new();
         let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
-        let _ = self.tx_evt.send(EngineEvent::Log(format!(
+        log_ev!(
+            &self.tx_evt,
+            LogLevel::Info,
             "[RTCP] tx PLI media_ssrc={remote_ssrc}"
-        )));
+        );
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
@@ -474,10 +489,12 @@ fn handle_rtcp(
 
             RtcpPacket::Sdes(sdes) => {
                 // Optional: keep SSRC → CNAME mapping at session level
-                let _ = tx_evt.send(EngineEvent::Log(format!(
+                log_ev!(
+                    &tx_evt,
+                    LogLevel::Debug,
                     "[RTCP][SDES] chunks={}",
                     sdes.chunks.len()
-                )));
+                )
             }
 
             RtcpPacket::Bye(bye) => {
@@ -501,25 +518,29 @@ fn handle_rtcp(
             RtcpPacket::Pli(pli) => {
                 // Inbound PLI means the remote wants a keyframe for media_ssrc
                 // Route to the *sender* stream of that SSRC, or surface an event:
-                let _ = tx_evt.send(EngineEvent::Status(format!(
+                log_ev!(
+                    &tx_evt,
+                    LogLevel::Debug,
                     "[RTCP][PLI] keyframe requested for ssrc={:#010x}",
                     pli.media_ssrc
-                )));
+                )
                 // If you have encoder wiring, signal it here.
             }
 
             RtcpPacket::Nack(nack) => {
                 // Inbound NACK asks us to retransmit lost seqnos on media_ssrc
                 // Route to the *sender* stream (implement your RTX/repair path there)
-                let _ = tx_evt.send(EngineEvent::Log(format!(
+                log_ev!(
+                    &tx_evt,
+                    LogLevel::Debug,
                     "[RTCP][NACK] for media_ssrc={:#010x} fci_count={}",
                     nack.media_ssrc,
                     nack.entries.len()
-                )));
+                )
             }
 
             RtcpPacket::App(_app) => {
-                let _ = tx_evt.send(EngineEvent::Log("[RTCP][APP] ignored".into()));
+                log_ev!(&tx_evt, LogLevel::Debug, "[RTCP][APP] ignored")
             }
         }
     }

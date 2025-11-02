@@ -1,4 +1,5 @@
-use crate::app::log_level::{LogLevel, LogMsg};
+use crate::app::{log_level::LogLevel, log_msg::LogMsg};
+
 use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
@@ -148,11 +149,13 @@ impl Logger {
         &self,
         level: LogLevel,
         text: S,
+        target: &'static str,
     ) -> Result<(), TrySendError<LogMsg>> {
         let msg = LogMsg {
             level,
             ts_ms: crate::media_agent::utils::now_millis(),
             text: text.into(),
+            target,
         };
         self.log_tx.try_send(msg)
     }
