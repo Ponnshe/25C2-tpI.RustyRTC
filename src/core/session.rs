@@ -12,20 +12,18 @@ use std::{
 
 use rand::{RngCore, rngs::OsRng};
 
+use crate::rtp_session::{
+    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
+    rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
+};
 use crate::{
-    app::log_level::LogLevel,
+    app::{log_level::LogLevel, log_sink::LogSink},
     core::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
     rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk,
-};
-use crate::{
-    log_ev,
-    rtp_session::{
-        outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
-        rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
-    },
+    sink_log,
 };
 
 #[derive(Clone, Copy)]
@@ -52,6 +50,7 @@ pub struct Session {
     close_done: Arc<AtomicBool>,
 
     tx_evt: Sender<EngineEvent>,
+    logger: Arc<dyn LogSink>,
     cfg: SessionConfig,
 
     rtp_session: Arc<Mutex<Option<RtpSession>>>,
@@ -63,7 +62,8 @@ impl Session {
         sock: Arc<UdpSocket>,
         peer: std::net::SocketAddr,
         remote_codecs: Vec<RtpCodec>,
-        tx_evt: Sender<EngineEvent>,
+        event_tx: Sender<EngineEvent>,
+        logger: Arc<dyn LogSink>,
         cfg: SessionConfig,
     ) -> Self {
         Self {
@@ -77,7 +77,8 @@ impl Session {
             we_initiated_close: Arc::new(AtomicBool::new(false)),
             peer_initiated_close: Arc::new(AtomicBool::new(false)),
             close_done: Arc::new(AtomicBool::new(false)),
-            tx_evt,
+            tx_evt: event_tx,
+            logger,
             cfg,
             rtp_session: Arc::new(Mutex::new(None)),
             rtp_media_tx: Arc::new(Mutex::new(None)),
@@ -116,6 +117,7 @@ impl Session {
             Arc::clone(&self.sock),
             self.peer,
             self.tx_evt.clone(),
+            self.logger.clone(),
             rx_media,
             initial_recv,
             Vec::new(),
@@ -136,11 +138,11 @@ impl Session {
                 if let Ok(mut guard) = self.rtp_media_tx.lock() {
                     *guard = Some(tx_media.clone());
                 }
-                log_ev!(&self.tx_evt, LogLevel::Debug, "[RTP] session started");
+                sink_log!(&self.logger, LogLevel::Debug, "[RTP] session started");
             }
             Err(e) => {
-                log_ev!(
-                    &self.tx_evt,
+                sink_log!(
+                    &self.logger,
                     LogLevel::Error,
                     "Failed to start RTP session: {e}"
                 );
@@ -159,6 +161,7 @@ impl Session {
         let rx_peer_init = Arc::clone(&self.peer_initiated_close);
         let local_token = self.token_local;
         let tx = self.tx_evt.clone();
+        let logger = self.logger.clone();
         let rtp_media_tx = Arc::clone(&self.rtp_media_tx);
         let rtp_session_handle = Arc::clone(&self.rtp_session);
 
@@ -168,12 +171,12 @@ impl Session {
                 match rx_sock.recv(&mut buf) {
                     Ok(n) => match protocol::parse_app_msg(&buf[..n]) {
                         AppMsg::Syn { token: their } => {
-                            log_ev!(&tx, LogLevel::Debug, "[HS] recv SYN({their:016x})");
+                            sink_log!(&logger, LogLevel::Debug, "[HS] recv SYN({their:016x})");
                             rx_tok_peer.store(their, Ordering::SeqCst);
                             let synack = protocol::encode_synack(their, local_token);
                             let _ = rx_sock.send(synack.as_bytes());
-                            log_ev!(
-                                &tx,
+                            sink_log!(
+                                &logger,
                                 LogLevel::Debug,
                                 "[HS] send SYN-ACK({their:016x},{local_token:016x})"
                             );
@@ -184,8 +187,8 @@ impl Session {
                                 let ack = protocol::encode_ack(mine);
                                 let _ = rx_sock.send(ack.as_bytes());
 
-                                log_ev!(
-                                    &tx,
+                                sink_log!(
+                                    &logger,
                                     LogLevel::Debug,
                                     "[HS] recv SYN-ACK ok → send ACK({mine:016x})"
                                 );
@@ -197,7 +200,7 @@ impl Session {
                             if your == local_token {
                                 rx_est.store(true, Ordering::SeqCst);
                                 let _ = tx.send(EngineEvent::Established);
-                                log_ev!(&tx, LogLevel::Debug, "[HS] ESTABLISHED");
+                                sink_log!(&logger, LogLevel::Debug, "[HS] ESTABLISHED");
                             }
                         }
                         AppMsg::Fin { token: their } => {
@@ -207,8 +210,8 @@ impl Session {
                             let finack = protocol::encode_finack(their, local_token);
                             let _ = rx_sock.send(finack.as_bytes());
                             stop_rtp_session(&rtp_session_handle, &rtp_media_tx);
-                            log_ev!(
-                                &tx,
+                            sink_log!(
+                                &logger,
                                 LogLevel::Debug,
                                 "[CLOSE] recv FIN({their:016x}) → send FIN-ACK({their:016x},{local_token:016x})"
                             );
@@ -219,8 +222,8 @@ impl Session {
                                 // they echoed our FIN → finish their side
                                 let finack2 = protocol::encode_finack2(mine);
                                 let _ = rx_sock.send(finack2.as_bytes());
-                                log_ev!(
-                                    &tx,
+                                sink_log!(
+                                    &logger,
                                     LogLevel::Debug,
                                     "[CLOSE] recv FIN-ACK ok → send FIN-ACK2({mine:016x})"
                                 );
@@ -237,7 +240,11 @@ impl Session {
                                 let _ = tx.send(EngineEvent::Closing { graceful: true });
                                 let _ = tx.send(EngineEvent::Closed);
                                 stop_rtp_session(&rtp_session_handle, &rtp_media_tx);
-                                log_ev!(&tx, LogLevel::Info, "[CLOSE] graceful close complete",);
+                                sink_log!(
+                                    &logger,
+                                    LogLevel::Info,
+                                    "[CLOSE] graceful close complete",
+                                );
                             }
                         }
                         AppMsg::Other(pkt) => {
@@ -257,7 +264,7 @@ impl Session {
                         if e.kind() == std::io::ErrorKind::WouldBlock
                             || e.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(e) => {
-                        log_ev!(&tx, LogLevel::Error, "recv error: {e}");
+                        sink_log!(&logger, LogLevel::Error, "recv error: {e}");
                         let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
                         break;
                     }
@@ -271,12 +278,13 @@ impl Session {
         let hs_sock = Arc::clone(&self.sock);
         let hs_peer_tok = Arc::clone(&self.token_peer);
         let tx2 = self.tx_evt.clone();
+        let logger2 = self.logger.clone();
         let cfg = self.cfg;
         let local_token2 = self.token_local;
 
         thread::spawn(move || {
-            log_ev!(
-                &tx2,
+            sink_log!(
+                &logger2,
                 LogLevel::Debug,
                 " [HS] start (local={local_token2:016x})"
             );
@@ -292,7 +300,7 @@ impl Session {
                     let syn = protocol::encode_syn(local_token2);
                     let _ = hs_sock.send(syn.as_bytes());
 
-                    log_ev!(&tx2, LogLevel::Debug, "[HS] send SYN");
+                    sink_log!(&logger2, LogLevel::Debug, "[HS] send SYN");
 
                     let their = hs_peer_tok.load(Ordering::SeqCst);
                     if their != 0 {
@@ -301,13 +309,13 @@ impl Session {
                         let _ = hs_sock.send(synack.as_bytes());
                         let _ = hs_sock.send(ack.as_bytes());
 
-                        log_ev!(&tx2, LogLevel::Debug, "[HS] send SYN-ACK + ACK");
+                        sink_log!(&logger2, LogLevel::Debug, "[HS] send SYN-ACK + ACK");
                     }
                     last_tx = Instant::now();
                 }
                 thread::sleep(Duration::from_millis(40));
             }
-            log_ev!(&tx2, LogLevel::Debug, "[HS] driver done");
+            sink_log!(&logger2, LogLevel::Debug, "[HS] driver done");
         });
     }
 
@@ -327,6 +335,7 @@ impl Session {
         let close_done = Arc::clone(&self.close_done);
         let peer_tok = Arc::clone(&self.token_peer);
         let tx = self.tx_evt.clone();
+        let logger = self.logger.clone();
         let sock = Arc::clone(&self.sock);
         let cfg = self.cfg;
         let local_tok = self.token_local;
@@ -334,8 +343,8 @@ impl Session {
         stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
 
         thread::spawn(move || {
-            log_ev!(
-                &tx,
+            sink_log!(
+                &logger,
                 LogLevel::Debug,
                 "[CLOSE] driver start (local={local_tok:016x})"
             );
@@ -344,19 +353,19 @@ impl Session {
 
             while io_flag.load(Ordering::SeqCst) && !close_done.load(Ordering::SeqCst) {
                 if started_at.elapsed() >= cfg.close_timeout {
-                    log_ev!(&tx, LogLevel::Debug, "[CLOSE] timeout → forcing stop");
+                    sink_log!(&logger, LogLevel::Debug, "[CLOSE] timeout → forcing stop");
                     break;
                 }
                 if last_tx.elapsed() >= cfg.close_resend_every {
                     let fin = protocol::encode_fin(local_tok);
                     let _ = sock.send(fin.as_bytes());
 
-                    log_ev!(&tx, LogLevel::Debug, "[CLOSE] send FIN");
+                    sink_log!(&logger, LogLevel::Debug, "[CLOSE] send FIN");
                     let their = peer_tok.load(Ordering::SeqCst);
                     if their != 0 {
                         let finack = protocol::encode_finack(their, local_tok);
                         let _ = sock.send(finack.as_bytes());
-                        log_ev!(&tx, LogLevel::Debug, "[CLOSE] send FIN-ACK");
+                        sink_log!(&logger, LogLevel::Debug, "[CLOSE] send FIN-ACK");
                     }
                     last_tx = Instant::now();
                 }
@@ -364,7 +373,7 @@ impl Session {
             }
             // stop all
             io_flag.store(false, Ordering::SeqCst);
-            log_ev!(&tx, LogLevel::Debug, "[CLOSE] driver done");
+            sink_log!(&logger, LogLevel::Debug, "[CLOSE] driver done");
             let _ = tx.send(EngineEvent::Closed);
         });
     }
