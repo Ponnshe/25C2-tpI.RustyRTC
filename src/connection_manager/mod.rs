@@ -1,3 +1,4 @@
+pub mod config;
 pub mod connection_manager;
 pub mod ice_phase;
 pub mod outbound_sdp;
