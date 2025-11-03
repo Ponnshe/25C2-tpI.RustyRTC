@@ -26,7 +26,7 @@ const MIN_PRIORITY_THRESHOLD: u64 = 1; // pairs below this value are ignored
 
 /// Helper to format error messages consistently
 fn error_message(msg: &str) -> String {
-    format!("{}{}{}{}{}", ERROR_MSG, WHITESPACE, QUOTE, msg, QUOTE)
+    format!("{ERROR_MSG}{WHITESPACE}{QUOTE}{msg}{QUOTE}")
 }
 
 ///Role for an agent
@@ -58,6 +58,7 @@ pub struct IceAgent {
 }
 
 impl IceAgent {
+    #[must_use]
     /// Create a valid ice agent.
     ///
     /// # Arguments
@@ -67,7 +68,7 @@ impl IceAgent {
     /// A new ice agent.
     /// Default used by unit tests: no-op logging.
     pub fn new(role: IceRole) -> Self {
-        Self::with_logger(role, Arc::new(NoopLogSink::default()))
+        Self::with_logger(role, Arc::new(NoopLogSink))
     }
     /// Production/integration: inject your real logger (or a test logger).
     pub fn with_logger(role: IceRole, logger: Arc<dyn LogSink>) -> Self {
@@ -94,12 +95,11 @@ impl IceAgent {
     /// 3. Sends a test message "BINDING-DATA hello ICE".
     /// 4. Waits for a "BINDING-ACK" response.
     ///
-    /// #Returns
+    /// # Returns
     /// Ok(()) - sucessful message if all the flow was correct
     ///
-    /// #Error
+    /// # Errors
     /// Err(String) - If any error occurs in any of the steps
-
     pub fn start_data_channel(&mut self) -> Result<(), String> {
         sink_info!(self.logger, "🔹 Starting ICE data channel...");
 
@@ -109,25 +109,24 @@ impl IceAgent {
 
         let (socket, remote_addr) = self
             .get_data_channel_socket()
-            .map_err(|e| format!("Failed to open UDP channel: {}", e))?;
+            .map_err(|e| format!("Failed to open UDP channel: {e}"))?;
 
         socket
             .connect(remote_addr)
-            .map_err(|e| format!("Failed to connect UDP channel: {}", e))?;
+            .map_err(|e| format!("Failed to connect UDP channel: {e}"))?;
 
-        self.send_test_message(&*socket, "hola ICE")
-            .map_err(|e| format!("Failed to send test message: {}", e))?;
+        self.send_test_message(&socket, "hola ICE")
+            .map_err(|e| format!("Failed to send test message: {e}"))?;
 
-        match self.receive_test_message(&*socket) {
+        match self.receive_test_message(&socket) {
             Ok(msg) if msg.contains("BINDING-ACK") => {
                 sink_info!(self.logger, "ICE Data Channel established successfully!");
                 Ok(())
             }
             Ok(msg) => Err(format!(
-                "Unexpected message received instead of ACK: {}",
-                msg
+                "Unexpected message received instead of ACK: {msg}"
             )),
-            Err(e) => Err(format!("Failed to receive ACK: {}", e)),
+            Err(e) => Err(format!("Failed to receive ACK: {e}")),
         }
     }
 
@@ -140,20 +139,17 @@ impl IceAgent {
     /// # Returns
     /// * `Ok(())` if the message was sent successfully.
     ///
-    /// #Error
+    /// # Errors
     /// * `Err(String)` if there was no nominated pair or sending failed.
     pub fn send_test_message(&self, socket: &UdpSocket, msg: &str) -> Result<(), String> {
-        let pair = match &self.nominated_pair {
-            Some(p) => p,
-            None => {
+        let Some(pair) = &self.nominated_pair else {
                 return Err(String::from(
                     "Cannot send message: no nominated pair available",
                 ));
-            }
         };
 
         let remote_addr = pair.remote.address;
-        let payload = format!("BINDING-DATA {}", msg);
+        let payload = format!("BINDING-DATA {msg}");
 
         match socket.send_to(payload.as_bytes(), remote_addr) {
             Ok(sent) => {
@@ -167,11 +163,11 @@ impl IceAgent {
                 Ok(())
             }
             Err(e) => Err(format!(
-                "Failed to send UDP message to {}: {}",
-                remote_addr, e
+                "Failed to send UDP message to {remote_addr}: {e}"
             )),
         }
     }
+
     /// Waits for a response message ("BINDING-ACK") from the remote peer.
     ///
     /// # Arguments
@@ -180,12 +176,12 @@ impl IceAgent {
     /// # Returns
     /// * `Ok(String)` - The received message.
     ///
-    /// # Error
+    /// # Errors
     /// * `Err(String)` - Timeout or read error.
     pub fn receive_test_message(&self, socket: &UdpSocket) -> Result<String, String> {
         socket
             .set_read_timeout(Some(Duration::from_secs(1)))
-            .map_err(|e| format!("Failed to set timeout: {}", e))?;
+            .map_err(|e| format!("Failed to set timeout: {e}"))?;
 
         let mut buf = [0u8; 512];
         match socket.recv_from(&mut buf) {
@@ -201,8 +197,7 @@ impl IceAgent {
                     e
                 );
                 Err(format!(
-                    "Timeout or error while receiving UDP message: {}",
-                    e
+                    "Timeout or error while receiving UDP message: {e}"
                 ))
             }
         }
@@ -215,7 +210,7 @@ impl IceAgent {
     /// # Returns
     /// * `Ok(Arc<UdpSocket>)` — A clone of the socket Arc from the nominated local candidate.
     ///
-    /// # Error
+    /// # Errors
     /// * `Err(String)` — If no nominated pair exists, the pair is not 'Succeeded', or the local candidate lacks a socket.
     // in impl IceAgent
     pub fn get_data_channel_socket(&self) -> Result<(Arc<UdpSocket>, SocketAddr), String> {
@@ -321,25 +316,22 @@ impl IceAgent {
             .into_iter()
             .max_by_key(|&i| self.candidate_pairs[i].priority);
 
-        match best_index {
-            Some(idx) => {
-                let pair = &mut self.candidate_pairs[idx];
-                pair.is_nominated = true;
+        if let Some(idx) = best_index {
+            let pair = &mut self.candidate_pairs[idx];
+            pair.is_nominated = true;
 
-                self.nominated_pair = Some(CandidatePair {
-                    local: pair.local.clone_light(),
-                    remote: pair.remote.clone_light(),
-                    priority: pair.priority,
-                    state: pair.state.clone(),
-                    is_nominated: true,
-                });
+            self.nominated_pair = Some(CandidatePair {
+                local: pair.local.clone_light(),
+                remote: pair.remote.clone_light(),
+                priority: pair.priority,
+                state: pair.state,
+                is_nominated: true,
+            });
 
-                self.candidate_pairs.get(idx)
-            }
-            None => {
-                sink_error!(self.logger, "Could not determine nominated pair index.");
-                None
-            }
+            self.candidate_pairs.get(idx)
+        }else{
+            sink_error!(self.logger, "Could not determine nominated pair index.");
+            None
         }
     }
     pub fn add_local_candidate(&mut self, candidate: Candidate) {
@@ -350,7 +342,20 @@ impl IceAgent {
         self.remote_candidates.push(candidate);
     }
 
-    /// Collects local candidates. This feature will be asynchronous in a future implementation.
+    /// Gathers local ICE candidates and adds them to the agent.
+    ///
+    /// This method collects the local host candidates available on the system and
+    /// registers them in the agent's local candidate list. Currently synchronous,
+    /// but will be asynchronous in the future.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(&Vec<Candidate>)` - Reference to the updated list of local candidates.
+    ///
+    /// # Errors
+    ///
+    /// * Returns an `Error` if candidate gathering fails. Currently, this is a placeholder
+    ///   for future scenarios where gathering may fail asynchronously or due to network/system issues.
     pub fn gather_candidates(&mut self) -> Result<&Vec<Candidate>, Error> {
         let candidates = gather_host_candidates();
         for c in candidates {
@@ -377,11 +382,11 @@ impl IceAgent {
     pub fn form_candidate_pairs(&mut self) -> usize {
         let mut pairs = Vec::new();
 
-        for local in self.local_candidates.iter() {
+        for local in &self.local_candidates {
             if pairs.len() >= MAX_PAIR_LIMIT {
                 break;
             }
-            for remote in self.remote_candidates.iter() {
+            for remote in &self.remote_candidates {
                 let priority = CandidatePair::calculate_pair_priority(local, remote, &self.role);
 
                 if local.address.is_ipv4() != remote.address.is_ipv4() {
@@ -441,10 +446,10 @@ impl IceAgent {
 
     /// Inicia los 'connectivity checks' para todos los pares en estado 'Waiting'.
     /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
-    /// Cambia el estado de los pares a 'InProgress'.
+    /// Cambia el estado de los pares a `InProgress`.
     pub fn start_checks(&mut self) {
         sink_info!(self.logger, "ICE: Starting connectivity checks...");
-        for pair in self.candidate_pairs.iter_mut() {
+        for pair in &mut self.candidate_pairs {
             if !matches!(pair.state, CandidatePairState::Waiting) {
                 continue;
             }
@@ -474,12 +479,12 @@ impl IceAgent {
         }
     }
 
-    /// Maneja un paquete UDP entrante recibido por el ConnectionManager.
+    /// Maneja un paquete UDP entrante recibido por el `ConnectionManager`.
     /// Esta función es el corazón del ICE reactivo.
     ///
     /// # Arguments
     /// * `packet` - Los bytes del paquete recibido.
-    /// * `from_addr` - El SocketAddr de donde vino el paquete.
+    /// * `from_addr` - El `SocketAddr` de donde vino el paquete.
     pub fn handle_incoming_packet(&mut self, packet: &[u8], from_addr: SocketAddr) {
         let Some(pair) = self
             .candidate_pairs

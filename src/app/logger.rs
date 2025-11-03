@@ -133,8 +133,8 @@ impl Logger {
     /// This error means the message was **dropped** — no retry is performed.
     ///
     /// # Examples
-    /// ```
-    /// use crate::logger::{Logger, LogLevel};
+    /// ```ignore
+    /// use rustyrtc::app::logger::{Logger, LogLevel};
     ///
     /// let logger = Logger::start_in_dir("logs", "app", 100, 10, 1);
     /// let _ = logger.try_log(LogLevel::Info, "Background task started");

@@ -24,6 +24,7 @@ const DISCOVERY_TARGET_PORT: u16 = 80;
 const DEFAULT_COMPONENT_ID: u8 = 1; // RTP/Data, good enough for mock
 const TRANSPORT_UDP: &str = "udp"; // lowercase is safer across stacks
 
+#[must_use]
 /// Gathers a single IPv4 host candidate for the primary egress interface.
 /// (No deps, robust enough for LAN tests.)
 ///
@@ -36,7 +37,7 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
     let local_ip = match discover_local_ipv4() {
         Ok(ip) => ip,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             return out;
         }
     };
@@ -52,7 +53,7 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
             ));
         }
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             return out;
         }
     }
@@ -67,7 +68,7 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
 
 /// Format error messages
 fn error_message(msg: &str) -> String {
-    format!("{}{}{}{}{}", ERROR_MSG, WHITESPACE, QUOTE, msg, QUOTE)
+    format!("{ERROR_MSG}{WHITESPACE}{QUOTE}{msg}{QUOTE}")
 }
 
 /// Discover the primary IPv4 local IP using a temporary socket.
@@ -104,24 +105,26 @@ fn create_main_socket(local_ip: IpAddr) -> Result<(SocketAddr, UdpSocket), Strin
 
 //loopback for same-host demos only
 fn gather_loopback_candidate() -> Option<Candidate> {
-    match UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)) {
-        Ok(loop_sock) => match loop_sock.local_addr() {
-            Ok(loop_addr) => Some(Candidate::host(
-                loop_addr,
-                TRANSPORT_UDP,
-                DEFAULT_COMPONENT_ID,
-                Some(Arc::new(loop_sock)),
-            )),
-            Err(_) => {
-                eprintln!("{}", error_message(GET_SOCKET_LOOPBACK_ERROR));
-                None
-            }
-        },
-        Err(_) => {
+    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .map_err(|_| {
             eprintln!("{}", error_message(BINDING_SOCKET_LOOPBACK_ERROR));
-            None
-        }
-    }
+        })
+        .and_then(|loop_sock| {
+            loop_sock
+                .local_addr()
+                .map_err(|_| {
+                    eprintln!("{}", error_message(GET_SOCKET_LOOPBACK_ERROR));
+                })
+                .map(|loop_addr| {
+                    Candidate::host(
+                        loop_addr,
+                        TRANSPORT_UDP,
+                        DEFAULT_COMPONENT_ID,
+                        Some(Arc::new(loop_sock)),
+                    )
+                })
+        })
+        .ok()
 }
 
 #[cfg(test)]

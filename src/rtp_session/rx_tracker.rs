@@ -37,14 +37,10 @@ impl RxTracker {
         // Jitter
         let transit = arrival_rtp_units.wrapping_sub(rtp_ts);
         if let Some(prev) = self.last_transit {
-            let d_abs = if transit >= prev {
-                transit - prev
-            } else {
-                prev - transit
-            };
+            let d_abs = transit.abs_diff(prev);
             self.jitter = self
                 .jitter
-                .wrapping_add(((d_abs as u64).saturating_sub(self.jitter as u64) / 16) as u32);
+                .wrapping_add(((u64::from(d_abs)).saturating_sub(u64::from(self.jitter)) / 16) as u32);
         }
         self.last_transit = Some(transit);
     }
@@ -55,11 +51,11 @@ impl RxTracker {
         self.last_sr_arrival_compact = Some(ntp_compact(now_ntp.0, now_ntp.1));
     }
 
-    /// Build one RTCP ReportBlock for this remote SSRC (consumes interval deltas).
+    /// Build one RTCP `ReportBlock` for this remote SSRC (consumes interval deltas).
     pub fn build_report_block(&mut self, ssrc: u32) -> ReportBlock {
         let base = self.base_ext_seq.unwrap_or(0);
         let expected_total = self.highest_ext_seq.saturating_sub(base) + 1;
-        let cumulative_lost_i64 = expected_total as i64 - self.received_unique as i64;
+        let cumulative_lost_i64 = i64::from(expected_total) - i64::from(self.received_unique);
 
         // Interval deltas → fraction_lost
         let exp_delta = expected_total.saturating_sub(self.expected_prev);
@@ -97,7 +93,7 @@ impl RxTracker {
 }
 
 // --- small NTP helpers (compact 32-bit) ---
-fn ntp_compact(secs: u32, frac: u32) -> u32 {
+const fn ntp_compact(secs: u32, frac: u32) -> u32 {
     ((secs & 0xFFFF) << 16) | (frac >> 16)
 }
 fn now_ntp_compact() -> u32 {

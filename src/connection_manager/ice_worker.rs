@@ -18,6 +18,7 @@ pub struct IceWorker {
 }
 
 impl IceWorker {
+    #[must_use]
     pub fn spawn(agent: &IceAgent) -> Self {
         let run = Arc::new(AtomicBool::new(true));
         let (tx, rx) = mpsc::channel();
@@ -32,16 +33,15 @@ impl IceWorker {
         // Snapshot send targets per socket index
         let mut targets_per_sock: Vec<Vec<SocketAddr>> = vec![Vec::new(); sockets.len()];
         for pair in &agent.candidate_pairs {
-            if let Some(ls) = &pair.local.socket {
-                if let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
+            if let Some(ls) = &pair.local.socket && 
+                let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
                     targets_per_sock[idx].push(pair.remote.address);
-                }
             }
         }
 
         let run2 = Arc::clone(&run);
         let handle = thread::spawn(move || {
-            let _ = sockets.iter().for_each(|s| {
+            let () = sockets.iter().for_each(|s| {
                 let _ = s.set_nonblocking(true);
             });
             let mut buf = [0u8; 1500];
@@ -86,6 +86,7 @@ impl IceWorker {
         }
     }
 
+    #[must_use]
     pub fn try_recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
         self.rx.try_recv().ok()
     }

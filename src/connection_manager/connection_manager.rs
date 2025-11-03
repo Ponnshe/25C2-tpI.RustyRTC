@@ -3,7 +3,15 @@ use super::{
     outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
 use crate::app::log_sink::LogSink;
-use crate::connection_manager::config::*;
+use crate::connection_manager::config::{
+    DEFAULT_PORT,
+    DEFAULT_FMT,
+    DEFAULT_NET_TYPE,
+    DEFAULT_PROTO,
+    DEFAULT_ADDR_TYPE,
+    DEFAULT_CONN_ADDR,
+    DEFAULT_MEDIA_KIND,
+};
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::ice::{
@@ -88,7 +96,7 @@ impl ConnectionManager {
     pub fn negotiate(&mut self) -> Result<OutboundSdp, ConnectionError> {
         match self.signaling {
             SignalingState::Stable => {
-                let offer = self.build_local_sdp()?;
+                let offer = self.build_local_sdp();
                 self.local_description = Some(offer.clone());
                 self.signaling = SignalingState::HaveLocalOffer;
                 self.set_ice_role_from_signaling(true, false);
@@ -122,7 +130,7 @@ impl ConnectionManager {
                 self.remote_description = Some(sdp);
                 self.signaling = SignalingState::HaveRemoteOffer;
 
-                let answer = self.build_local_sdp()?;
+                let answer = self.build_local_sdp();
                 self.local_description = Some(answer.clone());
                 self.set_ice_role_from_signaling(false, remote_is_ice_lite);
 
@@ -206,9 +214,9 @@ impl ConnectionManager {
     // ----------------- Internal helpers -----------------
 
     /// Constructs a local SDP description (offer or answer) based on current local codecs and ICE info.
-    fn build_local_sdp(&mut self) -> Result<Sdp, ConnectionError> {
-        let media: Vec<SDPMedia> = vec![self.build_media_description()?];
-        Ok(Sdp::new(
+    fn build_local_sdp(&mut self) -> Sdp {
+        let media: Vec<SDPMedia> = vec![self.build_media_description()];
+        Sdp::new(
             0,
             SDPOrigin::new_blank(),
             "demo_session".to_owned(),
@@ -218,7 +226,7 @@ impl ConnectionManager {
             Vec::new(),
             media,
             Vec::new(),
-        ))
+        )
     }
 
     /// Drops local offer and resets signaling state to `Stable`.
@@ -360,11 +368,11 @@ impl ConnectionManager {
     pub const fn remote_codecs(&self) -> &Vec<RtpCodec> { &self.remote_codecs }
 
     /// Builds a media description SDP with ICE candidates, codecs, and connection info.
-    fn build_media_description(&mut self) -> Result<SDPMedia, ConnectionError> {
+    fn build_media_description(&mut self) -> SDPMedia {
         let mut media_desc = SDPMedia::new_blank();
         media_desc.set_kind(DEFAULT_MEDIA_KIND);
         media_desc.set_port(SDPPortSpec::new(DEFAULT_PORT, None));
-        media_desc.set_proto(DEAFULT_PROTO);
+        media_desc.set_proto(DEFAULT_PROTO);
 
         let formats = if self.local_codecs.is_empty() {
             vec![DEFAULT_FMT.to_owned()]
@@ -395,7 +403,7 @@ impl ConnectionManager {
 
         attrs.push(SDPAttribute::new("rtcp-mux", None));
         media_desc.set_attrs(attrs);
-        Ok(media_desc)
+        media_desc
     }
 }
 

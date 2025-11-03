@@ -117,8 +117,8 @@ impl CameraManager {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use your_crate::camera_manager::CameraManager;
+    /// ```ignore
+    /// # use rusty_rtc::camera_manager::CameraManager;
     /// # let camera = CameraManager::new(0).unwrap();
     /// println!("Camera width: {}", camera.width());
     /// ```

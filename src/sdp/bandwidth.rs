@@ -34,6 +34,7 @@ impl Bandwidth {
     /// Default values:
     /// - `bwtype` = `"AS"`
     /// - `bandwidth` = `0`
+    #[must_use]
     pub fn new_blank() -> Self {
         Self {
             bwtype: "AS".to_string(),
@@ -43,11 +44,13 @@ impl Bandwidth {
 
     // --- GETTERS ---
     /// Returns the bandwidth type.
+    #[must_use]
     pub fn bwtype(&self) -> &str {
         &self.bwtype
     }
 
     /// Returns the bandwidth value in kbps.
+    #[must_use]
     pub const fn bandwidth(&self) -> u64 {
         self.bandwidth
     }

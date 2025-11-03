@@ -10,7 +10,8 @@ pub struct ICEAndSDP {
 }
 
 impl ICEAndSDP {
-    pub fn new(candidate: Candidate) -> Self {
+    #[must_use]
+    pub const fn new(candidate: Candidate) -> Self {
         Self { candidate }
     }
 
@@ -27,6 +28,7 @@ impl ICEAndSDP {
         }
     }
 
+    #[must_use]
     pub fn candidate(self) -> Candidate {
         self.candidate
     }
@@ -57,7 +59,7 @@ impl fmt::Display for ICEAndSDP {
         )?;
 
         if let Some(s) = rel {
-            write!(f, " {}", s)?;
+            write!(f, " {s}")?;
         }
 
         Ok(())

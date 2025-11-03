@@ -12,7 +12,7 @@ const PRIORITY_DOUBLE_MULTIPLIER: u64 = 2;
 const TIE_BREAK_FLAG_ONE: u64 = 1;
 const TIE_BREAK_FLAG_ZERO: u64 = 0;
 
-/// Represents the ICE connectivity check state for a CandidatePair.
+/// Represents the ICE connectivity check state for a `CandidatePair`.
 /// (RFC 8445 §6.1.2.5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidatePairState {
@@ -47,8 +47,9 @@ pub struct CandidatePair {
 /// # Return
 /// A new candidates pair.
 impl CandidatePair {
-    pub fn new(local: Candidate, remote: Candidate, priority: u64) -> Self {
-        CandidatePair {
+    #[must_use]
+    pub const fn new(local: Candidate, remote: Candidate, priority: u64) -> Self {
+        Self{
             local,
             remote,
             priority,
@@ -58,17 +59,19 @@ impl CandidatePair {
         }
     }
 
+    #[must_use]
     /// Lightweight clone: copies metadata but drops socket references.
     pub fn clone_light(&self) -> Self {
-        CandidatePair {
+        Self{
             local: self.local.clone_light(),
             remote: self.remote.clone_light(),
             priority: self.priority,
-            state: self.state.clone(),
+            state: self.state,
             is_nominated: self.is_nominated,
         }
     }
 
+    #[must_use]
     /// Calculates the priority for a candidate pair according to RFC 8445 §6.1.2.3.
     ///
     /// # Arguments
@@ -81,8 +84,8 @@ impl CandidatePair {
     pub fn calculate_pair_priority(local: &Candidate, remote: &Candidate, role: &IceRole) -> u64 {
         // Determine which candidate's priority is G (controlling) and which is D (controlled)
         let (g, d) = match role {
-            IceRole::Controlling => (local.priority as u64, remote.priority as u64),
-            IceRole::Controlled => (remote.priority as u64, local.priority as u64),
+            IceRole::Controlling => (u64::from(local.priority), u64::from(remote.priority)),
+            IceRole::Controlled => (u64::from(remote.priority), u64::from(local.priority)),
         };
 
         let min_val = g.min(d);
@@ -118,6 +121,7 @@ impl CandidatePair {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::ice::type_ice::candidate_type::CandidateType;
     use crate::ice::type_ice::ice_agent::IceRole;
@@ -175,7 +179,7 @@ mod tests {
             CandidatePair::calculate_pair_priority(&local, &remote, &IceRole::Controlled);
 
         assert!(
-            (prio_controlling as i128 - prio_controlled as i128).abs() <= 1,
+            (i128::from(prio_controlling) - i128::from(prio_controlled)).abs() <= 1,
             "{EXPECTED_ERROR_MSG}"
         );
     }
@@ -191,7 +195,7 @@ mod tests {
 
         let prio = CandidatePair::calculate_pair_priority(&local, &remote, &IceRole::Controlling);
         assert!(prio > 0, "{EXPECTED_ERROR_MSG1}");
-        assert!(prio <= u64::MAX, "{EXPECTED_ERROR_MSG2}");
+        assert!(prio > 0, "{EXPECTED_ERROR_MSG2}");
     }
 
     #[test]

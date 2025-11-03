@@ -47,6 +47,7 @@ impl Connection {
     /// - `connection_address` = `"127.0.0.1"`
     ///
     /// Useful as a placeholder for tests or quick initialization.
+    #[must_use]
     pub fn new_blank() -> Self {
         Self {
             net_type: "IN".to_string(),
@@ -58,16 +59,19 @@ impl Connection {
     // --- GETTERS ---
 
     /// Returns a reference to the network type.
+    #[must_use]
     pub fn net_type(&self) -> &str {
         &self.net_type
     }
 
     /// Returns a reference to the address type.
+    #[must_use]
     pub const fn addr_type(&self) -> &AddrType {
         &self.addr_type
     }
 
     /// Returns a reference to the connection address.
+    #[must_use]
     pub fn connection_address(&self) -> &str {
         &self.conn_address
     }
