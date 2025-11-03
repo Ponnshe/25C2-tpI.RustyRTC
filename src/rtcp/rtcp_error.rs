@@ -1,0 +1,38 @@
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RtcpError {
+    TooShort,
+    BadVersion(u8),
+    LengthMismatch,
+    PaddingTooShort,
+    UnknownPacketType(u8),
+    Truncated,
+    Invalid,
+    SdesItemTooShort,
+    SdesItemTooLong,
+    TooManyReportBlocks(usize),
+    TooManySdesItems(usize),
+    TooManyByeSources(usize),
+}
+
+impl fmt::Display for RtcpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use RtcpError::*;
+        match self {
+            TooShort => write!(f, "buffer too short"),
+            BadVersion(v) => write!(f, "bad RTCP version: {v}"),
+            LengthMismatch => write!(f, "rendered length does not match header length"),
+            PaddingTooShort => write!(f, "Padding too short"),
+            UnknownPacketType(pt) => write!(f, "unknown RTCP packet type: {pt}"),
+            Truncated => write!(f, "truncated RTCP structure"),
+            Invalid => write!(f, "invalid RTCP packet"),
+            SdesItemTooShort => write!(f, "SDES item too short"),
+            SdesItemTooLong => write!(f, "SDES item too long"),
+            TooManyReportBlocks(u) => write!(f, "Report Blocks Limit Exceeded: {u}"),
+            TooManySdesItems(u) => write!(f, "Sdes Items Limit Exceeded: {u}"),
+            TooManyByeSources(u) => write!(f, "Bye Sources Limit Exceeded: {u}"),
+        }
+    }
+}
+impl std::error::Error for RtcpError {}

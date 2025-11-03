@@ -1,0 +1,5 @@
+v=0
+o=dave 1111 2222 IN IP4 127.0.0.1
+s=Bad Connection
+t=0 0
+c=IN IP4   ; faltan argumentos
