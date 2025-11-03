@@ -4,7 +4,7 @@ use crate::core::events::{EngineEvent, RtpIn};
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
-use crate::{log_ev, sink_log};
+use crate::sink_log;
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
 use std::sync::Arc;

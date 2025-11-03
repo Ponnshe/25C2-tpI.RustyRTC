@@ -1,13 +1,13 @@
-//! Simple, leveled logging macros for both EngineEvent and direct Logger usage.
+//! Simple, leveled logging macros for both `EngineEvent` and direct Logger usage.
 
 /// ----- Common imports these macros expect -----
-/// - crate::app::log_level::{LogLevel, LogMsg}
-/// - crate::media_agent::utils::now_millis
-/// - crate::core::events::EngineEvent::Log
+/// - `crate::app::log_level::`{`LogLevel`, `LogMsg`}
+/// - `crate::media_agent::utils::now_millis`
+/// - `crate::core::events::EngineEvent::Log`
 ///
-/// Make sure EngineEvent::Log carries a LogMsg.
+/// Make sure `EngineEvent::Log` carries a `LogMsg`.
 
-/// Generic event macro (leveled) — sends EngineEvent::Log(LogMsg) via a Sender<EngineEvent>.
+/// Generic event macro (leveled) — sends `EngineEvent::Log(LogMsg)` via a `Sender<EngineEvent>`.
 #[macro_export]
 macro_rules! log_ev {
     ($tx:expr, $lvl:expr, $($arg:tt)*) => {{
@@ -24,7 +24,7 @@ macro_rules! log_ev {
     }};
 }
 /// Direct logging via anything that implements `LogSink`
-/// (e.g., Arc<dyn LogSink>, LoggerHandle, NoopLogSink, TestLogSink).
+/// (e.g., Arc<dyn LogSink>, `LoggerHandle`, `NoopLogSink`, `TestLogSink`).
 #[macro_export]
 macro_rules! sink_log {
     ($sink:expr, $lvl:expr, $($arg:tt)*) => {{
@@ -46,7 +46,7 @@ macro_rules! sink_warn  { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink
 #[macro_export]
 macro_rules! sink_error { ($sink:expr, $($arg:tt)*) => { $crate::sink_log!($sink, crate::app::log_level::LogLevel::Error, $($arg)*); } }
 
-/// Shorthands for common levels via EngineEvent
+/// Shorthands for common levels via `EngineEvent`
 #[macro_export]
 macro_rules! log_trace_ev { ($tx:expr, $($arg:tt)*) => { $crate::log_ev!($tx, crate::app::log_level::LogLevel::Trace, $($arg)*); } }
 #[macro_export]
@@ -59,7 +59,6 @@ macro_rules! log_warn_ev  { ($tx:expr, $($arg:tt)*) => { $crate::log_ev!($tx, cr
 macro_rules! log_error_ev { ($tx:expr, $($arg:tt)*) => { $crate::log_ev!($tx, crate::app::log_level::LogLevel::Error, $($arg)*); } }
 
 /// UI/background logging macro that calls `self.background_log(level, String)`
-/// so you keep central drop-accounting and UI sampling in one place.
 /// Requires an &mut self with method `background_log(LogLevel, impl Into<String>)`.
 #[macro_export]
 macro_rules! bg_log {

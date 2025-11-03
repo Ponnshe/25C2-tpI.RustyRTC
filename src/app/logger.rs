@@ -2,7 +2,7 @@ use crate::app::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHand
 
 use std::{
     fs::{self, OpenOptions},
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::mpsc::{self, TrySendError},
     thread,
@@ -14,9 +14,9 @@ use std::{
 pub struct Logger {
     handle: LoggerHandle,
     ui_log_rx: std::sync::mpsc::Receiver<String>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    _thread: Option<std::thread::JoinHandle<()>>,
     file_path: std::path::PathBuf,
-    sample_every: u32,
+    _sample_every: u32,
 }
 
 impl Logger {
@@ -40,36 +40,44 @@ impl Logger {
         let dir = dir.as_ref().to_path_buf();
         let _ = fs::create_dir_all(&dir);
 
+        // Avoid potential modulo-by-zero later.
+        let _sample_every = sample_every.max(1);
+
         let fname = format!(
             "{}-{}-pid{}.log",
             app_name,
             timestamp_for_filename(), // e.g., 20251102_023045
             std::process::id()
         );
-        let file_path = dir.join(fname);
+        let file_path = dir.join(&fname);
 
         let (tx, rx) = mpsc::sync_channel::<LogMsg>(cap);
         let (ui_tx, ui_rx) = mpsc::sync_channel::<String>(ui_cap);
-        let handle_for_field = LoggerHandle { tx: tx.clone() };
+
+        // No redundant clone: consume `tx` into the handle (we don't use `tx` afterwards).
+        let handle_for_field = LoggerHandle { tx };
+
         let file_path_clone = file_path.clone();
 
-        let thread = thread::Builder::new()
+        let _thread = thread::Builder::new()
             .name("logger-worker".into())
             .spawn(move || {
-                // open file (append, create), buffered writes
-                let file = OpenOptions::new()
+                // Try target file -> temp file -> sink (never panic).
+                let writer: Box<dyn Write + Send> = if let Ok(f) = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&file_path_clone)
-                    .unwrap_or_else(|_| {
-                        // Last resort: create in current dir
-                        OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("roomrtc-fallback.log")
-                            .expect("create fallback log")
-                    });
-                let mut out = BufWriter::new(file);
+                {
+                    Box::new(f)
+                } else {
+                    let fallback = std::env::temp_dir().join("roomrtc-fallback.log");
+                    match OpenOptions::new().create(true).append(true).open(&fallback) {
+                        Ok(f) => Box::new(f),
+                        Err(_) => Box::new(io::sink()),
+                    }
+                };
+
+                let mut out: BufWriter<Box<dyn Write + Send>> = BufWriter::new(writer);
 
                 let mut n: u32 = 0;
                 let mut dropped_to_ui: usize = 0;
@@ -79,7 +87,7 @@ impl Logger {
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);
-                        n.is_multiple_of(sample_every)
+                        n % sample_every == 0
                     };
 
                     if forward
@@ -105,9 +113,9 @@ impl Logger {
         Self {
             handle: handle_for_field,
             ui_log_rx: ui_rx,
-            thread,
+            _thread,
             file_path,
-            sample_every,
+            _sample_every,
         }
     }
 
@@ -137,7 +145,7 @@ impl Logger {
     /// use rustyrtc::app::logger::{Logger, LogLevel};
     ///
     /// let logger = Logger::start_in_dir("logs", "app", 100, 10, 1);
-    /// let _ = logger.try_log(LogLevel::Info, "Background task started");
+    /// let _ = logger.try_log(LogLevel::Info, "Background task started", module_path!());
     /// ```
     ///
     /// # See also
@@ -154,20 +162,19 @@ impl Logger {
     ) -> Result<(), TrySendError<LogMsg>> {
         self.handle.try_log(level, text, target)
     }
+
     /// Give modules a cloneable sink they can keep.
     #[must_use]
     pub fn handle(&self) -> LoggerHandle {
         self.handle.clone()
     }
 
-    #[must_use]
     /// Pull one sampled UI line (if any).
     #[must_use]
     pub fn try_recv_ui(&self) -> Option<String> {
         self.ui_log_rx.try_recv().ok()
     }
 
-    #[must_use]
     /// Optional: expose the chosen file path (nice for debugging).
     #[must_use]
     pub fn file_path(&self) -> &Path {
@@ -191,13 +198,15 @@ fn timestamp_for_filename() -> String {
         .unwrap_or_default()
         .as_secs();
 
-    match unix_to_utc(secs) {
-        Ok(tm) => format!(
-            "{:04}{:02}{:02}_{:02}{:02}{:02}",
-            tm.year, tm.mon, tm.day, tm.hour, tm.min, tm.sec
-        ),
-        Err(_) => format!("unix_{secs}"), // graceful fallback, never panics
-    }
+    unix_to_utc(secs).map_or_else(
+        |_| format!("unix_{secs}"), // graceful fallback, never panics
+        |tm| {
+            format!(
+                "{:04}{:02}{:02}_{:02}{:02}{:02}",
+                tm.year, tm.mon, tm.day, tm.hour, tm.min, tm.sec
+            )
+        },
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -212,15 +221,17 @@ struct SimpleUtc {
 
 #[derive(Debug)]
 enum UtcConvError {
-    YearOutOfRange(i128),
-    MonthOutOfRange(i128),
-    DayOutOfRange(i128),
+    Year,
+    Month,
+    Day,
 }
 
 /// Conversión UTC mínima (sin segundos intercalares).
-/// Nota: no es `const fn` porque usa Result/try_from; silenciamos solo ese hint.
+/// Nota: no es `const fn` porque usa `Result/try_from`; silenciamos solo ese hint.
 #[allow(clippy::missing_const_for_fn)]
 fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
+    use std::convert::TryFrom;
+
     let sec = (s % 60) as u32;
     s /= 60;
     let min = (s % 60) as u32;
@@ -229,7 +240,7 @@ fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     s /= 24;
 
     // Cálculo en i128 para evitar wrap.
-    let z: i128 = s as i128 + 719_468;
+    let z: i128 = i128::from(s) + 719_468;
 
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
@@ -242,20 +253,9 @@ fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
 
     let year_i = y + i128::from(m <= 2);
 
-    // Validaciones explícitas + conversiones seguras (sin `expect`).
-    if year_i < i32::MIN as i128 || year_i > i32::MAX as i128 {
-        return Err(UtcConvError::YearOutOfRange(year_i));
-    }
-    if !(1..=12).contains(&m) {
-        return Err(UtcConvError::MonthOutOfRange(m));
-    }
-    if !(1..=31).contains(&d) {
-        return Err(UtcConvError::DayOutOfRange(d));
-    }
-
-    let year = year_i as i32;
-    let mon = m as u32;
-    let day = d as u32;
+    let year = i32::try_from(year_i).map_err(|_| UtcConvError::Year)?;
+    let mon = u32::try_from(m).map_err(|_| UtcConvError::Month)?;
+    let day = u32::try_from(d).map_err(|_| UtcConvError::Day)?;
 
     Ok(SimpleUtc {
         year,
