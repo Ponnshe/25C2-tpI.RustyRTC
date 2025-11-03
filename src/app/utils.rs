@@ -1,35 +1,37 @@
 use eframe::egui;
 
-use egui::{TextureHandle, TextureOptions};
+use egui::TextureOptions;
 
 /// Update (or create) the GPU texture for a camera frame.
 /// IMPORTANT: pass a unique `unique_name` per stream (e.g., "camera/local", "camera/remote").
 pub fn update_camera_texture(
     ctx: &egui::Context,
     frame: &crate::media_agent::video_frame::VideoFrame,
-    handle: &mut Option<TextureHandle>,
+    handle: &mut Option<egui::TextureHandle>,
     unique_name: &str,
 ) {
-    // If your VideoFrame is RGBA8 already, this is fine.
-    // If it's I420/NV12/etc., convert to RGBA8 beforehand.
     let w = frame.width as usize;
     let h = frame.height as usize;
-
-    // SAFETY: assumes frame.bytes is RGBA (unmultiplied). Adjust if needed.
-    let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &frame.bytes);
-
-    match handle {
-        Some(tex) => {
-            // Cheapest path: reuse the same texture and just update pixels.
-            // (If egui version complains on size change, recreate instead.)
-            tex.set(image, TextureOptions::LINEAR);
-        }
-        None => {
-            *handle = Some(ctx.load_texture(unique_name, image, TextureOptions::LINEAR));
-        }
+    if w == 0 || h == 0 {
+        return;
     }
 
-    // Ensure UI refreshes even if there is no input event:
+    let image = egui::ColorImage::from_rgb([w, h], &frame.bytes);
+
+    let need_recreate = match handle {
+        Some(tex) => {
+            let sz = tex.size_vec2();
+            (sz.x as usize) != w || (sz.y as usize) != h
+        }
+        None => true,
+    };
+
+    if need_recreate {
+        *handle = Some(ctx.load_texture(unique_name, image, TextureOptions::LINEAR));
+    } else if let Some(tex) = handle {
+        tex.set(image, TextureOptions::LINEAR);
+    }
+
     ctx.request_repaint();
 }
 

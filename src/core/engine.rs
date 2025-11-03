@@ -165,7 +165,10 @@ impl Engine {
         // keep ICE reactive
         self.cm.drain_ice_events();
 
-        if let (None, Ok((sock, peer))) = (self.session.as_ref(), self.cm.ice_agent.get_data_channel_socket()) {
+        if let (None, Ok((sock, peer))) = (
+            self.session.as_ref(),
+            self.cm.ice_agent.get_data_channel_socket(),
+        ) {
             // connect, then create session (but do NOT start until UI says so)
             if let Err(e) = sock.connect(peer) {
                 let _ = self
@@ -197,11 +200,30 @@ impl Engine {
         }
 
         let mut out = Vec::new();
-        while let Ok(ev) = self.event_rx.try_recv() {
-            self.media_agent
-                .handle_engine_event(&ev, self.session.as_ref());
-            out.push(ev);
+
+        // --- NEW: bounded draining of events
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let max_events = 500; // tune: 200–1000 is typical
+        let max_time = Duration::from_millis(4); // or 2–6 ms
+
+        let mut processed = 0;
+        loop {
+            if processed >= max_events || start.elapsed() >= max_time {
+                break;
+            }
+            match self.event_rx.try_recv() {
+                Ok(ev) => {
+                    self.media_agent
+                        .handle_engine_event(&ev, self.session.as_ref());
+                    out.push(ev);
+                    processed += 1;
+                }
+                Err(_) => break,
+            }
         }
+        // --- END NEW
+
         self.media_agent.tick(self.session.as_ref());
         out
     }

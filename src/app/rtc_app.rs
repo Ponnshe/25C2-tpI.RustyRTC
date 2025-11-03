@@ -232,43 +232,52 @@ impl RtcApp {
         local_frame: Option<&VideoFrame>,
         remote_frame: Option<&VideoFrame>,
     ) {
-        if let Some(local_frame) = &local_frame {
-            update_camera_texture(
-                ctx,
-                local_frame,
-                &mut self.local_camera_texture,
-                "camera/local",
-            );
+        // update textures first, independently of connection state
+        if let Some(f) = local_frame {
+            update_camera_texture(ctx, f, &mut self.local_camera_texture, "camera/local");
         }
-        if let Some(remote_frame) = &remote_frame {
-            update_camera_texture(
-                ctx,
-                remote_frame,
-                &mut self.remote_camera_texture,
-                "camera/remote",
-            );
+        if let Some(f) = remote_frame {
+            update_camera_texture(ctx, f, &mut self.remote_camera_texture, "camera/remote");
         }
-        if matches!(self.conn_state, ConnState::Running) {
+
+        // show the window if we are running OR we already have any texture
+        let have_any_texture =
+            self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
+
+        if matches!(self.conn_state, ConnState::Running) || have_any_texture {
             self.push_kbps_log_from_rtp_packets();
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        show_camera_in_ui(
-                            ui,
-                            self.local_camera_texture.as_ref(),
-                            Self::LOCAL_CAMERA_SIZE,
-                            Self::LOCAL_CAMERA_SIZE,
-                        );
-                        ui.separator();
+                    // If only remote is present → give it full real estate
+                    let only_remote =
+                        self.local_camera_texture.is_none() && self.remote_camera_texture.is_some();
+
+                    if only_remote {
                         show_camera_in_ui(
                             ui,
                             self.remote_camera_texture.as_ref(),
-                            Self::REMOTE_CAMERA_SIZE,
-                            Self::REMOTE_CAMERA_SIZE,
+                            Self::CAMERAS_WINDOW_WIDTH - 16.0,
+                            Self::CAMERAS_WINDOW_HEIGHT - 16.0,
                         );
-                    });
+                    } else {
+                        ui.horizontal(|ui| {
+                            show_camera_in_ui(
+                                ui,
+                                self.local_camera_texture.as_ref(),
+                                Self::LOCAL_CAMERA_SIZE,
+                                Self::LOCAL_CAMERA_SIZE,
+                            );
+                            ui.separator();
+                            show_camera_in_ui(
+                                ui,
+                                self.remote_camera_texture.as_ref(),
+                                Self::REMOTE_CAMERA_SIZE,
+                                Self::REMOTE_CAMERA_SIZE,
+                            );
+                        });
+                    }
                 });
         }
     }
@@ -389,15 +398,47 @@ impl RtcApp {
         ui.separator();
         ui.label(&self.status_line);
     }
-}
+    fn debug_frame_alias_and_size(
+        &mut self,
+        local: Option<&VideoFrame>,
+        remote: Option<&VideoFrame>,
+    ) {
+        if let (Some(l), Some(r)) = (local, remote) {
+            // 1) Same underlying buffer?
+            let lp = l.bytes.as_ptr() as usize;
+            let rp = r.bytes.as_ptr() as usize;
+            if !l.bytes.is_empty() && lp == rp {
+                self.background_log(
+                    LogLevel::Error,
+                    "⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x}).",
+                );
+            }
 
-use std::time::Duration; // add Duration import
+            // 2) Basic size checks (RGB24 expected)
+            let l_need = (l.width as usize) * (l.height as usize) * 3;
+            let r_need = (r.width as usize) * (r.height as usize) * 3;
+            if l.bytes.len() != l_need {
+                self.background_log(
+                    LogLevel::Error,
+                    format!("⚠️ Local bad len: {} vs {}", l.bytes.len(), l_need),
+                );
+            }
+            if r.bytes.len() != r_need {
+                self.background_log(
+                    LogLevel::Error,
+                    format!("⚠️ Remote bad len: {} vs {}", r.bytes.len(), r_need),
+                );
+            }
+        }
+    }
+}
 
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // keep the UI ticking while we expect motion (video)
-        if matches!(self.conn_state, ConnState::Running) {
-            ctx.request_repaint_after(Duration::from_millis(16)); // ~60 fps
+        // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
+        let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
+        if matches!(self.conn_state, ConnState::Running) || any_video {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         if let Some(sdp) = self.pending_remote_sdp.take() {
@@ -411,6 +452,7 @@ impl App for RtcApp {
         self.drain_ui_log_tap();
 
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
+        self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
 
         self.render_camera_view(ctx, local_frame.as_ref(), remote_frame.as_ref());
 
