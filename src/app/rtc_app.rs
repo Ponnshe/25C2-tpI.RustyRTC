@@ -5,16 +5,12 @@ use super::{
 };
 use crate::{
     app::{log_level::LogLevel, logger::Logger},
-    core::{engine::Engine, events::EngineEvent::{
-        Status,
-        Log,
-        Closing,
-        RtpIn,
-        Error,
-        IceNominated,
-        Closed,
-        Established,
-    }},
+    core::{
+        engine::Engine,
+        events::EngineEvent::{
+            Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
+        },
+    },
     media_agent::video_frame::VideoFrame,
 };
 use eframe::{App, Frame, egui};
@@ -23,7 +19,6 @@ use std::{
     sync::{Arc, mpsc::TrySendError},
     time::Instant,
 };
-
 
 pub struct RtcApp {
     // UI text areas
@@ -57,7 +52,6 @@ pub struct RtcApp {
 }
 
 impl RtcApp {
-
     const HEADER_TITLE: &str = "RoomRTC • SDP Messenger";
     const CAMERAS_WINDOW_WIDTH: f32 = 800.0;
     const CAMERAS_WINDOW_HEIGHT: f32 = 400.0;
@@ -178,7 +172,6 @@ impl RtcApp {
         }
         self.has_remote_description = true;
         Ok(())
-
     }
 
     fn poll_engine_events(&mut self) {
@@ -233,17 +226,28 @@ impl RtcApp {
         }
     }
 
-    fn render_camera_view(&mut self, ctx: &egui::Context, local_frame: Option<&VideoFrame>, remote_frame: Option<&VideoFrame>){
-
+    fn render_camera_view(
+        &mut self,
+        ctx: &egui::Context,
+        local_frame: Option<&VideoFrame>,
+        remote_frame: Option<&VideoFrame>,
+    ) {
         if let Some(local_frame) = &local_frame {
-            update_camera_texture(ctx, local_frame, &mut self.local_camera_texture);
+            update_camera_texture(
+                ctx,
+                local_frame,
+                &mut self.local_camera_texture,
+                "camera/local",
+            );
         }
-
         if let Some(remote_frame) = &remote_frame {
-            update_camera_texture(ctx, remote_frame, &mut self.remote_camera_texture);
+            update_camera_texture(
+                ctx,
+                remote_frame,
+                &mut self.remote_camera_texture,
+                "camera/remote",
+            );
         }
-
-        // Mostrar ventana de cámara solo si la conexión está establecida
         if matches!(self.conn_state, ConnState::Running) {
             self.push_kbps_log_from_rtp_packets();
             egui::Window::new("Camera View")
@@ -252,50 +256,52 @@ impl RtcApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         show_camera_in_ui(
-                            ui, 
-                            self.local_camera_texture.as_ref(), 
-                            Self::LOCAL_CAMERA_SIZE, 
-                            Self::LOCAL_CAMERA_SIZE
+                            ui,
+                            self.local_camera_texture.as_ref(),
+                            Self::LOCAL_CAMERA_SIZE,
+                            Self::LOCAL_CAMERA_SIZE,
                         );
                         ui.separator();
                         show_camera_in_ui(
-                            ui, 
-                            self.remote_camera_texture.as_ref(), 
-                            Self::REMOTE_CAMERA_SIZE, 
-                            Self::REMOTE_CAMERA_SIZE
+                            ui,
+                            self.remote_camera_texture.as_ref(),
+                            Self::REMOTE_CAMERA_SIZE,
+                            Self::REMOTE_CAMERA_SIZE,
                         );
                     });
                 });
         }
-
     }
-
     const fn can_start(&self) -> bool {
         self.has_remote_description
             && self.has_local_description
             && matches!(self.conn_state, ConnState::Idle | ConnState::Stopped)
     }
 
-    fn render_header(ui: &mut egui::Ui){
+    fn render_header(ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.heading(Self::HEADER_TITLE);
             ui.add_space(10.);
         });
     }
 
-    fn render_video_summary(ui: &mut egui::Ui, local_frame: Option<&VideoFrame>, remote_frame: Option<&VideoFrame>){
-            ui.separator();
-            ui.label(format!(
-                "Local video: {}",
-                Self::summarize_frame(local_frame)
-            ));
-            ui.label(format!(
-                "Remote video: {}",
-                Self::summarize_frame(remote_frame)
-            ));
+    fn render_video_summary(
+        ui: &mut egui::Ui,
+        local_frame: Option<&VideoFrame>,
+        remote_frame: Option<&VideoFrame>,
+    ) {
+        ui.separator();
+        ui.label(format!(
+            "Local video: {}",
+            Self::summarize_frame(local_frame)
+        ));
+        ui.label(format!(
+            "Remote video: {}",
+            Self::summarize_frame(remote_frame)
+        ));
     }
 
-    fn render_remote_sdp_input(&mut self, ui: &mut egui::Ui){
+    fn render_remote_sdp_input(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.label("1) Paste remote SDP (offer or answer):");
         ui.add(
@@ -319,7 +325,7 @@ impl RtcApp {
         });
     }
 
-    fn render_local_sdp_output(&mut self, ui: &mut egui::Ui){
+    fn render_local_sdp_output(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.label("2) Create local SDP and share it (offer/renegotiation):");
         ui.horizontal(|ui| {
@@ -341,15 +347,15 @@ impl RtcApp {
                 .desired_width(f32::INFINITY)
                 .hint_text("Your local SDP (Offer/Answer) will appear here…"),
         );
-
     }
 
-    fn render_connection_controls(&mut self, ui: &mut egui::Ui){
+    fn render_connection_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(self.can_start(), egui::Button::new("Start Connection"))
-                .clicked() && let Err(e) = self.engine.start()
+                .clicked()
+                && let Err(e) = self.engine.start()
             {
                 self.status_line = format!("Failed to start: {e}");
             }
@@ -366,7 +372,7 @@ impl RtcApp {
         });
     }
 
-    fn render_log_section(&self, ui: &mut egui::Ui){
+    fn render_log_section(&self, ui: &mut egui::Ui) {
         ui.separator();
         ui.label("Logs:");
         egui::ScrollArea::vertical()
@@ -379,14 +385,21 @@ impl RtcApp {
             });
     }
 
-    fn render_status_line(&self, ui: &mut egui::Ui){
+    fn render_status_line(&self, ui: &mut egui::Ui) {
         ui.separator();
         ui.label(&self.status_line);
     }
 }
 
+use std::time::Duration; // add Duration import
+
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // keep the UI ticking while we expect motion (video)
+        if matches!(self.conn_state, ConnState::Running) {
+            ctx.request_repaint_after(Duration::from_millis(16)); // ~60 fps
+        }
+
         if let Some(sdp) = self.pending_remote_sdp.take() {
             match self.set_remote_sdp(&sdp) {
                 Ok(()) => self.status_line = String::from("Remote SDP processed."),
@@ -395,10 +408,7 @@ impl App for RtcApp {
         }
 
         self.poll_engine_events();
-
-        // Drain sampled logs coming from the worker
         self.drain_ui_log_tap();
-
 
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
 
@@ -406,19 +416,12 @@ impl App for RtcApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             Self::render_header(ui);
-
             Self::render_video_summary(ui, local_frame.as_ref(), remote_frame.as_ref());
-
             self.render_remote_sdp_input(ui);
             self.render_local_sdp_output(ui);
-
-
             self.render_connection_controls(ui);
-
             self.render_status_line(ui);
-
             self.render_log_section(ui);
-
         });
     }
 }
