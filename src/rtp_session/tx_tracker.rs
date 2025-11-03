@@ -2,13 +2,13 @@ use crate::rtcp::report_block::ReportBlock;
 use std::time::Instant;
 
 /// Tracks outbound (sender-side) health and RTT based on RTCP feedback.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TxTracker {
     /// Compact NTP identifier of the last SR we sent for this SSRC.
     /// Used to match remote RRs’ LSR and compute RTT.
     pub last_sr_ntp_compact: u32,
 
-    /// When we last received any RR/SR containing a ReportBlock about this SSRC.
+    /// When we last received any RR/SR containing a `ReportBlock` about this SSRC.
     pub last_rr_instant: Option<Instant>,
 
     // Remote-reported stats about our outbound stream:
@@ -21,27 +21,13 @@ pub struct TxTracker {
     pub rtt_ms: Option<u32>,
 }
 
-impl Default for TxTracker {
-    fn default() -> Self {
-        Self {
-            last_sr_ntp_compact: 0,
-            last_rr_instant: None,
-            remote_fraction_lost: 0,
-            remote_cum_lost: 0,
-            remote_highest_ext_seq: 0,
-            remote_jitter: 0,
-            rtt_ms: None,
-        }
-    }
-}
-
 impl TxTracker {
     /// Call this right before (or when) you publish an SR.
-    pub fn mark_sr_sent(&mut self, ntp_most_sw: u32, ntp_least_sw: u32) {
+    pub const fn mark_sr_sent(&mut self, ntp_most_sw: u32, ntp_least_sw: u32) {
         self.last_sr_ntp_compact = ntp_to_compact(ntp_most_sw, ntp_least_sw);
     }
 
-    /// Consume a ReportBlock that references *our* SSRC.
+    /// Consume a `ReportBlock` that references *our* SSRC.
     /// `arrival_ntp_compact` is when *we* received the SR/RR containing this block.
     pub fn on_report_block(&mut self, rb: &ReportBlock, arrival_ntp_compact: u32) {
         // 1) Store the remote’s view of our outbound stream
@@ -62,7 +48,7 @@ impl TxTracker {
                 .wrapping_sub(rb.dlsr);
 
             // Convert from 1/65536 s to ms: (x * 1000) / 65536
-            let rtt_ms = ((rtt_units as u64) * 1000) >> 16;
+            let rtt_ms = ((u64::from(rtt_units)) * 1000) >> 16;
             self.rtt_ms = Some(rtt_ms as u32);
         }
     }
@@ -70,7 +56,8 @@ impl TxTracker {
 
 /// Convert a 64-bit NTP timestamp to the 32-bit "compact" form used in RFC3550 A.3.
 /// compact = (MSW << 16) | (LSW >> 16)
-#[inline]
-pub fn ntp_to_compact(msw: u32, lsw: u32) -> u32 {
+#[inline] 
+#[must_use]
+pub const fn ntp_to_compact(msw: u32, lsw: u32) -> u32 {
     (msw << 16) | (lsw >> 16)
 }

@@ -74,6 +74,7 @@ pub struct Sdp {
 }
 
 impl Sdp {
+    #[must_use]
     pub fn new(
         version: u8,
         origin: Origin,

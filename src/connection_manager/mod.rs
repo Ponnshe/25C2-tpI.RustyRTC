@@ -1,4 +1,5 @@
 pub mod config;
+#[allow(clippy::module_inception)]
 pub mod connection_manager;
 pub mod ice_phase;
 pub mod outbound_sdp;

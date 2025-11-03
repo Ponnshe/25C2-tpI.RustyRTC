@@ -48,6 +48,8 @@ pub struct Candidate {
 /// # Return
 /// A new candidate.
 impl Candidate {
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         foundation: String,
         component: u8,
@@ -84,6 +86,7 @@ impl Candidate {
         }
     }
 
+    #[must_use]
     /// Convenience for host candidates
     pub fn host(
         address: SocketAddr,
@@ -102,6 +105,8 @@ impl Candidate {
             socket,
         )
     }
+
+    #[must_use]
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"foundation":"{}","component":{},"transport":"{}","priority":{},"address":"{}","type":"{:?}"}}"#,
@@ -121,12 +126,12 @@ impl Candidate {
         base_ip: &str,
     ) -> String {
         let mut hasher = DefaultHasher::new();
-        format!("{:?}-{}-{}", cand_type, transport_lc, base_ip).hash(&mut hasher);
+        format!("{cand_type:?}-{transport_lc}-{base_ip}").hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
 
     // RFC 8445 §5.1.2.1 — 32-bit candidate priority
-    fn calculate_priority(cand_type: &CandidateType, local_pref: u16, component_id: u8) -> u32 {
+    const fn calculate_priority(cand_type: &CandidateType, local_pref: u16, component_id: u8) -> u32 {
         let type_pref = match cand_type {
             CandidateType::Host => HOST_TYPE_PREF,
             CandidateType::ServerReflexive => SERVER_REFLEXIVE_TYPE_PREF,
@@ -139,6 +144,7 @@ impl Candidate {
             | (COMPONENT_OFFSET - component_id as u32)
     }
 
+    #[must_use]
     /// Creates a shallow copy of a Candidate without cloning the underlying socket.
     pub fn clone_light(&self) -> Candidate {
         Candidate {
@@ -187,7 +193,7 @@ mod test {
             None,
             None,
         );
-        let display_str = format!("{}", c);
+        let display_str = format!("{c}");
         assert!(display_str.contains("192.168.0.1:5000"));
         assert!(display_str.contains("Host"));
     }

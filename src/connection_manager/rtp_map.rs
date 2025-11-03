@@ -19,6 +19,7 @@ pub enum RtpMapParseError {
 
 impl std::fmt::Display for RtpMapParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[allow(clippy::enum_glob_use)]
         use RtpMapParseError::*;
         match self {
             MissingParts => write!(f, "Missing required parts in rtpmap"),
@@ -35,6 +36,7 @@ impl FromStr for RtpMap {
     type Err = RtpMapParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        #[allow(clippy::enum_glob_use)]
         use RtpMapParseError::*;
 
         // Accept strings like: "96 opus/48000/2" or "0 PCMU/8000"
@@ -98,6 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn parses_opus() {
         let rm: RtpMap = "96 opus/48000/2".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -107,6 +110,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn parses_pcmu_no_params() {
         let rm: RtpMap = "0 PCMU/8000".parse().unwrap();
         assert_eq!(rm.payload_type, 0);
@@ -116,6 +120,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn parses_vp8_video() {
         let rm: RtpMap = "96 VP8/90000".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -125,6 +130,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn multiple_spaces_and_tabs() {
         let rm: RtpMap = "  101\ttelephone-event/8000  ".parse().unwrap();
         assert_eq!(rm.payload_type, 101);
@@ -134,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn channels_over_255_ok() {
         let rm: RtpMap = "97 L16/44100/10".parse().unwrap();
         assert_eq!(rm.payload_type, 97);
@@ -167,6 +174,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn zero_channels_becomes_none() {
         let rm: RtpMap = "98 opus/48000/0".parse().unwrap();
         assert_eq!(rm.encoding_params, None);

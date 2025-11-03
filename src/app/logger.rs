@@ -20,6 +20,7 @@ pub struct Logger {
 }
 
 impl Logger {
+    #[must_use]
     /// Create logs/ directory next to the executable and start the logger there.
     /// Example: target/debug/logs/roomrtc-20251102_023045-pid1234.log
     pub fn start_default(app_name: &str, cap: usize, ui_cap: usize, sample_every: u32) -> Self {
@@ -78,7 +79,7 @@ impl Logger {
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);
-                        n % sample_every == 0
+                        n.is_multiple_of(sample_every)
                     };
 
                     if forward
@@ -110,7 +111,41 @@ impl Logger {
         }
     }
 
-    /// Non-blocking logging. Drops if queue is full.
+    /// Attempts to enqueue a log message without blocking the current thread.
+    ///
+    /// This method sends the message to the logger’s internal synchronous channel.
+    /// If the channel is full, the message is **dropped** and an error is returned.
+    ///
+    /// This function never blocks — use [`log`](Self::log) for the blocking variant.
+    ///
+    /// # Parameters
+    /// - `level`: The severity level of the message (e.g. `Info`, `Warn`, `Error`).
+    /// - `text`: Any type convertible into a `String`, containing the log message.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the message was successfully enqueued for logging.
+    /// Otherwise, returns a [`TrySendError<LogMsg>`] indicating that the internal
+    /// queue was full and the message was **not sent**.
+    ///
+    /// # Errors
+    /// Returns `Err(TrySendError::Full)` if the logger’s internal bounded queue
+    /// has reached its capacity.
+    /// This error means the message was **dropped** — no retry is performed.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// use rustyrtc::app::logger::{Logger, LogLevel};
+    ///
+    /// let logger = Logger::start_in_dir("logs", "app", 100, 10, 1);
+    /// let _ = logger.try_log(LogLevel::Info, "Background task started");
+    /// ```
+    ///
+    /// # See also
+    /// - [`std::sync::mpsc::SyncSender::try_send`]
+    /// - [`Self::log`] for the blocking variant
+    ///
+    /// # Panics
+    /// This function never panics.
     pub fn try_log<S: Into<String>>(
         &self,
         level: LogLevel,
@@ -125,12 +160,14 @@ impl Logger {
         self.handle.clone()
     }
 
+    #[must_use]
     /// Pull one sampled UI line (if any).
     #[must_use]
     pub fn try_recv_ui(&self) -> Option<String> {
         self.ui_log_rx.try_recv().ok()
     }
 
+    #[must_use]
     /// Optional: expose the chosen file path (nice for debugging).
     #[must_use]
     pub fn file_path(&self) -> &Path {
@@ -142,10 +179,12 @@ impl Logger {
 fn exe_dir_fallback_cwd() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// Human-ish timestamp for filenames without extra deps.
+/// Example: `20251102_023045`
 fn timestamp_for_filename() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

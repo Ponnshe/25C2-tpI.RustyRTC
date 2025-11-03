@@ -11,6 +11,6 @@ impl SeqExt {
             self.cycles = self.cycles.wrapping_add(1 << 16);
         }
         self.last = seq;
-        self.cycles | (seq as u32) // same as cycles + seq because cycles % 2^16 == 0
+        self.cycles | u32::from(seq) // same as cycles + seq because cycles % 2^16 == 0
     }
 }

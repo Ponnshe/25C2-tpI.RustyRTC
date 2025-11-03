@@ -28,6 +28,7 @@ impl Attribute {
     /// Default values:
     /// - `key` = `""`
     /// - `value` = `None`
+    #[must_use]
     pub const fn new_blank() -> Self {
         Self {
             key: String::new(),
@@ -37,11 +38,13 @@ impl Attribute {
 
     // --- GETTERS ---
     /// Returns a reference to the attribute key.
+    #[must_use]
     pub fn key(&self) -> &str {
         &self.key
     }
 
     /// Returns a reference to the optional attribute value.
+    #[must_use]
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
     }
