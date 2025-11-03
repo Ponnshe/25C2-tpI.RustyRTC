@@ -244,7 +244,7 @@ impl RtcApp {
         let have_any_texture =
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
-        if matches!(self.conn_state, ConnState::Running) || have_any_texture {
+        if matches!(self.conn_state, ConnState::Running) {
             self.push_kbps_log_from_rtp_packets();
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
