@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         mpsc::{self, Receiver, Sender},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -31,8 +31,7 @@ use crate::{
     rtp_session::{
         outbound_track_handle::OutboundTrackHandle,
         payload::{
-            h264_depacketizer::{AccessUnit, H264Depacketizer},
-            h264_packetizer::H264Packetizer,
+            h264_depacketizer::H264Depacketizer, h264_packetizer::H264Packetizer,
             rtp_payload_chunk::RtpPayloadChunk,
         },
         rtp_codec::RtpCodec,
@@ -47,19 +46,23 @@ use opencv::{
 
 pub struct MediaAgent {
     event_tx: Sender<EngineEvent>,
+    rtp_tx: mpsc::SyncSender<RtpIn>,
     logger: Arc<dyn LogSink>,
+    rtp_decoder_handle: Option<JoinHandle<()>>,
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
-    h264_decoder: Mutex<H264Decoder>,
+
     h264_encoder: Mutex<H264Encoder>,
     h264_packetizer: H264Packetizer,
-    h264_depacketizer: H264Depacketizer,
+
     local_frame_rx: Option<Receiver<VideoFrame>>,
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
+    allowed_pts: Arc<RwLock<HashSet<u8>>>,
+
     last_local_frame_sent: Option<Instant>,
     rtp_ts: u32,
-    rtp_ts_step: u32, // 90_000 / fps
+    rtp_ts_step: u32,
     sent_any_frame: bool,
     last_sent_local_ts_ms: Option<u128>,
 }
@@ -71,32 +74,44 @@ impl MediaAgent {
         let target_fps = 30;
         payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
 
+        let h264_encoder = Mutex::new(H264Encoder::new(target_fps, 800_000, 60));
+        let h264_packetizer = H264Packetizer::new(1200);
+
+        let remote_frame = Arc::new(Mutex::new(None));
+
+        // Bounded channel to avoid UI stalls / unbounded growth
+        let (rtp_tx, rtp_rx) = mpsc::sync_channel::<RtpIn>(2048);
+
+        let allowed_pts = Arc::new(RwLock::new(
+            payload_map.keys().copied().collect::<HashSet<u8>>(),
+        ));
+        let rtp_decoder_handle = Some(spawn_rtp_decoder_worker(
+            Arc::clone(&logger),
+            Arc::clone(&allowed_pts),
+            Arc::clone(&remote_frame),
+            rtp_rx,
+        ));
         let (rx, status) = spawn_camera_worker(target_fps, logger.clone());
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
-        // Recommended WebRTC-safe MTU for UDP path: ~1200 total bytes.
-        // Overhead defaults to 12 (RTP header); bump if we add SRTP/DTLS/exts.
-        //
-        let h264_encoder = H264Encoder::new(target_fps, 800_000, 60);
-        let h264_packetizer = H264Packetizer::new(1200); // .with_overhead(12) is default
-        let h264_depacketizer = H264Depacketizer::new();
 
         Self {
             event_tx,
+            rtp_tx,
             logger,
+            rtp_decoder_handle,
+            allowed_pts,
             payload_map,
             outbound_tracks: HashMap::new(),
-            h264_decoder: Mutex::new(H264Decoder::new()),
-            h264_encoder: Mutex::new(h264_encoder),
+            h264_encoder,
+            h264_packetizer,
             local_frame_rx: Some(rx),
             local_frame: Arc::new(Mutex::new(None)),
-            remote_frame: Arc::new(Mutex::new(None)),
+            remote_frame,
             last_local_frame_sent: None,
-            h264_packetizer,
-            h264_depacketizer,
-            rtp_ts: rand::random::<u32>(), // random start, per RFC 3550
-            rtp_ts_step: 90_000 / target_fps, // e.g. 3000 for 30 fps
+            rtp_ts: rand::random::<u32>(),
+            rtp_ts_step: 90_000 / target_fps,
             sent_any_frame: false,
             last_sent_local_ts_ms: None,
         }
@@ -123,13 +138,27 @@ impl MediaAgent {
                             .event_tx
                             .send(EngineEvent::Error(format!("media tracks: {e:?}")));
                     }
+                    // if let Ok(mut w) = self.allowed_pts.write() {
+                    //     w.clear();
+                    //     w.extend(sess.remote_codecs.iter().map(|c| c.payload_type));
+                    // }
                 }
             }
             EngineEvent::Closed | EngineEvent::Closing { .. } => {
                 self.outbound_tracks.clear();
                 self.last_local_frame_sent = None;
             }
-            EngineEvent::RtpIn(pkt) => self.handle_remote_rtp(pkt),
+            EngineEvent::RtpIn(pkt) => {
+                // Non-blocking send; drop if the worker is saturated
+                let _ = self.rtp_tx.try_send(RtpIn {
+                    payload: pkt.payload.clone(),
+                    marker: pkt.marker,
+                    timestamp_90khz: pkt.timestamp_90khz,
+                    seq: pkt.seq,
+                    pt: pkt.pt,
+                    ssrc: pkt.ssrc,
+                });
+            }
             _ => {}
         }
     }
@@ -245,55 +274,62 @@ impl MediaAgent {
             }
         }
     }
+}
 
-    fn handle_remote_rtp(&mut self, pkt: &RtpIn) {
-        // Ignore unknown payload types
-        if !self.payload_map.contains_key(&pkt.pt) {
-            sink_log!(
-                &self.logger,
-                LogLevel::Debug,
-                "[MediaAgent] ignoring payload type {}",
-                pkt.pt
-            );
-            return;
-        }
+fn spawn_rtp_decoder_worker(
+    logger: Arc<dyn LogSink>,
+    allowed_pts: Arc<RwLock<HashSet<u8>>>,
+    remote_frame_slot: Arc<Mutex<Option<VideoFrame>>>,
+    rtp_rx: Receiver<RtpIn>,
+) -> JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("media-agent-rtp".into())
+        .spawn(move || {
+            let mut depack = H264Depacketizer::new();
+            let mut decoder = H264Decoder::new();
 
-        // H.264 depacketize → AccessUnit → decode
-        if let Some(au) =
-            self.h264_depacketizer
-                .push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
-        {
-            match self.decode_h264(&au) {
-                Ok(Some(frame)) => {
-                    if let Ok(mut guard) = self.remote_frame.lock() {
-                        *guard = Some(frame);
+            while let Ok(pkt) = rtp_rx.recv() {
+                let ok_pt = allowed_pts
+                    .read()
+                    .map(|set| set.contains(&pkt.pt))
+                    .unwrap_or(false);
+                if !ok_pt {
+                    sink_log!(
+                        logger.as_ref(),
+                        LogLevel::Debug,
+                        "[MediaAgent] dropping RTP PT={}",
+                        pkt.pt
+                    );
+                    continue;
+                }
+                if let Some(au) =
+                    depack.push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
+                {
+                    match decoder.decode_au(&au) {
+                        Ok(Some(frame)) => {
+                            if let Ok(mut g) = remote_frame_slot.lock() {
+                                *g = Some(frame);
+                            }
+                        }
+                        Ok(None) => {
+                            sink_log!(
+                                logger.as_ref(),
+                                LogLevel::Debug,
+                                "[MediaAgent] decoder needs more NALs for this AU"
+                            );
+                        }
+                        Err(e) => {
+                            sink_log!(
+                                logger.as_ref(),
+                                LogLevel::Error,
+                                "[MediaAgent] decode error: {e:?}"
+                            );
+                        }
                     }
                 }
-                Ok(None) => {
-                    sink_log!(
-                        &self.logger,
-                        LogLevel::Debug,
-                        "[MediaAgent] decoder needs more NALs for this AU"
-                    );
-                }
-                Err(e) => {
-                    sink_log!(
-                        &self.logger,
-                        LogLevel::Error,
-                        "[MediaAgent] decode error: {e:?}"
-                    );
-                }
             }
-        }
-    }
-
-    fn decode_h264(&self, access_unit: &AccessUnit) -> Result<Option<VideoFrame>> {
-        let mut guard = self
-            .h264_decoder
-            .lock()
-            .map_err(|_| MediaAgentError::Codec("decoder poisoned".into()))?;
-        guard.decode_au(access_unit)
-    }
+        })
+        .expect("spawn media-agent-rtp")
 }
 
 fn spawn_camera_worker(
