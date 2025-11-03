@@ -120,16 +120,19 @@ impl Logger {
         self.handle.try_log(level, text, target)
     }
     /// Give modules a cloneable sink they can keep.
+    #[must_use]
     pub fn handle(&self) -> LoggerHandle {
         self.handle.clone()
     }
 
     /// Pull one sampled UI line (if any).
+    #[must_use]
     pub fn try_recv_ui(&self) -> Option<String> {
         self.ui_log_rx.try_recv().ok()
     }
 
     /// Optional: expose the chosen file path (nice for debugging).
+    #[must_use]
     pub fn file_path(&self) -> &Path {
         &self.file_path
     }
@@ -143,26 +146,22 @@ fn exe_dir_fallback_cwd() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
-/// Human-ish timestamp for filenames without extra deps.
-/// Example: "20251102_023045"
 fn timestamp_for_filename() -> String {
-    // If you want pretty local time, consider the `time` crate.
-    // This simple version uses UTC seconds since epoch -> formatted into yyyymmdd_hhmmss.
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    // Convert to y/m/d h:m:s with a tiny integer algorithm:
-    // Good enough for filenames without pulling in `chrono`.
-    // (Epoch: 1970-01-01; this is a simple UTC converter.)
-    let tm = unix_to_utc(secs);
-    format!(
-        "{:04}{:02}{:02}_{:02}{:02}{:02}",
-        tm.year, tm.mon, tm.day, tm.hour, tm.min, tm.sec
-    )
+    match unix_to_utc(secs) {
+        Ok(tm) => format!(
+            "{:04}{:02}{:02}_{:02}{:02}{:02}",
+            tm.year, tm.mon, tm.day, tm.hour, tm.min, tm.sec
+        ),
+        Err(_) => format!("unix_{secs}"), // graceful fallback, never panics
+    }
 }
 
+#[derive(Clone, Copy, Debug)]
 struct SimpleUtc {
     year: i32,
     mon: u32,
@@ -172,8 +171,17 @@ struct SimpleUtc {
     sec: u32,
 }
 
-// Tiny UTC conversion (no leap seconds). Adapted from civil-time arithmetic.
-fn unix_to_utc(mut s: u64) -> SimpleUtc {
+#[derive(Debug)]
+enum UtcConvError {
+    YearOutOfRange(i128),
+    MonthOutOfRange(i128),
+    DayOutOfRange(i128),
+}
+
+/// Conversión UTC mínima (sin segundos intercalares).
+/// Nota: no es `const fn` porque usa Result/try_from; silenciamos solo ese hint.
+#[allow(clippy::missing_const_for_fn)]
+fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     let sec = (s % 60) as u32;
     s /= 60;
     let min = (s % 60) as u32;
@@ -181,24 +189,41 @@ fn unix_to_utc(mut s: u64) -> SimpleUtc {
     let hour = (s % 24) as u32;
     s /= 24;
 
-    // Days since epoch
-    let z = s as i64 + 719468; // shift to civil date epoch (0000-03-01 base)
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    // Cálculo en i128 para evitar wrap.
+    let z: i128 = s as i128 + 719_468;
+
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
     let m = mp + if mp < 10 { 3 } else { -9 }; // [1, 12]
-    let year = (y + (m <= 2) as i64) as i32;
 
-    SimpleUtc {
+    let year_i = y + i128::from(m <= 2);
+
+    // Validaciones explícitas + conversiones seguras (sin `expect`).
+    if year_i < i32::MIN as i128 || year_i > i32::MAX as i128 {
+        return Err(UtcConvError::YearOutOfRange(year_i));
+    }
+    if !(1..=12).contains(&m) {
+        return Err(UtcConvError::MonthOutOfRange(m));
+    }
+    if !(1..=31).contains(&d) {
+        return Err(UtcConvError::DayOutOfRange(d));
+    }
+
+    let year = year_i as i32;
+    let mon = m as u32;
+    let day = d as u32;
+
+    Ok(SimpleUtc {
         year,
-        mon: m as u32,
-        day: d as u32,
+        mon,
+        day,
         hour,
         min,
         sec,
-    }
+    })
 }
