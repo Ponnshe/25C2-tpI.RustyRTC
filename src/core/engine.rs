@@ -2,7 +2,6 @@ use std::{
     net::SocketAddr,
     sync::Arc,
     sync::mpsc::{self, Receiver, Sender},
-    time::Duration,
 };
 
 use crate::{
@@ -11,12 +10,15 @@ use crate::{
     media_agent::media_agent::MediaAgent,
 };
 use crate::{
+    congestion_controller::congestion_controller::CongestionController,
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
     media_agent::video_frame::VideoFrame,
 };
+
+use super::constants::{MAX_BITRATE, MIN_BITRATE};
 
 /// The `Engine` is the core component of the WebRTC implementation.
 ///
@@ -40,6 +42,7 @@ pub struct Engine {
     event_tx: Sender<EngineEvent>,
     event_rx: Receiver<EngineEvent>,
     media_agent: MediaAgent,
+    congestion_controller: CongestionController,
 }
 
 impl Engine {
@@ -54,6 +57,14 @@ impl Engine {
     pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
         let media_agent = MediaAgent::new(event_tx.clone(), logger_sink.clone());
+        let initial_bitrate = crate::media_agent::constants::BITRATE;
+        let congestion_controller = CongestionController::new(
+            initial_bitrate,
+            MIN_BITRATE,
+            MAX_BITRATE,
+            logger_sink.clone(),
+            event_tx.clone(),
+        );
         Self {
             cm: ConnectionManager::new(logger_sink.clone()),
             logger_sink,
@@ -61,6 +72,7 @@ impl Engine {
             event_tx,
             event_rx,
             media_agent,
+            congestion_controller,
         }
     }
 
@@ -201,7 +213,6 @@ impl Engine {
 
         let mut out = Vec::new();
 
-        // --- NEW: bounded draining of events
         use std::time::{Duration, Instant};
         let start = Instant::now();
         let max_events = 500; // tune: 200–1000 is typical
@@ -214,15 +225,24 @@ impl Engine {
             }
             match self.event_rx.try_recv() {
                 Ok(ev) => {
-                    self.media_agent
-                        .handle_engine_event(&ev, self.session.as_ref());
-                    out.push(ev);
+                    match ev {
+                        EngineEvent::NetworkMetrics(metrics) => {
+                            self.congestion_controller.on_network_metrics(metrics);
+                        }
+                        EngineEvent::UpdateBitrate(new_bitrate) => {
+                            self.media_agent.set_bitrate(new_bitrate);
+                        }
+                        _ => {
+                            self.media_agent
+                                .handle_engine_event(&ev, self.session.as_ref());
+                            out.push(ev);
+                        }
+                    }
                     processed += 1;
                 }
                 Err(_) => break,
             }
         }
-        // --- END NEW
 
         self.media_agent.tick(self.session.as_ref());
         out

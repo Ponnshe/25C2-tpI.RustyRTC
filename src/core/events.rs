@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use crate::app::log_msg::LogMsg;
+use crate::{app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics};
 
 #[derive(Debug, Clone)]
 pub struct RtpIn {
@@ -27,4 +27,6 @@ pub enum EngineEvent {
     Closed,
     Error(String),
     RtpIn(RtpIn),
+    NetworkMetrics(NetworkMetrics),
+    UpdateBitrate(u32),
 }

@@ -8,7 +8,7 @@ use crate::{
     core::{
         engine::Engine,
         events::EngineEvent::{
-            Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
+            self, Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
         },
     },
     media_agent::video_frame::VideoFrame,
@@ -222,6 +222,7 @@ impl RtcApp {
                         format!("[ICE] nominated local={local} remote={remote}"),
                     );
                 }
+                EngineEvent::NetworkMetrics(_) | EngineEvent::UpdateBitrate(_) => todo!(),
             }
         }
     }
