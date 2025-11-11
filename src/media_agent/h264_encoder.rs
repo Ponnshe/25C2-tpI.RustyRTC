@@ -84,4 +84,46 @@ impl H264Encoder {
             let _ = enc.force_intra_frame();
         }
     }
+
+    pub fn target_fps(&self) -> u32 {
+        self.target_fps
+    }
+
+    pub fn target_bps(&self) -> u32 {
+        self.target_bps
+    }
+
+    pub fn keyint(&self) -> u32 {
+        self.keyint
+    }
+
+    pub fn set_config(
+        &mut self,
+        new_fps: u32,
+        new_bitrate: u32,
+        new_keyint: u32,
+    ) -> Result<bool, MediaAgentError> {
+        if self.should_skip_update(new_fps, new_bitrate, new_keyint) {
+            return Ok(false);
+        }
+        self.target_fps = new_fps;
+        self.target_bps = new_bitrate;
+        self.keyint = new_keyint;
+
+        // Re-init returns the new encoder via Encoder::with_api_config, which can fail.
+        // We need to handle that result and potentially bubble it up.
+        self.init_encoder();
+
+        if self.enc.is_none() {
+            Err(MediaAgentError::Codec(
+                "Failed to re-initialize H264 encoder with new config".into(),
+            ))
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn should_skip_update(&self, new_fps: u32, new_bitrate: u32, new_keyint: u32) -> bool {
+        new_fps == self.target_fps && new_bitrate == self.target_bps && new_keyint == self.keyint
+    }
 }

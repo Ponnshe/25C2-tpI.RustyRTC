@@ -12,13 +12,11 @@ use std::{
 
 use crate::{
     app::{log_level::LogLevel, log_sink::LogSink},
-    camera_manager::camera_error::CameraError,
-    core::events::RtpIn,
-    sink_log,
-};
-use crate::{
-    camera_manager::camera_manager_c::CameraManager,
-    core::{events::EngineEvent, session::Session},
+    camera_manager::{camera_error::CameraError, camera_manager_c::CameraManager},
+    core::{
+        events::{EngineEvent, RtpIn},
+        session::Session,
+    },
     media_agent::{
         codec_descriptor::CodecDescriptor,
         frame_format::FrameFormat,
@@ -36,7 +34,10 @@ use crate::{
         },
         rtp_codec::RtpCodec,
     },
+    sink_log,
 };
+
+use super::constants::{BITRATE, KEYINT, TARGET_FPS};
 
 use opencv::{
     core::{AlgorithmHint, CV_8UC3, Mat},
@@ -71,10 +72,9 @@ impl MediaAgent {
     pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>) -> Self {
         let mut payload_map = HashMap::new();
         let pt = 96;
-        let target_fps = 30;
         payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
 
-        let h264_encoder = Mutex::new(H264Encoder::new(target_fps, 800_000, 60));
+        let h264_encoder = Mutex::new(H264Encoder::new(TARGET_FPS, BITRATE, KEYINT));
         let h264_packetizer = H264Packetizer::new(1200);
 
         let remote_frame = Arc::new(Mutex::new(None));
@@ -91,7 +91,7 @@ impl MediaAgent {
             Arc::clone(&remote_frame),
             rtp_rx,
         ));
-        let (rx, status) = spawn_camera_worker(target_fps, logger.clone());
+        let (rx, status) = spawn_camera_worker(TARGET_FPS, logger.clone());
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
@@ -111,13 +111,13 @@ impl MediaAgent {
             remote_frame,
             last_local_frame_sent: None,
             rtp_ts: rand::random::<u32>(),
-            rtp_ts_step: 90_000 / target_fps,
+            rtp_ts_step: 90_000 / TARGET_FPS,
             sent_any_frame: false,
             last_sent_local_ts_ms: None,
         }
     }
 
-    pub fn payload_mapping(&self) -> &HashMap<u8, CodecDescriptor> {
+    pub const fn payload_mapping(&self) -> &HashMap<u8, CodecDescriptor> {
         &self.payload_map
     }
 
@@ -132,12 +132,12 @@ impl MediaAgent {
     pub fn handle_engine_event(&mut self, evt: &EngineEvent, session: Option<&Session>) {
         match evt {
             EngineEvent::Established => {
-                if let Some(sess) = session {
-                    if let Err(e) = self.ensure_outbound_tracks(sess) {
-                        let _ = self
-                            .event_tx
-                            .send(EngineEvent::Error(format!("media tracks: {e:?}")));
-                    }
+                if let Some(sess) = session
+                    && let Err(e) = self.ensure_outbound_tracks(sess)
+                {
+                    let _ = self
+                        .event_tx
+                        .send(EngineEvent::Error(format!("media tracks: {e:?}")));
                     // if let Ok(mut w) = self.allowed_pts.write() {
                     //     w.clear();
                     //     w.extend(sess.remote_codecs.iter().map(|c| c.payload_type));
@@ -165,12 +165,12 @@ impl MediaAgent {
 
     pub fn tick(&mut self, session: Option<&Session>) {
         self.drain_local_frames();
-        if let Some(session_handle) = session {
-            if let Err(e) = self.maybe_send_local_frame(session_handle) {
-                let _ = self.event_tx.send(EngineEvent::Error(format!(
-                    "[MediaAgent] send local frame failed: {e:?}"
-                )));
-            }
+        if let Some(session_handle) = session
+            && let Err(e) = self.maybe_send_local_frame(session_handle)
+        {
+            let _ = self.event_tx.send(EngineEvent::Error(format!(
+                "[MediaAgent] send local frame failed: {e:?}"
+            )));
         }
     }
 
@@ -228,10 +228,10 @@ impl MediaAgent {
         };
 
         // 4) ensure the very first frame is a keyframe (before encode)
-        if !self.sent_any_frame {
-            if let Ok(mut enc) = self.h264_encoder.lock() {
-                enc.request_keyframe();
-            }
+        if !self.sent_any_frame
+            && let Ok(mut enc) = self.h264_encoder.lock()
+        {
+            enc.request_keyframe();
         }
 
         // 5) encode RGB -> Annex-B H.264 (SPS/PPS/IDR…)
@@ -265,13 +265,56 @@ impl MediaAgent {
         Ok(())
     }
 
-    fn drain_local_frames(&mut self) {
+    fn drain_local_frames(&self) {
         if let Some(rx) = &self.local_frame_rx {
             while let Ok(frame) = rx.try_recv() {
                 if let Ok(mut guard) = self.local_frame.lock() {
                     *guard = Some(frame);
                 }
             }
+        }
+    }
+
+    pub fn set_bitrate(&mut self, new_bitrate: u32) {
+        let new_fps;
+        let new_keyint;
+
+        if new_bitrate >= 1_500_000 {
+            new_fps = 30;
+            new_keyint = 60;
+        } else if new_bitrate >= 800_000 {
+            new_fps = 25;
+            new_keyint = 90;
+        } else {
+            new_fps = 20;
+            new_keyint = 120;
+        }
+
+        let mut updated = false;
+        if let Ok(mut enc) = self.h264_encoder.lock() {
+            match enc.set_config(new_fps, new_bitrate, new_keyint) {
+                Ok(u) => updated = u,
+                Err(e) => {
+                    sink_log!(
+                        self.logger.as_ref(),
+                        LogLevel::Error,
+                        "Failed to update H264 encoder config: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
+        if updated {
+            self.rtp_ts_step = 90_000 / new_fps;
+            sink_log!(
+                self.logger.as_ref(),
+                LogLevel::Info,
+                "Reconfigured H264 encoder: bitrate={}bps, fps={}, keyint={}",
+                new_bitrate,
+                new_fps,
+                new_keyint,
+            );
         }
     }
 }

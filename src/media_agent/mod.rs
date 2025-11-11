@@ -1,4 +1,5 @@
 pub mod codec_descriptor;
+pub mod constants;
 pub mod frame_format;
 mod h264_decoder;
 mod h264_encoder;
