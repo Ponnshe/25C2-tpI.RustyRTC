@@ -7,6 +7,7 @@ use std::{
 use super::rtp_send_error::RtpSendError;
 use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
+use crate::congestion_controller::congestion_controller::NetworkMetrics;
 use crate::rtcp::{
     report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
 };
@@ -77,12 +78,12 @@ impl RtpSendStream {
 
     /// Advance RTP timestamp by `samples` in codec clock units.
     /// Call this according to your pacing (e.g., for audio: samples per packet; for video: frame-based tick).
-    pub fn advance_timestamp(&mut self, samples: u32) {
+    pub const fn advance_timestamp(&mut self, samples: u32) {
         self.timestamp = self.timestamp.wrapping_add(samples);
     }
 
     /// Optionally set an absolute RTP timestamp (e.g., after a keyframe or clock reset).
-    pub fn set_timestamp(&mut self, ts: u32) {
+    pub const fn set_timestamp(&mut self, ts: u32) {
         self.timestamp = ts;
     }
 
@@ -113,8 +114,13 @@ impl RtpSendStream {
 
     /// Deliver a ReportBlock (from a remote SR/RR) to this sender stream so it can update outbound metrics/RTT.
     /// `arrival_ntp_compact` is the compact NTP time when *we* received the SR/RR that carried this block.
-    pub fn on_report_block(&mut self, rb: &ReportBlock, arrival_ntp_compact: u32) {
+    pub fn on_report_block(
+        &mut self,
+        rb: &ReportBlock,
+        arrival_ntp_compact: u32,
+    ) -> Option<NetworkMetrics> {
         self.tx.on_report_block(rb, arrival_ntp_compact);
+        NetworkMetrics::from_tracker(&self.tx, rb)
     }
 
     /// Optional: expose some outbound health summary for logging/telemetry.

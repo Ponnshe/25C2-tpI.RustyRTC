@@ -123,9 +123,7 @@ impl IceAgent {
                 sink_info!(self.logger, "ICE Data Channel established successfully!");
                 Ok(())
             }
-            Ok(msg) => Err(format!(
-                "Unexpected message received instead of ACK: {msg}"
-            )),
+            Ok(msg) => Err(format!("Unexpected message received instead of ACK: {msg}")),
             Err(e) => Err(format!("Failed to receive ACK: {e}")),
         }
     }
@@ -143,9 +141,9 @@ impl IceAgent {
     /// * `Err(String)` if there was no nominated pair or sending failed.
     pub fn send_test_message(&self, socket: &UdpSocket, msg: &str) -> Result<(), String> {
         let Some(pair) = &self.nominated_pair else {
-                return Err(String::from(
-                    "Cannot send message: no nominated pair available",
-                ));
+            return Err(String::from(
+                "Cannot send message: no nominated pair available",
+            ));
         };
 
         let remote_addr = pair.remote.address;
@@ -162,9 +160,7 @@ impl IceAgent {
                 );
                 Ok(())
             }
-            Err(e) => Err(format!(
-                "Failed to send UDP message to {remote_addr}: {e}"
-            )),
+            Err(e) => Err(format!("Failed to send UDP message to {remote_addr}: {e}")),
         }
     }
 
@@ -196,9 +192,7 @@ impl IceAgent {
                     "Timeout or error while receiving UDP message: {}",
                     e
                 );
-                Err(format!(
-                    "Timeout or error while receiving UDP message: {e}"
-                ))
+                Err(format!("Timeout or error while receiving UDP message: {e}"))
             }
         }
     }
@@ -329,7 +323,7 @@ impl IceAgent {
             });
 
             self.candidate_pairs.get(idx)
-        }else{
+        } else {
             sink_error!(self.logger, "Could not determine nominated pair index.");
             None
         }

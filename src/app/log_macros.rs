@@ -6,7 +6,6 @@
 /// - `crate::core::events::EngineEvent::Log`
 ///
 /// Make sure `EngineEvent::Log` carries a `LogMsg`.
-
 /// Generic event macro (leveled) — sends `EngineEvent::Log(LogMsg)` via a `Sender<EngineEvent>`.
 #[macro_export]
 macro_rules! log_ev {

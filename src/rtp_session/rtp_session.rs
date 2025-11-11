@@ -483,7 +483,9 @@ fn handle_rtcp(
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &sr.reports {
                         if let Some(st) = g.get_mut(&rb.ssrc) {
-                            st.on_report_block(rb, arrival_ntp_compact);
+                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
+                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
+                            }
                         }
                     }
                 }
@@ -494,7 +496,9 @@ fn handle_rtcp(
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &rr.reports {
                         if let Some(st) = g.get_mut(&rb.ssrc) {
-                            st.on_report_block(rb, arrival_ntp_compact);
+                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
+                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
+                            }
                         }
                     }
                 }

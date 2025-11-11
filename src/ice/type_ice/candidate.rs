@@ -131,7 +131,11 @@ impl Candidate {
     }
 
     // RFC 8445 §5.1.2.1 — 32-bit candidate priority
-    const fn calculate_priority(cand_type: &CandidateType, local_pref: u16, component_id: u8) -> u32 {
+    const fn calculate_priority(
+        cand_type: &CandidateType,
+        local_pref: u16,
+        component_id: u8,
+    ) -> u32 {
         let type_pref = match cand_type {
             CandidateType::Host => HOST_TYPE_PREF,
             CandidateType::ServerReflexive => SERVER_REFLEXIVE_TYPE_PREF,

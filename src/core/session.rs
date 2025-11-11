@@ -95,7 +95,7 @@ impl Session {
     /// # Returns
     ///
     /// A new `Session` instance.
-pub fn new(
+    pub fn new(
         sock: Arc<UdpSocket>,
         peer: std::net::SocketAddr,
         remote_codecs: Vec<RtpCodec>,
@@ -122,7 +122,7 @@ pub fn new(
         }
     }
 
-        /// Starts the session, initiating the handshake process and media transport.
+    /// Starts the session, initiating the handshake process and media transport.
     pub fn start(&mut self) {
         // fresh tokens/flags
         self.token_local = OsRng.next_u64();
@@ -193,7 +193,7 @@ pub fn new(
         self.spawn_handshake_driver_thread();
     }
 
-        /// Spawns a thread to receive and process incoming application messages.
+    /// Spawns a thread to receive and process incoming application messages.
     fn spawn_receiver_thread(&self) {
         let rx_run = Arc::clone(&self.run_flag);
         let rx_sock = Arc::clone(&self.sock);
@@ -241,7 +241,7 @@ pub fn new(
         });
     }
 
-        /// Spawns a thread to drive the handshake process, sending SYN messages and retransmitting as needed.
+    /// Spawns a thread to drive the handshake process, sending SYN messages and retransmitting as needed.
     fn spawn_handshake_driver_thread(&self) {
         let hs_run = Arc::clone(&self.run_flag);
         let hs_est = Arc::clone(&self.established);
@@ -291,7 +291,7 @@ pub fn new(
         });
     }
 
-        /// Sends a raw payload over the UDP socket if the session is established.
+    /// Sends a raw payload over the UDP socket if the session is established.
     ///
     /// # Arguments
     ///
@@ -312,7 +312,7 @@ pub fn new(
         }
     }
 
-        /// Initiates the session closing process.
+    /// Initiates the session closing process.
     pub fn request_close(&mut self) {
         self.we_initiated_close.store(true, Ordering::SeqCst);
         self.established.store(false, Ordering::SeqCst);
@@ -460,7 +460,7 @@ pub fn new(
             .map_err(|e| e.to_string())
     }
 
-        /// Tears down the RTP session.
+    /// Tears down the RTP session.
     fn teardown_rtp(&self) {
         stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
     }
@@ -490,7 +490,6 @@ struct HandleAppMsgArgs<'a> {
     rtp_media_tx: &'a Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     /// Handle to the RTP session.
     rtp_session_handle: &'a Arc<Mutex<Option<RtpSession>>>,
-
 }
 
 /// Handles incoming application messages.
@@ -575,7 +574,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
         }
         AppMsg::Other(pkt) => {
             if args.rx_est.load(Ordering::SeqCst) {
-                let maybe_tx = args.rtp_media_tx
+                let maybe_tx = args
+                    .rtp_media_tx
                     .lock()
                     .ok()
                     .and_then(|guard| guard.as_ref().cloned());

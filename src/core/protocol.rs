@@ -9,7 +9,6 @@ pub enum AppMsg {
     Other(Vec<u8>),
 }
 
-
 #[must_use]
 pub fn encode_syn(token: u64) -> String {
     format!("SYN {token:016x}")
