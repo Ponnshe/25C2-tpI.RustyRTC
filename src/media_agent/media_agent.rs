@@ -1,7 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
-    path::PathBuf,
     sync::{
         Arc, Mutex, RwLock,
         mpsc::{self, Receiver, Sender},
@@ -23,7 +21,7 @@ use crate::{
         h264_decoder::H264Decoder,
         h264_encoder::H264Encoder,
         media_agent_error::{MediaAgentError, Result},
-        utils::now_millis,
+        utils::{discover_camera_id, now_millis},
         video_frame::VideoFrame,
     },
     rtp_session::{
@@ -37,7 +35,7 @@ use crate::{
     sink_log,
 };
 
-use super::constants::{BITRATE, KEYINT, TARGET_FPS};
+use super::constants::{BITRATE, DEFAULT_CAMERA_ID, KEYINT, TARGET_FPS};
 
 use opencv::{
     core::{AlgorithmHint, CV_8UC3, Mat},
@@ -74,6 +72,13 @@ impl MediaAgent {
         let pt = 96;
         payload_map.insert(pt, CodecDescriptor::h264_dynamic(pt));
 
+        //Getting a valid_camera_id
+        let camera_id = if let Some(id) = discover_camera_id() {
+            id
+        } else {
+            DEFAULT_CAMERA_ID
+        };
+
         let h264_encoder = Mutex::new(H264Encoder::new(TARGET_FPS, BITRATE, KEYINT));
         let h264_packetizer = H264Packetizer::new(1200);
 
@@ -85,13 +90,14 @@ impl MediaAgent {
         let allowed_pts = Arc::new(RwLock::new(
             payload_map.keys().copied().collect::<HashSet<u8>>(),
         ));
+
         let rtp_decoder_handle = Some(spawn_rtp_decoder_worker(
             Arc::clone(&logger),
             Arc::clone(&allowed_pts),
             Arc::clone(&remote_frame),
             rtp_rx,
         ));
-        let (rx, status) = spawn_camera_worker(TARGET_FPS, logger.clone());
+        let (rx, status) = spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id);
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
@@ -378,9 +384,10 @@ fn spawn_rtp_decoder_worker(
 fn spawn_camera_worker(
     target_fps: u32,
     logger: Arc<dyn LogSink>,
+    camera_id: i32,
 ) -> (Receiver<VideoFrame>, Option<String>) {
     let (local_frame_tx, local_frame_rx) = mpsc::channel();
-    let camera_manager = CameraManager::new(0, logger);
+    let camera_manager = CameraManager::new(camera_id, logger);
 
     let status = match &camera_manager {
         Ok(cam) => Some(format!(
@@ -540,14 +547,4 @@ fn tight_rgb_bytes(mat: &Mat, width: u32, height: u32) -> opencv::Result<Vec<u8>
         dst.copy_from_slice(src);
     }
     Ok(out)
-}
-
-fn discover_camera_path() -> Option<PathBuf> {
-    for idx in 0..4 {
-        let path = PathBuf::from(format!("/dev/video{idx}"));
-        if fs::metadata(&path).is_ok() {
-            return Some(path);
-        }
-    }
-    None
 }
