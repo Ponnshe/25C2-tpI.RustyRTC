@@ -26,7 +26,9 @@
 //! Or build full RTP packets (keeps `seq` locally and returns the next value):
 //!   let (pkts, next_seq) = p.packetize_annexb_to_rtp(annexb_frame, pt, ts, ssrc, seq_start);
 
-use crate::{rtp::rtp_packet::RtpPacket, rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk};
+use crate::rtp::rtp_packet::RtpPacket;
+
+use super::rtp_payload_chunk::RtpPayloadChunk;
 
 /// H.264 (RFC 6184) packetizer.
 #[derive(Debug, Clone)]
@@ -167,62 +169,7 @@ impl H264Packetizer {
     }
 }
 
-/// Extract NALU slices from an Annex-B access unit.
-///
-/// Returns a `Vec<&[u8]>` where each slice is *the NAL unit without start codes*.
-/// Accepts both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
-/// If no start code is found, the whole buffer is treated as a single NALU.
-fn split_annexb_nalus(data: &[u8]) -> Vec<&[u8]> {
-    // Find first start code
-    let (mut sc_pos, mut sc_len) = match find_start_code(data, 0) {
-        Some(t) => t,
-        None => {
-            return if data.is_empty() {
-                Vec::new()
-            } else {
-                vec![data]
-            };
-        }
-    };
 
-    let n = data.len();
-    let mut out = Vec::new();
-
-    loop {
-        let nal_start = sc_pos + sc_len;
-
-        // Find next start code
-        let next = find_start_code(data, nal_start);
-
-        let mut nal_end = match next {
-            Some((next_sc_pos, _next_sc_len)) => next_sc_pos, // up to start of the next prefix
-            None => n, // last NAL goes to end (we’ll trim trailing zeros below)
-        };
-
-        // Ignore empty NALs (back-to-back start codes)
-        if nal_end > nal_start {
-            // For the very last NAL, trim trailing zeros in the buffer tail (test expects this)
-            if next.is_none() {
-                while nal_end > nal_start && data[nal_end - 1] == 0 {
-                    nal_end -= 1;
-                }
-            }
-            if nal_end > nal_start {
-                out.push(&data[nal_start..nal_end]);
-            }
-        }
-
-        match next {
-            Some((next_sc_pos, next_sc_len)) => {
-                sc_pos = next_sc_pos;
-                sc_len = next_sc_len;
-            }
-            None => break,
-        }
-    }
-
-    out
-}
 fn split_annexb_nalus_preserve_last_zeros(data: &[u8]) -> Vec<&[u8]> {
     let (mut sc_pos, mut sc_len) = match find_start_code(data, 0) {
         Some(t) => t,

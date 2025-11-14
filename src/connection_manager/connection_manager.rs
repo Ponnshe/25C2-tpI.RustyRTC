@@ -10,7 +10,7 @@ use crate::connection_manager::config::{
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
-use crate::media_agent::codec_descriptor::CodecDescriptor;
+use crate::media_transport::codec::CodecDescriptor;
 use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;

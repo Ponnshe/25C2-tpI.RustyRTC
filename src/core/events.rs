@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use crate::{app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics};
+use crate::{
+    app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics,
+    media_agent::video_frame::VideoFrame,
+};
 
 #[derive(Debug, Clone)]
 pub struct RtpIn {
@@ -27,6 +30,7 @@ pub enum EngineEvent {
     Closed,
     Error(String),
     RtpIn(RtpIn),
+    DecodedVideoFrame(Box<VideoFrame>),
     NetworkMetrics(NetworkMetrics),
     UpdateBitrate(u32),
 }

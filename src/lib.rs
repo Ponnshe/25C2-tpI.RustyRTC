@@ -5,6 +5,7 @@ pub mod connection_manager;
 pub mod core;
 pub mod ice;
 pub mod media_agent;
+pub mod media_transport;
 pub mod rtcp;
 pub mod rtp;
 pub mod rtp_session;

@@ -85,14 +85,17 @@ impl H264Encoder {
         }
     }
 
+    #[allow(dead_code)]
     pub fn target_fps(&self) -> u32 {
         self.target_fps
     }
 
+    #[allow(dead_code)]
     pub fn target_bps(&self) -> u32 {
         self.target_bps
     }
 
+    #[allow(dead_code)]
     pub fn keyint(&self) -> u32 {
         self.keyint
     }

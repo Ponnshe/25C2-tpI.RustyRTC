@@ -27,7 +27,7 @@ use crate::{
 };
 use crate::{
     rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
-    rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk,
+    media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
 };
 use rand::{RngCore, rngs::OsRng};
 

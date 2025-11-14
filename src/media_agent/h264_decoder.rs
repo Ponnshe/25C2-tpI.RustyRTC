@@ -11,7 +11,7 @@ use crate::{
         utils::now_millis,
         video_frame::VideoFrame,
     },
-    rtp_session::payload::h264_depacketizer::AccessUnit,
+    media_transport::payload::h264_depacketizer::AccessUnit,
 };
 
 pub struct H264Decoder {

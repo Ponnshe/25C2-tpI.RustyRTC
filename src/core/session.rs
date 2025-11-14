@@ -22,7 +22,7 @@ use crate::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
-    rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk,
+    media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
     sink_log,
 };
 
@@ -47,7 +47,7 @@ pub struct Session {
     /// The peer's socket address.
     peer: net::SocketAddr,
     /// List of remote RTP codecs.
-    remote_codecs: Vec<RtpCodec>,
+    pub remote_codecs: Vec<RtpCodec>,
 
     /// Flag to control the main run loop of the session.
     run_flag: Arc<AtomicBool>,
@@ -445,7 +445,7 @@ impl Session {
     /// Returns an error if the rtp session is not running or the lock is poisoned.
     pub fn send_rtp_chunks_for_frame(
         &self,
-        handle: &OutboundTrackHandle,
+        local_ssrc: u32,
         chunks: &[RtpPayloadChunk],
         timestamp: u32,
     ) -> Result<(), String> {
@@ -456,7 +456,7 @@ impl Session {
         let rtp = guard
             .as_ref()
             .ok_or_else(|| "rtp session not running".to_string())?;
-        rtp.send_rtp_chunks_for_frame(handle.local_ssrc, chunks, timestamp)
+        rtp.send_rtp_chunks_for_frame(local_ssrc, chunks, timestamp)
             .map_err(|e| e.to_string())
     }
 

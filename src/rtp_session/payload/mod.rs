@@ -1,10 +1,8 @@
-pub mod h264_depacketizer;
-pub mod h264_packetizer;
-pub mod rtp_payload_chunk;
+
 #[cfg(test)]
 mod roundtrip_tests {
-    use super::h264_depacketizer::{AccessUnit, H264Depacketizer};
-    use super::h264_packetizer::H264Packetizer;
+    use crate::media_transport::payload::h264_depacketizer::{AccessUnit, H264Depacketizer};
+    use crate::media_transport::payload::h264_packetizer::H264Packetizer;
 
     // ---------- helpers ----------
     fn mk_nalu(ntype: u8, nri: u8, payload_len: usize) -> Vec<u8> {
