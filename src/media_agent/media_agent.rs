@@ -10,9 +10,11 @@ use crate::{
     app::{log_level::LogLevel, log_sink::LogSink},
     camera_manager::camera_manager_c::CameraManager,
     core::events::EngineEvent,
+    logger_debug, logger_error,
     media_agent::{
         camera_worker::{camera_loop, synthetic_loop},
-        encoder_worker::{spawn_encoder_worker, EncoderOrder},
+        decoder_worker::spawn_decoder_worker,
+        encoder_worker::{EncoderOrder, spawn_encoder_worker},
         events::MediaAgentEvent,
         h264_decoder::H264Decoder,
         media_agent_error::Result,
@@ -62,11 +64,7 @@ impl MediaAgent {
         ));
 
         let (encoder_tx, encoder_rx) = mpsc::channel();
-        let encoder_handle = Some(spawn_encoder_worker(
-            logger.clone(),
-            encoder_rx,
-            event_tx,
-        ));
+        let encoder_handle = Some(spawn_encoder_worker(logger.clone(), encoder_rx, event_tx));
 
         Self {
             local_frame_rx: Mutex::new(Some(rx)),
@@ -175,11 +173,7 @@ fn spawn_camera_worker(
     target_fps: u32,
     logger: Arc<dyn LogSink>,
     camera_id: i32,
-) -> (
-    Receiver<VideoFrame>,
-    Option<String>,
-    Option<JoinHandle<()>>,
-) {
+) -> (Receiver<VideoFrame>, Option<String>, Option<JoinHandle<()>>) {
     let (local_frame_tx, local_frame_rx) = mpsc::channel();
     let camera_manager = CameraManager::new(camera_id, logger);
 
@@ -208,44 +202,4 @@ fn spawn_camera_worker(
         .ok();
 
     (local_frame_rx, status, handle)
-}
-
-fn spawn_decoder_worker(
-    logger: Arc<dyn LogSink>,
-    event_rx: Receiver<MediaAgentEvent>,
-    event_tx: Sender<EngineEvent>,
-) -> JoinHandle<()> {
-    thread::Builder::new()
-        .name("media-agent-decoder".into())
-        .spawn(move || {
-            let mut h264_decoder = H264Decoder::new();
-
-            while let Ok(event) = event_rx.recv() {
-                match event {
-                    MediaAgentEvent::ChunkReady { codec_spec, chunk } => match codec_spec {
-                        CodecSpec::H264 => match h264_decoder.decode_chunk(&chunk) {
-                            Ok(Some(frame)) => {
-                                let _ =
-                                    event_tx.send(EngineEvent::DecodedVideoFrame(Box::new(frame)));
-                            }
-                            Ok(None) => {
-                                sink_log!(
-                                    logger.as_ref(),
-                                    LogLevel::Debug,
-                                    "[MediaAgent] decoder needs more NALs for this AU"
-                                );
-                            }
-                            Err(e) => {
-                                sink_log!(
-                                    logger.as_ref(),
-                                    LogLevel::Error,
-                                    "[MediaAgent] decode error: {e:?}"
-                                );
-                            }
-                        },
-                    },
-                }
-            }
-        })
-        .expect("spawn media-agent-decoder")
 }
