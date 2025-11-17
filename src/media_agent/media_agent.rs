@@ -12,7 +12,7 @@ use crate::{
     core::events::EngineEvent,
     logger_debug, logger_error,
     media_agent::{
-        camera_worker::{camera_loop, synthetic_loop},
+        camera_worker::{camera_loop, spawn_camera_worker, synthetic_loop},
         decoder_worker::spawn_decoder_worker,
         encoder_worker::{EncoderOrder, spawn_encoder_worker},
         events::MediaAgentEvent,
@@ -167,39 +167,4 @@ impl MediaAgent {
             );
         }
     }
-}
-
-fn spawn_camera_worker(
-    target_fps: u32,
-    logger: Arc<dyn LogSink>,
-    camera_id: i32,
-) -> (Receiver<VideoFrame>, Option<String>, Option<JoinHandle<()>>) {
-    let (local_frame_tx, local_frame_rx) = mpsc::channel();
-    let camera_manager = CameraManager::new(camera_id, logger);
-
-    let status = match &camera_manager {
-        Ok(cam) => Some(format!(
-            "Using camera source with resolution {}x{}",
-            cam.width(),
-            cam.height()
-        )),
-        Err(e) => Some(format!("Camera error: {}. Using test pattern.", e)),
-    };
-
-    let handle = thread::Builder::new()
-        .name("media-agent-camera".into())
-        .spawn(move || {
-            if let Ok(cam) = camera_manager {
-                if let Err(e) = camera_loop(cam, local_frame_tx, target_fps) {
-                    eprintln!("camera loop stopped: {e:?}");
-                }
-            } else {
-                if let Err(e) = synthetic_loop(local_frame_tx, target_fps) {
-                    eprintln!("synthetic loop stopped: {e:?}");
-                }
-            }
-        })
-        .ok();
-
-    (local_frame_rx, status, handle)
 }
