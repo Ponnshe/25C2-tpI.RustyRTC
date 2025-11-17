@@ -4,9 +4,9 @@ use super::packetizer_worker::PacketizedFrame;
 
 #[derive(Debug)]
 pub enum DepacketizerEvent {
-    ChunkReady {
+    AnnexBFrameReady {
         codec_spec: CodecSpec,
-        chunk: Vec<u8>,
+        bytes: Vec<u8>,
     },
 }
 

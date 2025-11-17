@@ -449,7 +449,7 @@ impl ConnectionManager {
         } else {
             self.local_codecs
                 .iter()
-                .map(|c| c.rtp.payload_type.to_string())
+                .map(|c| c.rtp_representation.payload_type.to_string())
                 .collect()
         };
         media_desc.set_fmts(formats);
@@ -471,7 +471,7 @@ impl ConnectionManager {
             ));
         } else {
             for descriptor in &self.local_codecs {
-                let codec = &descriptor.rtp;
+                let codec = &descriptor.rtp_representation;
                 let name = if codec.name.is_empty() {
                     "H264"
                 } else {
@@ -479,7 +479,7 @@ impl ConnectionManager {
                 };
                 let value = format!("{} {}/{}", codec.payload_type, name, codec.clock_rate);
                 attrs.push(SDPAttribute::new("rtpmap", Some(value)));
-                if let Some(fmtp) = &descriptor.fmtp {
+                if let Some(fmtp) = &descriptor.sdp_fmtp {
                     attrs.push(SDPAttribute::new(
                         "fmtp",
                         Some(format!("{} {fmtp}", codec.payload_type)),
