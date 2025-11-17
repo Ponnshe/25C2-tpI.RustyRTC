@@ -1,7 +1,7 @@
 
 #[cfg(test)]
 mod roundtrip_tests {
-    use crate::media_transport::payload::h264_depacketizer::{AccessUnit, H264Depacketizer};
+    use crate::media_transport::depacketizer::h264_depacketizer::H264Depacketizer;
     use crate::media_transport::payload::h264_packetizer::H264Packetizer;
 
     // ---------- helpers ----------
@@ -25,7 +25,7 @@ mod roundtrip_tests {
         out
     }
 
-    fn roundtrip_once(mtu: usize, nalus: Vec<Vec<u8>>, ts: u32, seq_start: u16) -> AccessUnit {
+    fn roundtrip_once(mtu: usize, nalus: Vec<Vec<u8>>, ts: u32, seq_start: u16) -> Vec<u8> {
         let p = H264Packetizer::new(mtu);
         let annexb = to_annexb(&nalus);
         let chunks = p.packetize_annexb_to_payloads(&annexb);
@@ -51,11 +51,9 @@ mod roundtrip_tests {
             }
         }
 
-        let au = out.expect("depacketizer must emit an AU on marker=true");
-        assert_eq!(au.timestamp_90khz, ts);
-        // IMPORTANT: returned nalus must match originals exactly
-        assert_eq!(au.nalus, nalus);
-        au
+        let frame = out.expect("depacketizer must emit a frame on marker=true");
+        assert_eq!(frame, annexb);
+        frame
     }
 
     // ---------- tests ----------
@@ -110,13 +108,13 @@ mod roundtrip_tests {
         ];
         let ts1 = 10_000;
         let au1 = roundtrip_once(mtu, f1.clone(), ts1, 4000);
-        assert_eq!(au1.nalus, f1);
+        assert_eq!(au1, to_annexb(&f1));
 
         // Frame 2
         let f2 = vec![mk_nalu(1, 0x20, 300)]; // P-frame
         let ts2 = 20_000;
         let au2 = roundtrip_once(mtu, f2.clone(), ts2, 5000);
-        assert_eq!(au2.nalus, f2);
+        assert_eq!(au2, to_annexb(&f2));
     }
 
     #[test]

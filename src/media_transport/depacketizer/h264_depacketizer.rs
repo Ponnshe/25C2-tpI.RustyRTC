@@ -6,12 +6,6 @@
 //! Scope : non-interleaved, packetization-mode=1. STAP-A is ignored (not used by your packetizer).
 
 #[derive(Debug, Clone)]
-pub struct AccessUnit {
-    pub timestamp_90khz: u32,
-    pub nalus: Vec<Vec<u8>>, // each entry begins with the 1-byte NAL header
-}
-
-#[derive(Debug, Clone)]
 struct FuState {
     nalu_header: u8, // reconstructed: F|NRI|Type
     buf: Vec<u8>,    // complete NAL content: [nalu_header, ...payload...]
@@ -43,7 +37,7 @@ impl H264Depacketizer {
         marker: bool,
         timestamp: u32,
         seq: u16,
-    ) -> Option<AccessUnit> {
+    ) -> Option<Vec<u8>> {
         // timestamp & sequence handling unchanged...
         if let Some(ts) = self.cur_ts {
             if timestamp != ts {
@@ -146,16 +140,18 @@ impl H264Depacketizer {
         }
     }
 
-    fn finish_if_marker(&mut self, marker: bool) -> Option<AccessUnit> {
+    fn finish_if_marker(&mut self, marker: bool) -> Option<Vec<u8>> {
         if !marker {
             return None;
         }
 
         let out = if !self.frame_corrupted && !self.nalus.is_empty() {
-            Some(AccessUnit {
-                timestamp_90khz: self.cur_ts.unwrap_or(0),
-                nalus: std::mem::take(&mut self.nalus),
-            })
+            let mut annexb = Vec::new();
+            for nalu in &self.nalus {
+                annexb.extend_from_slice(&[0, 0, 0, 1]);
+                annexb.extend_from_slice(nalu);
+            }
+            Some(annexb)
         } else {
             None
         };
@@ -164,6 +160,7 @@ impl H264Depacketizer {
         self.expected_seq = None;
         self.fua = None;
         self.frame_corrupted = false;
+        self.nalus.clear();
         out
     }
 
@@ -230,7 +227,7 @@ mod tests {
         marker: bool,
         ts: u32,
         seq: &mut u16,
-    ) -> Option<AccessUnit> {
+    ) -> Option<Vec<u8>> {
         let out = d.push_rtp(payload, marker, ts, *seq);
         *seq = seq.wrapping_add(1);
         out
@@ -248,10 +245,12 @@ mod tests {
         // Not last yet
         assert!(push_seq(&mut d, &nalu, false, ts, &mut seq).is_none());
         // Last
-        let au = push_seq(&mut d, &nalu, true, ts, &mut seq).expect("AU expected");
-        assert_eq!(au.timestamp_90khz, ts);
-        assert_eq!(au.nalus.len(), 1);
-        assert_eq!(au.nalus[0], nalu);
+        let frame = push_seq(&mut d, &nalu, true, ts, &mut seq).expect("Frame expected");
+        
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&nalu);
+
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]
@@ -264,10 +263,14 @@ mod tests {
         let pps = mk_nalu(8, 0x60, 3);
 
         assert!(push_seq(&mut d, &sps, false, ts, &mut seq).is_none());
-        let au = push_seq(&mut d, &pps, true, ts, &mut seq).expect("AU expected");
-        assert_eq!(au.nalus.len(), 2);
-        assert_eq!(au.nalus[0], sps);
-        assert_eq!(au.nalus[1], pps);
+        let frame = push_seq(&mut d, &pps, true, ts, &mut seq).expect("Frame expected");
+        
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&sps);
+        expected_frame.extend_from_slice(&[0, 0, 0, 1]);
+        expected_frame.extend_from_slice(&pps);
+
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]
@@ -282,13 +285,12 @@ mod tests {
 
         assert!(push_seq(&mut d, &frags[0], false, ts, &mut seq).is_none());
         assert!(push_seq(&mut d, &frags[1], false, ts, &mut seq).is_none());
-        let au = push_seq(&mut d, &frags[2], true, ts, &mut seq).expect("AU expected");
+        let frame = push_seq(&mut d, &frags[2], true, ts, &mut seq).expect("Frame expected");
 
-        assert_eq!(au.nalus.len(), 1);
-        assert_eq!(
-            au.nalus[0], idr,
-            "FU-A should reconstruct the exact original NALU"
-        );
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&idr);
+
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]
@@ -350,10 +352,12 @@ mod tests {
         // new timestamp -> previous partial is dropped/reset
         assert!(push_seq(&mut d, &n2, false, ts2, &mut seq).is_none());
         // now finish ts2
-        let au = push_seq(&mut d, &n2, true, ts2, &mut seq).expect("AU expected");
-        assert_eq!(au.timestamp_90khz, ts2);
-        assert_eq!(au.nalus.len(), 1);
-        assert_eq!(au.nalus[0], n2);
+        let frame = push_seq(&mut d, &n2, true, ts2, &mut seq).expect("Frame expected");
+        
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&n2);
+        
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]
@@ -368,24 +372,29 @@ mod tests {
 
         // Then send a valid small NAL and finish
         let n = mk_nalu(1, 0x20, 3);
-        let au = push_seq(&mut d, &n, true, ts, &mut seq).expect("AU expected");
-        assert_eq!(au.nalus.len(), 1);
-        assert_eq!(au.nalus[0], n);
+        let frame = push_seq(&mut d, &n, true, ts, &mut seq).expect("Frame expected");
+        
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&n);
+
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]
     fn sequence_wrap_around_ok() {
         let mut d = H264Depacketizer::new();
         let ts = 31415;
-        let mut seq = u16::MAX - 1;
+        let mut seq = u16::MAX;
 
         let n = mk_nalu(1, 0x20, 2);
 
-        assert!(push_seq(&mut d, &n, false, ts, &mut seq).is_none()); // seq = 65534
         assert!(push_seq(&mut d, &n, false, ts, &mut seq).is_none()); // seq = 65535
-        let au = push_seq(&mut d, &n, true, ts, &mut seq).expect("AU expected"); // seq wraps to 0
-        assert_eq!(au.nalus.len(), 1);
-        assert_eq!(au.nalus[0], n);
+        let frame = push_seq(&mut d, &n, true, ts, &mut seq).expect("Frame expected"); // seq wraps to 0
+        
+        let mut expected_frame = vec![0, 0, 0, 1];
+        expected_frame.extend_from_slice(&n);
+
+        assert_eq!(frame, expected_frame);
     }
 
     #[test]

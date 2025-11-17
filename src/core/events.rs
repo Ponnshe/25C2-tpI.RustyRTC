@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 
 use crate::{
-    app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics,
-    media_agent::video_frame::VideoFrame,
+    app::log_msg::LogMsg,
+    congestion_controller::congestion_controller::NetworkMetrics,
+    media_agent::{spec::CodecSpec, video_frame::VideoFrame},
 };
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,11 @@ pub enum EngineEvent {
     Closed,
     Error(String),
     RtpIn(RtpIn),
+    EncodedVideoFrame {
+        annexb_frame: Vec<u8>,
+        timestamp_ms: u128,
+        codec_spec: CodecSpec,
+    },
     DecodedVideoFrame(Box<VideoFrame>),
     NetworkMetrics(NetworkMetrics),
     UpdateBitrate(u32),

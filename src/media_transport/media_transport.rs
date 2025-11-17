@@ -1,8 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc, RwLock,
+        Arc,
         mpsc::{self, Receiver, Sender},
+        RwLock,
     },
     thread::{self, JoinHandle},
 };
@@ -13,42 +14,35 @@ use crate::{
         events::{EngineEvent, RtpIn},
         session::Session,
     },
-    media_agent::{
-        media_agent::MediaAgent,
-        spec::CodecSpec,
-        video_frame::VideoFrame,
-    },
+    media_agent::{events::MediaAgentEvent, media_agent::MediaAgent, spec::CodecSpec},
     media_transport::{
         codec::CodecDescriptor,
+        constants::{DYNAMIC_PAYLOAD_TYPE_START, RTP_TX_CHANNEL_SIZE},
+        depacketizer::h264_depacketizer::H264Depacketizer,
         error::{MediaTransportError, Result},
-        payload::{
-            h264_depacketizer::H264Depacketizer, h264_packetizer::H264Packetizer,
-            rtp_payload_chunk::RtpPayloadChunk,
-        },
-        constants::{
-            RTP_TX_CHANNEL_SIZE,
-            DYNAMIC_PAYLOAD_TYPE_START,
-        },
+        events::{DepacketizerEvent, PacketizerEvent},
+        packetizer_worker::{spawn_packetizer_worker, PacketizeOrder},
     },
     rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
     sink_log,
 };
-
 
 pub struct MediaTransport {
     media_agent: Arc<MediaAgent>,
     event_tx: Sender<EngineEvent>,
     rtp_tx: mpsc::SyncSender<RtpIn>,
     _logger: Arc<dyn LogSink>,
-    _rtp_decoder_handle: Option<JoinHandle<()>>,
+    _depacketizer_handle: Option<JoinHandle<()>>,
+    _packetizer_handle: Option<JoinHandle<()>>,
     payload_map: HashMap<u8, CodecDescriptor>,
     outbound_tracks: HashMap<u8, OutboundTrackHandle>,
-    h264_packetizer: H264Packetizer,
     allowed_pts: Arc<RwLock<HashSet<u8>>>,
     rtp_ts: u32,
     rtp_ts_step: u32,
-    sent_any_frame: bool,
-    last_sent_local_ts_ms: Option<u128>,
+    last_received_local_ts_ms: Option<u128>,
+    depacketizer_event_rx: Receiver<DepacketizerEvent>,
+    packetizer_rx: Receiver<PacketizerEvent>,
+    packetizer_tx: Sender<PacketizeOrder>,
 }
 
 impl MediaTransport {
@@ -65,22 +59,27 @@ impl MediaTransport {
             current_pt += 1;
         }
 
-        let h264_packetizer = H264Packetizer::new(1200);
         let (rtp_tx, rtp_rx) = mpsc::sync_channel::<RtpIn>(RTP_TX_CHANNEL_SIZE);
         let allowed_pts = Arc::new(RwLock::new(
             payload_map.keys().copied().collect::<HashSet<u8>>(),
         ));
 
-        let media_agent_for_worker = Arc::clone(&media_agent);
         let payload_map_for_worker = payload_map.clone();
+        let (depacketizer_event_tx, depacketizer_event_rx) = mpsc::channel();
 
-        let rtp_decoder_handle = Some(spawn_rtp_decoder_worker(
+        let depacketizer_handle = Some(spawn_depacketizer_worker(
             logger.clone(),
             allowed_pts.clone(),
             rtp_rx,
-            event_tx.clone(),
-            media_agent_for_worker,
+            depacketizer_event_tx,
             payload_map_for_worker,
+        ));
+
+        let (packetizer_tx, packetizer_order_rx) = mpsc::channel();
+        let (packetizer_event_tx, packetizer_rx) = mpsc::channel();
+        let packetizer_handle = Some(spawn_packetizer_worker(
+            packetizer_order_rx,
+            packetizer_event_tx,
         ));
 
         let target_fps = 30; // TODO: Get from config
@@ -90,15 +89,17 @@ impl MediaTransport {
             event_tx,
             rtp_tx,
             _logger: logger,
-            _rtp_decoder_handle: rtp_decoder_handle,
+            _depacketizer_handle: depacketizer_handle,
+            _packetizer_handle: packetizer_handle,
             payload_map,
             outbound_tracks: HashMap::new(),
-            h264_packetizer,
             allowed_pts,
             rtp_ts: rand::random::<u32>(),
             rtp_ts_step: 90_000 / target_fps,
-            sent_any_frame: false,
-            last_sent_local_ts_ms: None,
+            last_received_local_ts_ms: None,
+            depacketizer_event_rx,
+            packetizer_rx,
+            packetizer_tx,
         }
     }
 
@@ -121,14 +122,26 @@ impl MediaTransport {
                 self.outbound_tracks.clear();
             }
             EngineEvent::RtpIn(pkt) => {
-                let _ = self.rtp_tx.try_send(RtpIn {
-                    payload: pkt.payload.clone(),
-                    marker: pkt.marker,
-                    timestamp_90khz: pkt.timestamp_90khz,
-                    seq: pkt.seq,
-                    pt: pkt.pt,
-                    ssrc: pkt.ssrc,
-                });
+                let _ = self.rtp_tx.try_send(pkt.clone());
+            }
+            EngineEvent::EncodedVideoFrame {
+                annexb_frame,
+                timestamp_ms,
+                codec_spec,
+            } => {
+                if self.last_received_local_ts_ms == Some(*timestamp_ms) {
+                    return;
+                }
+                self.last_received_local_ts_ms = Some(*timestamp_ms);
+
+                let order = PacketizeOrder {
+                    annexb_frame: annexb_frame.clone(),
+                    rtp_ts: self.rtp_ts,
+                    codec_spec: *codec_spec,
+                };
+                if self.packetizer_tx.send(order).is_ok() {
+                    self.rtp_ts = self.rtp_ts.wrapping_add(self.rtp_ts_step);
+                }
             }
             EngineEvent::DecodedVideoFrame(frame) => {
                 self.media_agent.set_remote_frame(*frame.clone());
@@ -139,16 +152,44 @@ impl MediaTransport {
 
     pub fn tick(&mut self, session: Option<&Session>) {
         self.media_agent.tick();
-        if let Some(session_handle) = session {
-            if let Err(e) = self.maybe_send_local_frame(session_handle) {
-                let _ = self.event_tx.send(EngineEvent::Error(format!(
-                    "[MediaTransport] send local frame failed: {e:?}"
-                )));
+        self.process_depacketizer_events();
+        self.process_packetizer_events(session);
+    }
+
+    fn process_depacketizer_events(&mut self) {
+        while let Ok(event) = self.depacketizer_event_rx.try_recv() {
+            match event {
+                DepacketizerEvent::ChunkReady { codec_spec, chunk } => {
+                    self.media_agent
+                        .post_event(MediaAgentEvent::ChunkReady { codec_spec, chunk });
+                }
             }
         }
     }
 
-    pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
+    fn process_packetizer_events(&mut self, session: Option<&Session>) {
+        let Some(session) = session else { return };
+        while let Ok(event) = self.packetizer_rx.try_recv() {
+            match event {
+                PacketizerEvent::FramePacketized(frame) => {
+                    let Some((handle, _codec_spec)) = self.outbound_tracks.iter().next().map(|(pt, handle)| {
+                        let spec = self.payload_map.get(pt).map(|d| d.spec).unwrap();
+                        (handle, spec)
+                    }) else { continue; };
+
+                    if let Err(e) =
+                        session.send_rtp_chunks_for_frame(handle.local_ssrc, &frame.chunks, frame.rtp_ts)
+                    {
+                        let _ = self.event_tx.send(EngineEvent::Error(format!(
+                            "[MediaTransport] send local frame failed: {e:?}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn snapshot_frames(&self) -> (Option<crate::media_agent::video_frame::VideoFrame>, Option<crate::media_agent::video_frame::VideoFrame>) {
         self.media_agent.snapshot_frames()
     }
 
@@ -184,67 +225,17 @@ impl MediaTransport {
         }
         Ok(())
     }
-
-    fn maybe_send_local_frame(&mut self, session: &Session) -> Result<()> {
-        if self.outbound_tracks.is_empty() {
-            return Ok(());
-        }
-
-        let (handle, codec_spec) = match self.outbound_tracks.iter().next() {
-            Some((pt, handle)) => {
-                let spec = self
-                    .payload_map
-                    .get(pt)
-                    .map(|desc| desc.spec)
-                    .unwrap_or(CodecSpec::H264); // Fallback, should not happen
-                (handle, spec)
-            }
-            None => return Ok(()),
-        };
-
-        let force_keyframe = !self.sent_any_frame;
-        let Some((annexb_frame, timestamp_ms)) = self
-            .media_agent
-            .encode(codec_spec, force_keyframe)
-            .map_err(|e| MediaTransportError::Send(e.to_string()))?
-        else {
-            return Ok(());
-        };
-
-        if self.last_sent_local_ts_ms == Some(timestamp_ms) {
-            return Ok(());
-        }
-
-        let chunks: Vec<RtpPayloadChunk> = self
-            .h264_packetizer
-            .packetize_annexb_to_payloads(&annexb_frame);
-        if chunks.is_empty() {
-            return Ok(());
-        }
-
-        let ts90k = self.rtp_ts;
-
-        session
-            .send_rtp_chunks_for_frame(handle.local_ssrc, &chunks, ts90k)
-            .map_err(|e| MediaTransportError::Send(e.to_string()))?;
-
-        self.rtp_ts = self.rtp_ts.wrapping_add(self.rtp_ts_step);
-        self.sent_any_frame = true;
-        self.last_sent_local_ts_ms = Some(timestamp_ms);
-        Ok(())
-    }
 }
 
-fn spawn_rtp_decoder_worker(
+fn spawn_depacketizer_worker(
     logger: Arc<dyn LogSink>,
     allowed_pts: Arc<RwLock<HashSet<u8>>>,
     rtp_rx: Receiver<RtpIn>,
-    event_tx: Sender<EngineEvent>,
-    media_agent: Arc<MediaAgent>,
+    event_tx: Sender<DepacketizerEvent>,
     payload_map: HashMap<u8, CodecDescriptor>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
-        .name("media-transport-rtp".into())
+        .name("media-transport-depack".into())
         .spawn(move || {
             let mut depack = H264Depacketizer::new();
 
@@ -273,30 +264,15 @@ fn spawn_rtp_decoder_worker(
                     continue;
                 };
 
-                if let Some(au) =
+                if let Some(chunk) =
                     depack.push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
                 {
-                    match media_agent.decode(codec_desc.spec, &au) {
-                        Ok(Some(frame)) => {
-                            let _ = event_tx.send(EngineEvent::DecodedVideoFrame(Box::new(frame)));
-                        }
-                        Ok(None) => {
-                            sink_log!(
-                                logger.as_ref(),
-                                LogLevel::Debug,
-                                "[MediaTransport] decoder needs more NALs for this AU"
-                            );
-                        }
-                        Err(e) => {
-                            sink_log!(
-                                logger.as_ref(),
-                                LogLevel::Error,
-                                "[MediaTransport] decode error: {e:?}"
-                            );
-                        }
-                    }
+                    let _ = event_tx.send(DepacketizerEvent::ChunkReady {
+                        codec_spec: codec_desc.spec,
+                        chunk,
+                    });
                 }
             }
         })
-        .expect("spawn media-transport-rtp")
+        .expect("spawn media-transport-depack")
 }

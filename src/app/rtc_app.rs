@@ -228,6 +228,9 @@ impl RtcApp {
                 EngineEvent::DecodedVideoFrame(_) => {
                     // This is handled by snapshot_frames, no direct action needed.
                 }
+                EngineEvent::EncodedVideoFrame { .. } => {
+                    // This is handled by MediaTransport, no UI action needed.
+                }
             }
         }
     }

@@ -11,7 +11,6 @@ use crate::{
         utils::now_millis,
         video_frame::VideoFrame,
     },
-    media_transport::payload::h264_depacketizer::AccessUnit,
 };
 
 pub struct H264Decoder {
@@ -25,23 +24,14 @@ impl H264Decoder {
         }
     }
 
-    /// Feed one access unit (list of NAL units) in order.
-    /// Returns Some frame when OpenH264 outputs a picture, or None if it needs more NALs.
-    pub fn decode_au(&mut self, au: &AccessUnit) -> Result<Option<VideoFrame>> {
+    pub fn decode_chunk(&mut self, chunk: &[u8]) -> Result<Option<VideoFrame>> {
         let Some(dec) = self.inner.as_mut() else {
             return Err(MediaAgentError::Codec(
                 "openh264 decoder unavailable".into(),
             ));
         };
 
-        // Reconstruct the Annex-B bitstream from the NALUs.
-        let mut annexb_bitstream = Vec::new();
-        for nalu in &au.nalus {
-            annexb_bitstream.extend_from_slice(&[0, 0, 0, 1]);
-            annexb_bitstream.extend_from_slice(nalu);
-        }
-
-        match dec.decode(&annexb_bitstream) {
+        match dec.decode(chunk) {
             Ok(Some(yuv)) => Ok(Some(yuv_to_rgbframe(&yuv))),
             Ok(None) => Ok(None),
             Err(e) => {
