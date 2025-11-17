@@ -482,7 +482,7 @@ impl IceAgent {
             Some(local_addr),
             Some(Arc::new(socket)),
         );
-
+        sink_info!(logger, "STUN candidate gathered: {}", candidate);
         Ok(vec![candidate])
     }
 
@@ -815,6 +815,7 @@ mod tests {
     use super::*;
     use crate::ice::type_ice::candidate_type::CandidateType;
     use std::{
+        thread,
         net::{SocketAddr, UdpSocket},
         sync::Arc,
     };
