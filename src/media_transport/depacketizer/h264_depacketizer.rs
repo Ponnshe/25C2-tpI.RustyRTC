@@ -246,7 +246,7 @@ mod tests {
         assert!(push_seq(&mut d, &nalu, false, ts, &mut seq).is_none());
         // Last
         let frame = push_seq(&mut d, &nalu, true, ts, &mut seq).expect("Frame expected");
-        
+
         let mut expected_frame = vec![0, 0, 0, 1];
         expected_frame.extend_from_slice(&nalu);
 
@@ -264,7 +264,7 @@ mod tests {
 
         assert!(push_seq(&mut d, &sps, false, ts, &mut seq).is_none());
         let frame = push_seq(&mut d, &pps, true, ts, &mut seq).expect("Frame expected");
-        
+
         let mut expected_frame = vec![0, 0, 0, 1];
         expected_frame.extend_from_slice(&sps);
         expected_frame.extend_from_slice(&[0, 0, 0, 1]);
@@ -353,10 +353,10 @@ mod tests {
         assert!(push_seq(&mut d, &n2, false, ts2, &mut seq).is_none());
         // now finish ts2
         let frame = push_seq(&mut d, &n2, true, ts2, &mut seq).expect("Frame expected");
-        
+
         let mut expected_frame = vec![0, 0, 0, 1];
         expected_frame.extend_from_slice(&n2);
-        
+
         assert_eq!(frame, expected_frame);
     }
 
@@ -373,7 +373,7 @@ mod tests {
         // Then send a valid small NAL and finish
         let n = mk_nalu(1, 0x20, 3);
         let frame = push_seq(&mut d, &n, true, ts, &mut seq).expect("Frame expected");
-        
+
         let mut expected_frame = vec![0, 0, 0, 1];
         expected_frame.extend_from_slice(&n);
 
@@ -390,7 +390,7 @@ mod tests {
 
         assert!(push_seq(&mut d, &n, false, ts, &mut seq).is_none()); // seq = 65535
         let frame = push_seq(&mut d, &n, true, ts, &mut seq).expect("Frame expected"); // seq wraps to 0
-        
+
         let mut expected_frame = vec![0, 0, 0, 1];
         expected_frame.extend_from_slice(&n);
 

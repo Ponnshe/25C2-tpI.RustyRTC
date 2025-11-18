@@ -5,5 +5,6 @@ pub mod depacketizer_worker;
 pub mod error;
 pub mod events;
 pub mod media_transport;
+pub mod media_transport_event;
 pub mod packetizer_worker;
 pub mod payload;

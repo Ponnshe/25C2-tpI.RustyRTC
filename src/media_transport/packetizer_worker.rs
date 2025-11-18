@@ -3,10 +3,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::media_transport::{
-    payload::{h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk},
-};
 use crate::media_agent::spec::CodecSpec;
+use crate::media_transport::payload::{
+    h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk,
+};
 
 use super::events::PacketizerEvent;
 
@@ -36,14 +36,16 @@ pub fn spawn_packetizer_worker(
             while let Ok(order) = order_rx.recv() {
                 match order.codec_spec {
                     CodecSpec::H264 => {
-                        let chunks = h264_packetizer.packetize_annexb_to_payloads(&order.annexb_frame);
+                        let chunks =
+                            h264_packetizer.packetize_annexb_to_payloads(&order.annexb_frame);
                         if !chunks.is_empty() {
                             let packetized_frame = PacketizedFrame {
                                 chunks,
                                 rtp_ts: order.rtp_ts,
                                 codec_spec: order.codec_spec,
                             };
-                            let _ = event_tx.send(PacketizerEvent::FramePacketized(packetized_frame));
+                            let _ =
+                                event_tx.send(PacketizerEvent::FramePacketized(packetized_frame));
                         }
                     }
                 }
