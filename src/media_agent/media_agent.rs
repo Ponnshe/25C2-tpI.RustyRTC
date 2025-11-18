@@ -3,26 +3,24 @@ use std::{
         Arc, Mutex,
         mpsc::{self, Receiver, Sender},
     },
-    thread::{self, JoinHandle},
+    thread::JoinHandle,
 };
 
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
-    camera_manager::camera_manager_c::CameraManager,
+    app::log_sink::LogSink,
     core::events::EngineEvent,
-    logger_debug, logger_error,
+    logger_info,
     media_agent::{
-        camera_worker::{camera_loop, spawn_camera_worker, synthetic_loop},
+        camera_worker::spawn_camera_worker,
+        decoder_event::DecoderEvent,
         decoder_worker::spawn_decoder_worker,
-        encoder_worker::{EncoderOrder, spawn_encoder_worker},
+        encoder_instruction::EncoderInstruction,
+        encoder_worker::spawn_encoder_worker,
         events::MediaAgentEvent,
-        h264_decoder::H264Decoder,
-        media_agent_error::Result,
         spec::{CodecSpec, MediaSpec, MediaType},
         utils::discover_camera_id,
         video_frame::VideoFrame,
     },
-    sink_log,
 };
 
 use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS};
@@ -35,8 +33,9 @@ pub struct MediaAgent {
     supported_media: Vec<MediaSpec>,
     _decoder_handle: Option<JoinHandle<()>>,
     _encoder_handle: Option<JoinHandle<()>>,
-    event_tx: Sender<MediaAgentEvent>,
-    encoder_tx: Sender<EncoderOrder>,
+    ma_decoder_event_tx: Sender<DecoderEvent>,
+    ma_encoder_event_tx: Sender<EncoderInstruction>,
+    media_agent_event_rx: Receiver<MediaAgentEvent>,
     sent_any_frame: Arc<Mutex<bool>>,
 }
 
@@ -55,16 +54,21 @@ impl MediaAgent {
             codec_spec: CodecSpec::H264,
         }];
 
-        let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel();
+        let (ma_decoder_event_tx, ma_decoder_event_rx) = mpsc::channel::<DecoderEvent>();
+        let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel::<MediaAgentEvent>();
 
         let decoder_handle = Some(spawn_decoder_worker(
             logger.clone(),
-            media_agent_event_rx,
-            event_tx.clone(),
+            ma_decoder_event_rx,
+            media_agent_event_tx.clone(),
         ));
 
-        let (encoder_tx, encoder_rx) = mpsc::channel();
-        let encoder_handle = Some(spawn_encoder_worker(logger.clone(), encoder_rx, event_tx));
+        let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
+        let encoder_handle = Some(spawn_encoder_worker(
+            logger.clone(),
+            ma_encoder_event_rx,
+            media_agent_event_tx,
+        ));
 
         Self {
             local_frame_rx: Mutex::new(Some(rx)),
@@ -74,8 +78,9 @@ impl MediaAgent {
             supported_media,
             _decoder_handle: decoder_handle,
             _encoder_handle: encoder_handle,
-            event_tx: media_agent_event_tx,
-            encoder_tx,
+            ma_decoder_event_tx,
+            ma_encoder_event_tx,
+            media_agent_event_rx,
             sent_any_frame: Arc::new(Mutex::new(false)),
         }
     }
@@ -86,10 +91,6 @@ impl MediaAgent {
 
     pub fn tick(&self) {
         self.drain_local_frames_and_encode();
-    }
-
-    pub fn post_event(&self, event: MediaAgentEvent) {
-        let _ = self.event_tx.send(event);
     }
 
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
@@ -129,8 +130,8 @@ impl MediaAgent {
                             false
                         }
                     };
-                    let order = EncoderOrder::Encode(frame, force_keyframe);
-                    let _ = self.encoder_tx.send(order);
+                    let instruction = EncoderInstruction::Encode(frame, force_keyframe);
+                    let _ = self.ma_encoder_event_tx.send(instruction);
                 }
             }
         }
@@ -151,15 +152,14 @@ impl MediaAgent {
             new_keyint = 120;
         }
 
-        let order = EncoderOrder::SetConfig {
+        let instruction = EncoderInstruction::SetConfig {
             fps: new_fps,
             bitrate: new_bitrate,
             keyint: new_keyint,
         };
-        if self.encoder_tx.send(order).is_ok() {
-            sink_log!(
-                self.logger.as_ref(),
-                LogLevel::Info,
+        if self.ma_encoder_event_tx.send(instruction).is_ok() {
+            logger_info!(
+                self.logger,
                 "Reconfigured H264 encoder: bitrate={}bps, fps={}, keyint={}",
                 new_bitrate,
                 new_fps,

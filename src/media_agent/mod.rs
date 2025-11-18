@@ -1,6 +1,8 @@
 pub mod camera_worker;
 pub mod constants;
+pub mod decoder_event;
 pub mod decoder_worker;
+pub mod encoder_instruction;
 pub mod encoder_worker;
 pub mod events;
 pub mod frame_format;

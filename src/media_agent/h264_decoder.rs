@@ -4,13 +4,11 @@ use openh264::{
 };
 use std::sync::Arc;
 
-use crate::{
-    media_agent::{
-        frame_format::FrameFormat,
-        media_agent_error::{MediaAgentError, Result},
-        utils::now_millis,
-        video_frame::VideoFrame,
-    },
+use crate::media_agent::{
+    frame_format::FrameFormat,
+    media_agent_error::{MediaAgentError, Result},
+    utils::now_millis,
+    video_frame::VideoFrame,
 };
 
 pub struct H264Decoder {
@@ -24,14 +22,14 @@ impl H264Decoder {
         }
     }
 
-    pub fn decode_chunk(&mut self, chunk: &[u8]) -> Result<Option<VideoFrame>> {
+    pub fn decode_frame(&mut self, bytes: &[u8]) -> Result<Option<VideoFrame>> {
         let Some(dec) = self.inner.as_mut() else {
             return Err(MediaAgentError::Codec(
                 "openh264 decoder unavailable".into(),
             ));
         };
 
-        match dec.decode(chunk) {
+        match dec.decode(bytes) {
             Ok(Some(yuv)) => Ok(Some(yuv_to_rgbframe(&yuv))),
             Ok(None) => Ok(None),
             Err(e) => {
