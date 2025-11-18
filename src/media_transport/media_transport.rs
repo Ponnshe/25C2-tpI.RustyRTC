@@ -22,6 +22,7 @@ use crate::{
         depacketizer_worker::spawn_depacketizer_worker,
         error::{MediaTransportError, Result},
         events::{DepacketizerEvent, PacketizerEvent},
+        media_transport_event::MediaTransportEvent,
         packetizer_worker::{PacketizeOrder, spawn_packetizer_worker},
     },
     rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
@@ -42,12 +43,18 @@ pub struct MediaTransport {
     last_received_local_ts_ms: Option<u128>,
     depacketizer_event_rx: Receiver<DepacketizerEvent>,
     packetizer_event_rx: Receiver<PacketizerEvent>,
+    media_transport_event_rx: Receiver<MediaTransportEvent>,
     packetizer_order_tx: Sender<PacketizeOrder>,
 }
 
 impl MediaTransport {
     pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>) -> Self {
-        let media_agent = Arc::new(MediaAgent::new(event_tx.clone(), logger.clone()));
+        let (media_transport_event_tx, media_transport_event_rx) = mpsc::channel();
+        let media_agent = Arc::new(MediaAgent::new(
+            event_tx.clone(),
+            logger.clone(),
+            media_transport_event_tx,
+        ));
         let mut payload_map = HashMap::new();
         let mut current_pt = DYNAMIC_PAYLOAD_TYPE_START;
 
@@ -99,6 +106,7 @@ impl MediaTransport {
             last_received_local_ts_ms: None,
             depacketizer_event_rx,
             packetizer_event_rx,
+            media_transport_event_rx,
             packetizer_order_tx,
         }
     }
@@ -124,36 +132,40 @@ impl MediaTransport {
             EngineEvent::RtpIn(pkt) => {
                 let _ = self.rtp_tx.try_send(pkt.clone());
             }
-            EngineEvent::EncodedVideoFrame {
-                annexb_frame,
-                timestamp_ms,
-                codec_spec,
-            } => {
-                if self.last_received_local_ts_ms == Some(*timestamp_ms) {
-                    return;
-                }
-                self.last_received_local_ts_ms = Some(*timestamp_ms);
-
-                let order = PacketizeOrder {
-                    annexb_frame: annexb_frame.clone(),
-                    rtp_ts: self.rtp_ts,
-                    codec_spec: *codec_spec,
-                };
-                if self.packetizer_order_tx.send(order).is_ok() {
-                    self.rtp_ts = self.rtp_ts.wrapping_add(self.rtp_ts_step);
-                }
-            }
-            EngineEvent::DecodedVideoFrame(frame) => {
-                self.media_agent.set_remote_frame(*frame.clone());
-            }
             _ => {}
         }
     }
 
     pub fn tick(&mut self, session: Option<&Session>) {
-        self.media_agent.tick();
+        self.process_media_agent_events();
         self.process_depacketizer_events();
         self.process_packetizer_events(session);
+    }
+
+    fn process_media_agent_events(&mut self) {
+        while let Ok(event) = self.media_transport_event_rx.try_recv() {
+            match event {
+                MediaTransportEvent::SendEncodedFrame {
+                    annexb_frame,
+                    timestamp_ms,
+                    codec_spec,
+                } => {
+                    if self.last_received_local_ts_ms == Some(timestamp_ms) {
+                        continue;
+                    }
+                    self.last_received_local_ts_ms = Some(timestamp_ms);
+
+                    let order = PacketizeOrder {
+                        annexb_frame,
+                        rtp_ts: self.rtp_ts,
+                        codec_spec,
+                    };
+                    if self.packetizer_order_tx.send(order).is_ok() {
+                        self.rtp_ts = self.rtp_ts.wrapping_add(self.rtp_ts_step);
+                    }
+                }
+            }
+        }
     }
 
     fn process_depacketizer_events(&mut self) {
