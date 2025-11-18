@@ -18,6 +18,7 @@ use super::{
 use crate::{
     app::{log_level::LogLevel, log_sink::LogSink},
     core::events::EngineEvent,
+    logger_debug, logger_error,
     rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
@@ -26,8 +27,8 @@ use crate::{
     sink_log,
 };
 use crate::{
-    rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
+    rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
 };
 use rand::{RngCore, rngs::OsRng};
 
@@ -258,20 +259,15 @@ impl RtpSession {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
                             if let Err(e) = sr.encode_into(&mut sr_bytes) {
-                                sink_log!(
-                                    &logger2,
-                                    LogLevel::Error,
-                                    "[RTCP] failed to encode SR: {e}"
-                                );
+                                logger_error!(logger2, "[RTCP] failed to encode SR: {e}");
                                 continue;
                             }
 
                             comp_pkt.extend_from_slice(&sr_bytes);
 
-                            sink_log!(
-                                &logger2,
-                                LogLevel::Error,
-                                "[RTCP] tx SR ssrc={:#010x}",
+                            logger_debug!(
+                                logger2,
+                                "[RTCP] tx built SR ssrc={:#010x}",
                                 st.local_ssrc
                             );
                         }
@@ -293,11 +289,10 @@ impl RtpSession {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
                     if let Err(e) = rr.encode_into(&mut rr_bytes) {
-                        sink_log!(&logger2, LogLevel::Error, "[RTCP] failed to encode RR: {e}");
+                        logger_error!(logger2, "[RTCP] failed to encode RR: {e}");
                     } else {
                         comp_pkt.extend_from_slice(&rr_bytes);
-
-                        sink_log!(&logger2, LogLevel::Debug, "[RTCP] tx RR",);
+                        logger_debug!(logger2, "[RTCP] tx built RR");
                     }
                 }
 
@@ -306,11 +301,7 @@ impl RtpSession {
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
-                    sink_log!(
-                        &logger2,
-                        LogLevel::Error,
-                        "[RTCP] failed to encode SDES: {e}"
-                    );
+                    logger_error!(logger2, "[RTCP] failed to encode SDES: {e}");
                 } else {
                     comp_pkt.extend_from_slice(&sdes_bytes);
                 }
@@ -335,11 +326,7 @@ impl RtpSession {
         let mut buf = Vec::new();
         let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
-        sink_log!(
-            &self.logger,
-            LogLevel::Debug,
-            "[RTCP] tx PLI media_ssrc={remote_ssrc}"
-        );
+        logger_debug!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
