@@ -31,12 +31,6 @@ pub enum EngineEvent {
     Closed,
     Error(String),
     RtpIn(RtpIn),
-    EncodedVideoFrame {
-        annexb_frame: Vec<u8>,
-        timestamp_ms: u128,
-        codec_spec: CodecSpec,
-    },
-    DecodedVideoFrame(Box<VideoFrame>),
     NetworkMetrics(NetworkMetrics),
     UpdateBitrate(u32),
 }

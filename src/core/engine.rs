@@ -8,7 +8,7 @@ use std::{
 use crate::{
     app::log_sink::LogSink,
     congestion_controller::congestion_controller::CongestionController,
-    connection_manager::{connection_error::ConnectionError, ConnectionManager, OutboundSdp},
+    connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
@@ -142,15 +142,13 @@ impl Engine {
                 Ok(ev) => {
                     match &ev {
                         EngineEvent::NetworkMetrics(metrics) => {
-                            self.congestion_controller.on_network_metrics(metrics.clone());
+                            self.congestion_controller
+                                .on_network_metrics(metrics.clone());
                         }
                         EngineEvent::UpdateBitrate(new_bitrate) => {
                             self.media_transport.set_bitrate(*new_bitrate);
                         }
-                        _ => {
-                            self.media_transport
-                                .handle_engine_event(&ev, self.session.as_ref());
-                        }
+                        _ => {}
                     }
                     out.push(ev);
                     processed += 1;
