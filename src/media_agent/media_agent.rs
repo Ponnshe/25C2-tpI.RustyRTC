@@ -25,7 +25,7 @@ use crate::{
     media_transport::media_transport_event::MediaTransportEvent,
 };
 
-use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS};
+use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS, KEYINT};
 
 pub struct MediaAgent {
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -106,6 +106,7 @@ impl MediaAgent {
         }
     }
 
+    #[must_use]
     pub fn supported_media(&self) -> &[MediaSpec] {
         &self.supported_media
     }
@@ -119,10 +120,12 @@ impl MediaAgent {
         }
     }
 
+    #[must_use]
     pub fn media_agent_event_tx(&self) -> Sender<MediaAgentEvent> {
         self.media_agent_event_tx.clone()
     }
 
+    #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         let local = self
             .local_frame
@@ -138,32 +141,16 @@ impl MediaAgent {
     }
 
     pub fn set_bitrate(&self, new_bitrate: u32) {
-        let new_fps;
-        let new_keyint;
-
-        if new_bitrate >= 1_500_000 {
-            new_fps = 30;
-            new_keyint = 60;
-        } else if new_bitrate >= 800_000 {
-            new_fps = 25;
-            new_keyint = 90;
-        } else {
-            new_fps = 20;
-            new_keyint = 120;
-        }
-
         let instruction = EncoderInstruction::SetConfig {
-            fps: new_fps,
+            fps: TARGET_FPS,
             bitrate: new_bitrate,
-            keyint: new_keyint,
+            keyint: KEYINT,
         };
         if self.ma_encoder_event_tx.send(instruction).is_ok() {
             logger_info!(
                 self.logger,
-                "Reconfigured H264 encoder: bitrate={}bps, fps={}, keyint={}",
+                "Reconfigured H264 encoder: bitrate={}bps",
                 new_bitrate,
-                new_fps,
-                new_keyint,
             );
         }
     }
