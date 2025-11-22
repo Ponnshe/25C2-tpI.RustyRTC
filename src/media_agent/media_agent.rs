@@ -15,7 +15,6 @@ use crate::{
         encoder_worker::{spawn_encoder_worker, EncoderOrder},
         events::MediaAgentEvent,
         h264_decoder::H264Decoder,
-        media_agent_error::Result,
         spec::{CodecSpec, MediaSpec, MediaType},
         utils::discover_camera_id,
         video_frame::VideoFrame,
@@ -23,7 +22,7 @@ use crate::{
     sink_log,
 };
 
-use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS};
+use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS, KEYINT};
 
 pub struct MediaAgent {
     local_frame_rx: Mutex<Option<Receiver<VideoFrame>>>,
@@ -139,33 +138,17 @@ impl MediaAgent {
     }
 
     pub fn set_bitrate(&self, new_bitrate: u32) {
-        let new_fps;
-        let new_keyint;
-
-        if new_bitrate >= 1_500_000 {
-            new_fps = 30;
-            new_keyint = 60;
-        } else if new_bitrate >= 800_000 {
-            new_fps = 25;
-            new_keyint = 90;
-        } else {
-            new_fps = 20;
-            new_keyint = 120;
-        }
-
         let order = EncoderOrder::SetConfig {
-            fps: new_fps,
+            fps: TARGET_FPS,
             bitrate: new_bitrate,
-            keyint: new_keyint,
+            keyint: KEYINT,
         };
         if self.encoder_tx.send(order).is_ok() {
             sink_log!(
                 self.logger.as_ref(),
                 LogLevel::Info,
-                "Reconfigured H264 encoder: bitrate={}bps, fps={}, keyint={}",
-                new_bitrate,
-                new_fps,
-                new_keyint,
+                "Reconfigured H264 encoder: bitrate={}bps",
+                new_bitrate
             );
         }
     }

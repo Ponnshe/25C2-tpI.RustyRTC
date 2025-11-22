@@ -195,14 +195,6 @@ impl MediaTransport {
 
     pub fn set_bitrate(&mut self, new_bitrate: u32) {
         self.media_agent.set_bitrate(new_bitrate);
-        let new_fps = if new_bitrate >= 1_500_000 {
-            30
-        } else if new_bitrate >= 800_000 {
-            25
-        } else {
-            20
-        };
-        self.rtp_ts_step = 90_000 / new_fps;
     }
 
     pub fn codec_descriptors(&self) -> Vec<CodecDescriptor> {
