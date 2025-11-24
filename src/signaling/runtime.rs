@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::app::log_sink::LogSink;
 use crate::signaling::protocol::Msg;
 use crate::signaling::router::Router;
 use crate::signaling::server_event::ServerEvent;
@@ -82,6 +82,8 @@ fn msg_name(msg: &Msg) -> &'static str {
         Join { .. } => "Join",
         JoinOk { .. } => "JoinOk",
         JoinErr { .. } => "JoinErr",
+        PeerJoined { .. } => "PeerJoined",
+        PeerLeft { .. } => "PeerLeft",
         Offer { .. } => "Offer",
         Answer { .. } => "Answer",
         Candidate { .. } => "Candidate",
@@ -98,6 +100,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use crate::app::log_sink::NoopLogSink;
     use crate::signaling::protocol::Msg;
     use crate::signaling::router::Router;
     use crate::signaling::types::ClientId;

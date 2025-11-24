@@ -111,7 +111,6 @@ impl Router {
 mod tests {
     use super::*;
     use crate::signaling::protocol::Msg;
-
     #[test]
     fn login_create_session_join_and_offer_are_routed() {
         let mut router = Router::new();
@@ -177,11 +176,28 @@ mod tests {
             },
         );
 
+        // Now we expect:
+        // - JoinOk for c2
+        // - PeerJoined(alice sees "bob") for c1
         let outs2 = router.take_outgoing_for(c2);
+        let outs1_after_join = router.take_outgoing_for(c1);
+
         assert_eq!(outs2.len(), 1);
         match &outs2[0] {
             Msg::JoinOk { session_id: sid } => assert_eq!(sid, &session_id),
-            other => panic!("expected JoinOk, got {:?}", other),
+            other => panic!("expected JoinOk for c2, got {:?}", other),
+        }
+
+        assert_eq!(outs1_after_join.len(), 1);
+        match &outs1_after_join[0] {
+            Msg::PeerJoined {
+                session_id: sid,
+                username,
+            } => {
+                assert_eq!(sid, &session_id);
+                assert_eq!(username, "bob");
+            }
+            other => panic!("expected PeerJoined for c1, got {:?}", other),
         }
 
         // 4) Client 1 sends an Offer to bob; router should emit it to c2
@@ -195,13 +211,18 @@ mod tests {
             },
         );
 
-        // No direct response to c1 for now
-        let outs1 = router.take_outgoing_for(c1);
-        assert!(outs1.is_empty());
+        // After the join we drained c1’s outbox, so any message here
+        // would have to come from the Offer. There shouldn't be any.
+        let outs1_after_offer = router.take_outgoing_for(c1);
+        assert!(
+            outs1_after_offer.is_empty(),
+            "expected no messages to c1 after Offer, got {:?}",
+            outs1_after_offer
+        );
 
-        let outs2 = router.take_outgoing_for(c2);
-        assert_eq!(outs2.len(), 1);
-        match &outs2[0] {
+        let outs2_after_offer = router.take_outgoing_for(c2);
+        assert_eq!(outs2_after_offer.len(), 1);
+        match &outs2_after_offer[0] {
             Msg::Offer { txn_id, to, sdp } => {
                 assert_eq!(*txn_id, 42);
                 assert_eq!(to, "bob");

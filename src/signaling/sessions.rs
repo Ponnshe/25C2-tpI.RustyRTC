@@ -69,7 +69,11 @@ impl Sessions {
         Ok(session_id)
     }
 
-    pub fn leave_all(&mut self, client_id: ClientId) {
+    /// Remove `client_id` from all sessions.
+    ///
+    /// Returns a list of `(session_id, remaining_members)` for each session
+    /// that the client was part of *before* removal.
+    pub fn leave_all(&mut self, client_id: ClientId) -> Vec<(SessionId, Vec<ClientId>)> {
         let session_ids: Vec<SessionId> = self
             .by_sess_id
             .iter()
@@ -82,9 +86,13 @@ impl Sessions {
             })
             .collect();
 
+        let mut result = Vec::new();
+
         for sess_id in session_ids {
             if let Some(sess) = self.by_sess_id.get_mut(&sess_id) {
                 sess.members.remove(&client_id);
+                let remaining: Vec<ClientId> = sess.members.iter().cloned().collect();
+                result.push((sess_id.clone(), remaining));
             }
         }
 
@@ -92,6 +100,8 @@ impl Sessions {
         self.by_sess_id.retain(|_, s| !s.members.is_empty());
         self.by_sess_code
             .retain(|_, sess_id| self.by_sess_id.contains_key(sess_id));
+
+        result
     }
 
     /// Return true if both clients are members of at least one common session.

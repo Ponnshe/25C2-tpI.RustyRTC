@@ -4,13 +4,17 @@ mod codec;
 mod constants;
 mod errors;
 mod framing;
+mod msg;
+mod msg_type;
 mod types;
 
 pub use codec::{decode_msg, encode_msg};
 pub use constants::{MAX_BODY_LEN, PROTO_VERSION};
 pub use errors::{FrameError, ProtoError};
 pub use framing::{read_frame, write_frame};
-pub use types::{Msg, MsgType, SessionCode, SessionId, TxnId, UserName};
+pub use msg::Msg;
+pub use msg_type::MsgType;
+pub use types::{SessionCode, SessionId, TxnId, UserName};
 
 /// High-level: write a full framed Msg to the wire.
 pub fn write_msg<W: Write>(w: &mut W, msg: &Msg) -> Result<(), FrameError> {

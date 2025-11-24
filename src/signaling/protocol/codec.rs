@@ -50,6 +50,22 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
             put_u16(&mut body, *code);
             MsgType::JoinErr
         }
+        PeerJoined {
+            session_id,
+            username,
+        } => {
+            put_str16(&mut body, session_id)?;
+            put_str16(&mut body, username)?;
+            MsgType::PeerJoined
+        }
+        PeerLeft {
+            session_id,
+            username,
+        } => {
+            put_str16(&mut body, session_id)?;
+            put_str16(&mut body, username)?;
+            MsgType::PeerLeft
+        }
 
         Offer { txn_id, to, sdp } => {
             put_u64(&mut body, *txn_id);
@@ -155,6 +171,23 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
         MsgType::JoinErr => {
             let code = cursor.get_u16()?;
             JoinErr { code }
+        }
+
+        MsgType::PeerJoined => {
+            let sid = cursor.get_str16()?.to_owned();
+            let username = cursor.get_str16()?.to_owned();
+            PeerJoined {
+                session_id: sid,
+                username,
+            }
+        }
+        MsgType::PeerLeft => {
+            let sid = cursor.get_str16()?.to_owned();
+            let username = cursor.get_str16()?.to_owned();
+            PeerLeft {
+                session_id: sid,
+                username,
+            }
         }
 
         MsgType::Offer => {

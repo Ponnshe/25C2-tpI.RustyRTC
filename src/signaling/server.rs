@@ -108,6 +108,8 @@ impl Server {
             | Msg::Created { .. }
             | Msg::JoinOk { .. }
             | Msg::JoinErr { .. }
+            | Msg::PeerJoined { .. }
+            | Msg::PeerLeft { .. }
             | Msg::Ping { .. }
             | Msg::Pong { .. } => {
                 sink_warn!(
@@ -123,20 +125,37 @@ impl Server {
 
     /// Called when a TCP connection closes, to clean up state.
     pub fn handle_disconnect(&mut self, client: ClientId) -> Vec<OutgoingMsg> {
-        let mut out = Vec::new();
+        let mut out_msgs = Vec::new();
 
         // Remove from presence
-        if let Some(username) = self.presence.logout(client) {
+        let username_opt = self.presence.logout(client);
+
+        // Remove from any sessions (and find who remains)
+        let left_sessions = self.sessions.leave_all(client);
+
+        if let Some(username) = username_opt {
             sink_info!(self.log, "client {} ({}) disconnected", client, username);
+
+            for (session_id, remaining_members) in left_sessions {
+                for member in remaining_members {
+                    out_msgs.push(OutgoingMsg {
+                        client_id_target: member,
+                        msg: Msg::PeerLeft {
+                            session_id: session_id.clone(),
+                            username: username.clone(),
+                        },
+                    });
+                }
+            }
+        } else {
+            sink_info!(
+                self.log,
+                "client {} disconnected (was not logged in)",
+                client
+            );
         }
 
-        // Remove from any sessions
-        self.sessions.leave_all(client);
-
-        // Optionally: notify other clients in sessions that this peer left.
-        // (left as TODO / future improvement)
-
-        out
+        out_msgs
     }
 
     // ---- Individual handlers ---------------------------------------------
@@ -221,75 +240,73 @@ impl Server {
     }
 
     fn handle_join(&mut self, client_id: ClientId, session_code: SessionCode) -> Vec<OutgoingMsg> {
-        let mut out_msg = Vec::new();
+        let mut out_msgs = Vec::new();
 
+        // require login
         let Some(username) = self.require_logged_in(client_id) else {
             let msg = Msg::JoinErr {
                 code: JoinErrorCode::NotLoggedIn.as_u16(),
             };
             sink_warn!(
                 self.log,
-                "client {} attempted Join(code={}) without being logged in",
-                client_id,
-                session_code
+                "client {} attempted Join without login",
+                client_id
             );
-            out_msg.push(OutgoingMsg {
+            out_msgs.push(OutgoingMsg {
                 client_id_target: client_id,
                 msg,
             });
-            return out_msg;
+            return out_msgs;
         };
 
         match self.sessions.join_by_code(&session_code, client_id) {
             Ok(session_id) => {
-                sink_info!(
-                    self.log,
-                    "client {} ({}) joined session id={} code={}",
-                    client_id,
-                    username,
-                    session_id,
-                    session_code
-                );
-                let msg = Msg::JoinOk { session_id };
-                out_msg.push(OutgoingMsg {
+                // 1) JoinOk to the joiner
+                let join_ok = Msg::JoinOk {
+                    session_id: session_id.clone(),
+                };
+                out_msgs.push(OutgoingMsg {
                     client_id_target: client_id,
-                    msg,
+                    msg: join_ok,
                 });
+
+                // 2) PeerJoined to existing members
+                if let Some(sess) = self.sessions.get(&session_id) {
+                    for &member in &sess.members {
+                        if member == client_id {
+                            continue; // skip the joiner
+                        }
+                        out_msgs.push(OutgoingMsg {
+                            client_id_target: member,
+                            msg: Msg::PeerJoined {
+                                session_id: session_id.clone(),
+                                username: username.clone(),
+                            },
+                        });
+                    }
+                }
             }
             Err(JoinError::NotFound) => {
-                sink_warn!(
-                    self.log,
-                    "client {} ({}) tried to join unknown session code={}",
-                    client_id,
-                    username,
-                    session_code
-                );
                 let msg = Msg::JoinErr {
                     code: JoinErrorCode::NotFound.as_u16(),
                 };
-                out_msg.push(OutgoingMsg {
+                out_msgs.push(OutgoingMsg {
                     client_id_target: client_id,
                     msg,
                 });
             }
             Err(JoinError::Full) => {
-                sink_warn!(
-                    self.log,
-                    "client {} ({}) tried to join full session code={}",
-                    client_id,
-                    username,
-                    session_code
-                );
                 let msg = Msg::JoinErr {
                     code: JoinErrorCode::Full.as_u16(),
                 };
-                out_msg.push(OutgoingMsg {
+                out_msgs.push(OutgoingMsg {
                     client_id_target: client_id,
                     msg,
                 });
             }
         }
-        out_msg
+
+        out_msgs
     }
 
     /// Forward Offer/Answer/Candidate, enforcing:
@@ -361,15 +378,47 @@ impl Server {
         }]
     }
 
-    fn handle_ack(&mut self, _from: ClientId, _txn_id: u64) -> Vec<OutgoingMsg> {
-        // For now, ignore; when we add offer/answer reliability, track pending txns here.
+    fn handle_ack(&mut self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
+        let username = self.presence.username_for(from_cid).cloned();
+        sink_debug!(
+            self.log,
+            "client {} ({:?}) ACK txn_id={}",
+            from_cid,
+            username,
+            txn_id
+        );
+        // Still no reliability logic; we just swallow it for now.
         Vec::new()
     }
 
     fn handle_bye(&mut self, from: ClientId, reason: Option<String>) -> Vec<OutgoingMsg> {
-        // You might want to remove them from sessions here or just rely on disconnect.
-        sink_info!(self.log, "client {} BYE {:?}", from, reason);
-        Vec::new()
+        let username_opt = self.presence.username_for(from).cloned();
+
+        sink_info!(
+            self.log,
+            "client {} ({:?}) sent Bye {:?}",
+            from,
+            username_opt,
+            reason
+        );
+
+        let left_sessions = self.sessions.leave_all(from);
+        let mut out_msgs = Vec::new();
+
+        if let Some(username) = username_opt {
+            for (session_id, remaining_members) in left_sessions {
+                for member in remaining_members {
+                    out_msgs.push(OutgoingMsg {
+                        client_id_target: member,
+                        msg: Msg::PeerLeft {
+                            session_id: session_id.clone(),
+                            username: username.clone(),
+                        },
+                    });
+                }
+            }
+        }
+        out_msgs
     }
 }
 
@@ -520,11 +569,11 @@ mod tests {
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].client_id_target, alice);
 
-        let session_code = match &created[0].msg {
+        let (session_id, session_code) = match &created[0].msg {
             Msg::Created {
-                session_id: _,
+                session_id,
                 session_code,
-            } => session_code.clone(),
+            } => (session_id.clone(), session_code.clone()),
             other => panic!("expected Created, got {:?}", other),
         };
 
@@ -536,12 +585,37 @@ mod tests {
             },
         );
 
-        assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].client_id_target, bob);
-        match &joined[0].msg {
-            Msg::JoinOk { session_id: _ } => {}
-            other => panic!("expected JoinOk, got {:?}", other),
+        // Now expect JoinOk (to bob) + PeerJoined (to alice)
+        assert_eq!(
+            joined.len(),
+            2,
+            "expected JoinOk + PeerJoined, got {:?}",
+            joined
+        );
+
+        let mut saw_join_ok = false;
+        let mut saw_peer_joined = false;
+        for m in &joined {
+            match &m.msg {
+                Msg::JoinOk { session_id: sid } => {
+                    assert_eq!(m.client_id_target, bob);
+                    assert_eq!(sid, &session_id);
+                    saw_join_ok = true;
+                }
+                Msg::PeerJoined {
+                    session_id: sid,
+                    username,
+                } => {
+                    assert_eq!(m.client_id_target, alice);
+                    assert_eq!(sid, &session_id);
+                    assert_eq!(username, "bob");
+                    saw_peer_joined = true;
+                }
+                other => panic!("unexpected msg in join: {:?}", other),
+            }
         }
+        assert!(saw_join_ok);
+        assert!(saw_peer_joined);
 
         // 4) now alice sends an Offer to bob; should be forwarded
         let txn_id = 42;
@@ -577,6 +651,303 @@ mod tests {
                 assert_eq!(s, &sdp);
             }
             other => panic!("expected forwarded Offer, got {:?}", other),
+        }
+    }
+
+    // ---- Ack invariants ---------------------------------------------------
+
+    #[test]
+    fn ack_from_unauthenticated_client_is_dropped() {
+        let mut server = new_server();
+
+        let res = server.handle(1, Msg::Ack { txn_id: 123 });
+
+        assert!(
+            res.is_empty(),
+            "expected no outgoing messages for unauthenticated Ack, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn ack_from_logged_in_client_is_accepted_but_silent() {
+        let mut server = new_server();
+
+        login(&mut server, 1, "alice");
+
+        let res = server.handle(1, Msg::Ack { txn_id: 123 });
+
+        assert!(
+            res.is_empty(),
+            "expected Ack from logged-in client to be silent (no outgoing), got {:?}",
+            res
+        );
+    }
+
+    // ---- Bye invariants ---------------------------------------------------
+
+    #[test]
+    fn bye_from_unauthenticated_client_is_dropped() {
+        let mut server = new_server();
+
+        let res = server.handle(
+            42,
+            Msg::Bye {
+                reason: Some("bye".into()),
+            },
+        );
+
+        assert!(
+            res.is_empty(),
+            "expected no outgoing messages for unauthenticated Bye, got {:?}",
+            res
+        );
+        // No sessions exist, so nothing else to check.
+    }
+
+    #[test]
+    fn bye_removes_client_from_single_member_session_and_deletes_session() {
+        let mut server = new_server();
+        let alice: ClientId = 1;
+
+        login(&mut server, alice, "alice");
+
+        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+
+        assert_eq!(created.len(), 1);
+        let (session_id, _session_code) = match &created[0].msg {
+            Msg::Created {
+                session_id,
+                session_code,
+            } => (session_id.clone(), session_code.clone()),
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        {
+            let sess = server
+                .sessions
+                .get(&session_id)
+                .expect("session must exist");
+            assert!(sess.members.contains(&alice));
+            assert_eq!(sess.members.len(), 1);
+        }
+
+        // alice sends Bye
+        let res = server.handle(
+            alice,
+            Msg::Bye {
+                reason: Some("done".into()),
+            },
+        );
+        assert!(
+            res.is_empty(),
+            "Bye should not produce any outgoing messages, got {:?}",
+            res
+        );
+
+        // Session should be removed because it became empty
+        assert!(
+            server.sessions.get(&session_id).is_none(),
+            "session should be deleted after sole member leaves with Bye"
+        );
+    }
+
+    #[test]
+    fn bye_removes_client_but_keeps_session_if_other_members_remain() {
+        let mut server = new_server();
+        let alice: ClientId = 1;
+        let bob: ClientId = 2;
+
+        login(&mut server, alice, "alice");
+        login(&mut server, bob, "bob");
+
+        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+        assert_eq!(created.len(), 1);
+        let (session_id, session_code) = match &created[0].msg {
+            Msg::Created {
+                session_id,
+                session_code,
+            } => (session_id.clone(), session_code.clone()),
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        // bob joins: we expect 2 messages (JoinOk to bob, PeerJoined to alice)
+        let joined = server.handle(bob, Msg::Join { session_code });
+        assert_eq!(
+            joined.len(),
+            2,
+            "expected JoinOk + PeerJoined, got {:?}",
+            joined
+        );
+
+        let mut saw_join_ok = false;
+        let mut saw_peer_joined = false;
+        for m in &joined {
+            match &m.msg {
+                Msg::JoinOk { session_id: sid } => {
+                    assert_eq!(m.client_id_target, bob);
+                    assert_eq!(sid, &session_id);
+                    saw_join_ok = true;
+                }
+                Msg::PeerJoined {
+                    session_id: sid,
+                    username,
+                } => {
+                    assert_eq!(m.client_id_target, alice);
+                    assert_eq!(sid, &session_id);
+                    assert_eq!(username, "bob");
+                    saw_peer_joined = true;
+                }
+                other => panic!("unexpected msg in join: {:?}", other),
+            }
+        }
+        assert!(saw_join_ok);
+        assert!(saw_peer_joined);
+
+        {
+            let sess = server
+                .sessions
+                .get(&session_id)
+                .expect("session must exist");
+            assert!(sess.members.contains(&alice));
+            assert!(sess.members.contains(&bob));
+            assert_eq!(sess.members.len(), 2);
+        }
+
+        // alice sends Bye
+        let res = server.handle(alice, Msg::Bye { reason: None });
+
+        // Bye produce a notification: PeerLeft(alice) to bob
+        assert_eq!(
+            res.len(),
+            1,
+            "Bye should produce PeerLeft to remaining member, got {:?}",
+            res
+        );
+        let m = &res[0];
+        assert_eq!(m.client_id_target, bob);
+        match &m.msg {
+            Msg::PeerLeft {
+                session_id: sid,
+                username,
+            } => {
+                assert_eq!(sid, &session_id);
+                assert_eq!(username, "alice");
+            }
+            other => panic!("expected PeerLeft, got {:?}", other),
+        }
+
+        // Session should still exist, but only bob remains
+        {
+            let sess = server
+                .sessions
+                .get(&session_id)
+                .expect("session must still exist");
+            assert!(!sess.members.contains(&alice));
+            assert!(sess.members.contains(&bob));
+            assert_eq!(sess.members.len(), 1);
+        }
+    }
+
+    #[test]
+    fn join_sends_peerjoined_to_existing_members() {
+        let mut server = new_server();
+        let alice: ClientId = 1;
+        let bob: ClientId = 2;
+
+        login(&mut server, alice, "alice");
+        login(&mut server, bob, "bob");
+
+        // alice creates session
+        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+        assert_eq!(created.len(), 1);
+
+        let (session_id, session_code) = match &created[0].msg {
+            Msg::Created {
+                session_id,
+                session_code,
+            } => (session_id.clone(), session_code.clone()),
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        // bob joins
+        let out = server.handle(bob, Msg::Join { session_code });
+
+        // We expect:
+        // - JoinOk to bob
+        // - PeerJoined to alice
+        assert_eq!(out.len(), 2);
+        let mut saw_join_ok = false;
+        let mut saw_peer_joined = false;
+
+        for m in &out {
+            match &m.msg {
+                Msg::JoinOk { session_id: sid } => {
+                    assert_eq!(m.client_id_target, bob);
+                    assert_eq!(sid, &session_id);
+                    saw_join_ok = true;
+                }
+                Msg::PeerJoined {
+                    session_id: sid,
+                    username,
+                } => {
+                    assert_eq!(m.client_id_target, alice);
+                    assert_eq!(sid, &session_id);
+                    assert_eq!(username, "bob");
+                    saw_peer_joined = true;
+                }
+                other => panic!("unexpected msg: {:?}", other),
+            }
+        }
+
+        assert!(saw_join_ok);
+        assert!(saw_peer_joined);
+    }
+    #[test]
+    fn bye_sends_peerleft_to_remaining_members() {
+        let mut server = new_server();
+        let alice: ClientId = 1;
+        let bob: ClientId = 2;
+
+        login(&mut server, alice, "alice");
+        login(&mut server, bob, "bob");
+
+        // alice creates + bob joins
+        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+        assert_eq!(created.len(), 1);
+
+        let (session_id, session_code) = match &created[0].msg {
+            Msg::Created {
+                session_id,
+                session_code,
+            } => (session_id.clone(), session_code.clone()),
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        let _ = server.handle(bob, Msg::Join { session_code });
+
+        // alice Bye
+        let out = server.handle(
+            alice,
+            Msg::Bye {
+                reason: Some("bye".into()),
+            },
+        );
+
+        // Only bob should get PeerLeft(alice)
+        assert_eq!(out.len(), 1);
+        let m = &out[0];
+        assert_eq!(m.client_id_target, bob);
+
+        match &m.msg {
+            Msg::PeerLeft {
+                session_id: sid,
+                username,
+            } => {
+                assert_eq!(sid, &session_id);
+                assert_eq!(username, "alice");
+            }
+            other => panic!("expected PeerLeft, got {:?}", other),
         }
     }
 }
