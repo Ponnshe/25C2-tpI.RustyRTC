@@ -10,7 +10,7 @@ use crate::signaling::presence::Presence;
 use crate::signaling::protocol::{Msg, SessionCode, SessionId, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
-use crate::{sink_debug, sink_info, sink_warn};
+use crate::{sink_debug, sink_info, sink_trace, sink_warn};
 
 pub struct Server {
     presence: Presence,
@@ -74,6 +74,10 @@ impl Server {
                 return code;
             }
         }
+        sink_warn!(
+            self.log,
+            "alloc_session_code: falling back to deterministic walk after many collisions"
+        );
 
         // Fallback: deterministic walk (extremely unlikely to be used in practice).
         loop {
@@ -92,7 +96,7 @@ impl Server {
         match msg {
             Msg::Hello { client_version } => {
                 // For now: ignore and maybe log. No reply required.
-                sink_debug!(
+                sink_trace!(
                     self.log,
                     "client {} HELLO (version {})",
                     from_cid,
@@ -173,9 +177,16 @@ impl Server {
 
         // Remove from any sessions (and find who remains)
         let left_sessions = self.sessions.leave_all(client);
+        let n_sessions = left_sessions.len();
 
         if let Some(username) = username_opt {
-            sink_info!(self.log, "client {} ({}) disconnected", client, username);
+            sink_info!(
+                self.log,
+                "client {} ({}) disconnected; left {} sessions",
+                client,
+                username,
+                n_sessions
+            );
 
             for (session_id, remaining_members) in left_sessions {
                 for member in remaining_members {
@@ -191,8 +202,9 @@ impl Server {
         } else {
             sink_info!(
                 self.log,
-                "client {} disconnected (was not logged in)",
-                client
+                "client {} disconnected (was not logged in); left {} sessions",
+                client,
+                n_sessions
             );
         }
 
@@ -207,9 +219,22 @@ impl Server {
         username: UserName,
         password: String,
     ) -> Vec<OutgoingMsg> {
+        sink_info!(
+            self.log,
+            "login attempt: client_id={} username={}",
+            client,
+            username
+        );
         let mut out = Vec::new();
         // 1) Auth backend decides if username/password are valid.
         if let Err(err) = self.auth.verify(&username, &password) {
+            sink_warn!(
+                self.log,
+                "login failed: client_id={} username={} err={:?}",
+                client,
+                username,
+                err
+            );
             // Map AuthError to our protocol-level login error code.
             let code = match err {
                 AuthError::InvalidCredentials => LoginErrorCode::InvalidCredentials.as_u16(),
@@ -222,8 +247,15 @@ impl Server {
             });
             return out;
         }
+
         // 2) Reject if the user is already logged in on another client.
         if let Some(existing_client) = self.presence.client_id_for(&username) {
+            sink_warn!(
+                self.log,
+                "login rejected: username={} already logged in as client_id={}",
+                username,
+                existing_client
+            );
             let code = LoginErrorCode::AlreadyLoggedIn.as_u16();
             out.push(OutgoingMsg {
                 client_id_target: client,
@@ -231,6 +263,12 @@ impl Server {
             });
             return out;
         }
+        sink_info!(
+            self.log,
+            "login success: client_id={} username={}",
+            client,
+            username
+        );
         // 3) Success: record presence and send LoginOk.
         let _ = self.presence.login(client, username.clone());
         out.push(OutgoingMsg {
@@ -242,7 +280,7 @@ impl Server {
 
     fn handle_register(
         &mut self,
-        client: ClientId,
+        client_id: ClientId,
         username: UserName,
         password: String,
     ) -> Vec<OutgoingMsg> {
@@ -252,25 +290,25 @@ impl Server {
 
         match res {
             Ok(()) => {
-                sink_info!(self.log, "registered new user '{}'", username);
-                out.push(OutgoingMsg {
-                    client_id_target: client,
-                    msg: Msg::RegisterOk {
-                        username, // moved; fine
-                    },
-                });
+                sink_info!(
+                    self.log,
+                    "registered new user '{}' from client_id={}",
+                    username,
+                    client_id
+                );
             }
             Err(err) => {
                 let code: RegisterErrorCode = err.into();
                 sink_warn!(
                     self.log,
-                    "registration failed for '{}': {:?} (code={})",
+                    "registration failed for '{}' from client_id={}: {:?} (code={})",
                     username,
+                    client_id,
                     err,
                     code.as_u16()
                 );
                 out.push(OutgoingMsg {
-                    client_id_target: client,
+                    client_id_target: client_id,
                     msg: Msg::RegisterErr {
                         code: code.as_u16(),
                     },
@@ -359,6 +397,14 @@ impl Server {
 
         match self.sessions.join_by_code(&session_code, client_id) {
             Ok(session_id) => {
+                sink_info!(
+                    self.log,
+                    "Join success: client_id={} ({}) joined session_code={} (session_id={})",
+                    client_id,
+                    username,
+                    session_code,
+                    session_id
+                );
                 // 1) JoinOk to the joiner
                 let join_ok = Msg::JoinOk {
                     session_id: session_id.clone(),
@@ -385,6 +431,13 @@ impl Server {
                 }
             }
             Err(JoinError::NotFound) => {
+                sink_warn!(
+                    self.log,
+                    "Join failed: client_id={} ({}) session_code={} not found",
+                    client_id,
+                    username,
+                    session_code
+                );
                 let msg = Msg::JoinErr {
                     code: JoinErrorCode::NotFound.as_u16(),
                 };
@@ -394,6 +447,13 @@ impl Server {
                 });
             }
             Err(JoinError::Full) => {
+                sink_warn!(
+                    self.log,
+                    "Join failed: client_id={} ({}) session_code={} full",
+                    client_id,
+                    username,
+                    session_code
+                );
                 let msg = Msg::JoinErr {
                     code: JoinErrorCode::Full.as_u16(),
                 };
@@ -478,7 +538,7 @@ impl Server {
 
     fn handle_ack(&mut self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
         let username = self.presence.username_for(from_cid).cloned();
-        sink_debug!(
+        sink_trace!(
             self.log,
             "client {} ({:?}) ACK txn_id={}",
             from_cid,
@@ -501,9 +561,18 @@ impl Server {
         );
 
         let left_sessions = self.sessions.leave_all(from);
+        let n_sessions = left_sessions.len();
         let mut out_msgs = Vec::new();
 
         if let Some(username) = username_opt {
+            sink_info!(
+                self.log,
+                "client {} ({}) sent bye; left {} sessions",
+                from,
+                username,
+                n_sessions
+            );
+
             for (session_id, remaining_members) in left_sessions {
                 for member in remaining_members {
                     out_msgs.push(OutgoingMsg {
