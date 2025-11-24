@@ -3,6 +3,8 @@
 pub enum LoginErrorCode {
     AlreadyLoggedIn = 1,
     NotAuthorized = 2,
+    InvalidCredentials = 3,
+    Internal = 4,
 }
 
 impl LoginErrorCode {

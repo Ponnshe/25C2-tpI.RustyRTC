@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::signaling::AuthError;
+use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode};
 use crate::signaling::presence::Presence;
 use crate::signaling::protocol::{Msg, SessionCode, SessionId, UserName};
@@ -16,19 +18,35 @@ pub struct Server {
     // Simple counters for IDs; we might use UUIDs or random codes in the future.
     next_session_id: u64,
     log: Arc<dyn LogSink>,
+    auth: Box<dyn AuthBackend>,
 }
 
 impl Server {
     pub fn new() -> Self {
-        Self::with_log(Arc::new(NoopLogSink))
+        Self::with_log_and_auth(
+            Arc::new(NoopLogSink),
+            Box::new(AllowAllAuthBackend::default()),
+        )
     }
 
+    /// Server with a custom logger, but still "accept all" auth backend.
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
+        Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend::default()))
+    }
+
+    /// Server with a custom auth backend, but Noop logging.
+    pub fn with_auth(auth: Box<dyn AuthBackend>) -> Self {
+        Self::with_log_and_auth(Arc::new(NoopLogSink), auth)
+    }
+
+    /// Fully explicit constructor: custom logger + custom auth backend.
+    pub fn with_log_and_auth(log: Arc<dyn LogSink>, auth: Box<dyn AuthBackend>) -> Self {
         Self {
             presence: Presence::new(),
             sessions: Sessions::new(),
             next_session_id: 1,
             log,
+            auth,
         }
     }
 
@@ -83,10 +101,7 @@ impl Server {
                 Vec::new()
             }
 
-            Msg::Login {
-                username,
-                password: _,
-            } => self.handle_login(from_cid, username),
+            Msg::Login { username, password } => self.handle_login(from_cid, username, password),
 
             Msg::CreateSession { capacity } => self.handle_create_session(from_cid, capacity),
 
@@ -180,27 +195,43 @@ impl Server {
 
     // ---- Individual handlers ---------------------------------------------
 
-    fn handle_login(&mut self, client: ClientId, username: UserName) -> Vec<OutgoingMsg> {
-        // TODO: real auth. For now accept everyone, but reject if already logged in somewhere else.
-        let already = self.presence.client_id_for(&username);
-
-        if let Some(_existing_client) = already {
-            // user already logged in
-            let resp = Msg::LoginErr {
-                code: LoginErrorCode::AlreadyLoggedIn.as_u16(),
+    fn handle_login(
+        &mut self,
+        client: ClientId,
+        username: UserName,
+        password: String,
+    ) -> Vec<OutgoingMsg> {
+        let mut out = Vec::new();
+        // 1) Auth backend decides if username/password are valid.
+        if let Err(err) = self.auth.verify(&username, &password) {
+            // Map AuthError to our protocol-level login error code.
+            let code = match err {
+                AuthError::InvalidCredentials => LoginErrorCode::InvalidCredentials.as_u16(),
+                AuthError::Internal => LoginErrorCode::Internal.as_u16(),
             };
-            return vec![OutgoingMsg {
-                client_id_target: client,
-                msg: resp,
-            }];
-        }
 
+            out.push(OutgoingMsg {
+                client_id_target: client,
+                msg: Msg::LoginErr { code },
+            });
+            return out;
+        }
+        // 2) Reject if the user is already logged in on another client.
+        if let Some(existing_client) = self.presence.client_id_for(&username) {
+            let code = LoginErrorCode::AlreadyLoggedIn.as_u16();
+            out.push(OutgoingMsg {
+                client_id_target: client,
+                msg: Msg::LoginErr { code },
+            });
+            return out;
+        }
+        // 3) Success: record presence and send LoginOk.
         let _ = self.presence.login(client, username.clone());
-        let resp = Msg::LoginOk { username };
-        vec![OutgoingMsg {
+        out.push(OutgoingMsg {
             client_id_target: client,
-            msg: resp,
-        }]
+            msg: Msg::LoginOk { username },
+        });
+        out
     }
 
     fn handle_create_session(&mut self, client_id: ClientId, capacity: u8) -> Vec<OutgoingMsg> {
@@ -445,10 +476,18 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signaling::auth::InMemoryAuthBackend;
     use crate::signaling::protocol::Msg;
 
     fn new_server() -> Server {
         Server::with_log(Arc::new(NoopLogSink))
+    }
+
+    fn new_server_with_in_memory_auth() -> Server {
+        let auth = InMemoryAuthBackend::new()
+            .with_user("alice", "secret")
+            .with_user("bob", "pw2");
+        Server::with_auth(Box::new(auth))
     }
 
     fn login(server: &mut Server, client_id: ClientId, username: &str) {
@@ -968,6 +1007,53 @@ mod tests {
                 assert_eq!(username, "alice");
             }
             other => panic!("expected PeerLeft, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn login_fails_with_invalid_credentials() {
+        let mut server = new_server_with_in_memory_auth();
+        let client: ClientId = 1;
+
+        let out = server.handle(
+            client,
+            Msg::Login {
+                username: "alice".into(),
+                password: "wrong".into(),
+            },
+        );
+
+        assert_eq!(out.len(), 1);
+        match &out[0].msg {
+            Msg::LoginErr { code } => {
+                assert_eq!(
+                    *code,
+                    LoginErrorCode::InvalidCredentials.as_u16(),
+                    "expected InvalidCredentials code, got {}",
+                    code
+                );
+            }
+            other => panic!("expected LoginErr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn login_succeeds_with_correct_credentials() {
+        let mut server = new_server_with_in_memory_auth();
+        let client: ClientId = 1;
+
+        let out = server.handle(
+            client,
+            Msg::Login {
+                username: "alice".into(),
+                password: "secret".into(),
+            },
+        );
+
+        assert_eq!(out.len(), 1);
+        match &out[0].msg {
+            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            other => panic!("expected LoginOk, got {:?}", other),
         }
     }
 }
