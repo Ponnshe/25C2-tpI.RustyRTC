@@ -15,10 +15,9 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
     let listener = TcpListener::bind(addr)?;
 
     // ---- Open user DB (FileUserStore) ----
-    // Simple default path: "users.db" in current working directory.
-    // We could later make this configurable via CLI/env.
-    let user_store_path = "users.db";
-    let file_store = FileUserStore::open(user_store_path)?;
+    let user_store_path =
+        std::env::var("RUSTYRTC_USERS_PATH").unwrap_or_else(|_| "users.db".to_string());
+    let file_store = FileUserStore::open(&user_store_path)?;
     let auth_backend: Box<dyn AuthBackend> = Box::new(file_store);
 
     // Events from all connections → central server loop
@@ -28,7 +27,12 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
     {
         let log_for_loop = log_sink.clone();
         let log_for_router = log_sink.clone();
+        let user_store_path_for_log = user_store_path.clone();
         thread::spawn(move || {
+            eprintln!(
+                "[signaling/run] server loop started; user DB at {}",
+                user_store_path_for_log
+            );
             // Use our FileUserStore-backed auth
             let router = Router::with_log_and_auth(log_for_router, auth_backend);
             run_server_loop(router, log_for_loop, server_rx);
@@ -37,7 +41,6 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
 
     let mut next_client_id: ClientId = 1;
 
-    // Optional: small startup log via stderr
     eprintln!(
         "[signaling/run] listening on {} with user DB at {}",
         addr, user_store_path
