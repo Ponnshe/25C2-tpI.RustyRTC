@@ -9,6 +9,7 @@ use crate::signaling::server_event::ServerEvent;
 use crate::signaling::transport::spawn_connection_threads;
 use crate::signaling::types::ClientId;
 use crate::signaling::{AuthBackend, FileUserStore};
+use crate::{sink_info, sink_warn};
 
 /// Run the signaling server on `addr` using the given log sink.
 pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> io::Result<()> {
@@ -19,6 +20,7 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
         std::env::var("RUSTYRTC_USERS_PATH").unwrap_or_else(|_| "users.db".to_string());
     let file_store = FileUserStore::open(&user_store_path)?;
     let auth_backend: Box<dyn AuthBackend> = Box::new(file_store);
+    sink_info!(log_sink, "using user store file at {:?}", user_store_path);
 
     // Events from all connections → central server loop
     let (server_tx, server_rx) = mpsc::channel::<ServerEvent>();
@@ -29,7 +31,8 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
         let log_for_router = log_sink.clone();
         let user_store_path_for_log = user_store_path.clone();
         thread::spawn(move || {
-            eprintln!(
+            sink_info!(
+                log_for_loop,
                 "[signaling/run] server loop started; user DB at {}",
                 user_store_path_for_log
             );
@@ -40,11 +43,7 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
     }
 
     let mut next_client_id: ClientId = 1;
-
-    eprintln!(
-        "[signaling/run] listening on {} with user DB at {}",
-        addr, user_store_path
-    );
+    sink_info!(log_sink, "signaling server listening on {}", addr);
 
     for stream in listener.incoming() {
         let stream = stream?;
@@ -53,12 +52,20 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
         next_client_id += 1;
 
         let server_tx_clone = server_tx.clone();
+        let log_for_conn_threads = log_sink.clone();
 
-        if let Err(e) = spawn_connection_threads(client_id, stream, server_tx_clone) {
-            // transport-level failure; stderr is fine
-            eprintln!(
-                "[signaling/run] failed to spawn connection threads for client {}: {:?}",
-                client_id, e
+        sink_info!(
+            log_sink,
+            "accepted TCP connection as client_id={}",
+            client_id
+        );
+        if let Err(e) =
+            spawn_connection_threads(client_id, stream, server_tx_clone, log_for_conn_threads)
+        {
+            sink_warn!(
+                log_sink,
+                "incoming connection failed: {:?} (will continue accepting)",
+                e
             );
         }
     }

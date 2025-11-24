@@ -1,12 +1,15 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
+use crate::app::log_sink::LogSink;
 use crate::signaling::protocol::{FrameError, Msg};
 use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_write_msg};
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
+use crate::sink_error;
 
 /// Thin wrapper over a blocking stream that speaks in `Msg`.
 pub struct Connection<S> {
@@ -41,6 +44,7 @@ pub fn spawn_connection_threads(
     client_id: ClientId,
     stream: TcpStream,
     server_tx: Sender<ServerEvent>,
+    log: Arc<dyn LogSink>,
 ) -> std::io::Result<()> {
     let (to_client_tx, to_client_rx) = mpsc::channel::<Msg>();
 
@@ -54,6 +58,7 @@ pub fn spawn_connection_threads(
 
     let read_stream = stream.try_clone()?;
     let write_stream = stream;
+    let log_for_read = log.clone();
 
     // READER THREAD: socket -> ServerEvent::MsgFromClient
     {
@@ -75,7 +80,8 @@ pub fn spawn_connection_threads(
                         let _ = server_tx.send(ServerEvent::Disconnected { client_id });
                         match e {
                             FrameError::Io(io_e) => {
-                                eprintln!(
+                                sink_error!(
+                                    log_for_read,
                                     "[conn {}] IO error in reader: {:?} (kind={:?})",
                                     client_id,
                                     io_e,
@@ -83,9 +89,11 @@ pub fn spawn_connection_threads(
                                 );
                             }
                             other => {
-                                eprintln!(
+                                sink_error!(
+                                    log_for_read,
                                     "[conn {}] frame error in reader: {:?}",
-                                    client_id, other
+                                    client_id,
+                                    other
                                 );
                             }
                         }
@@ -97,6 +105,8 @@ pub fn spawn_connection_threads(
     }
 
     // WRITER THREAD: to_client_rx -> socket
+
+    let log_for_write = log.clone();
     {
         let server_tx = server_tx.clone();
         thread::spawn(move || {
@@ -104,7 +114,12 @@ pub fn spawn_connection_threads(
 
             while let Ok(msg) = to_client_rx.recv() {
                 if let Err(e) = conn.send(&msg) {
-                    eprintln!("[conn {}] error sending msg: {:?}", client_id, e);
+                    sink_error!(
+                        log_for_write,
+                        "[conn {}] error sending msg: {:?}",
+                        client_id,
+                        e
+                    );
                     let _ = server_tx.send(ServerEvent::Disconnected { client_id });
                     break;
                 }

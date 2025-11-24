@@ -20,6 +20,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
                 client_id,
                 to_client,
             } => {
+                sink_info!(log, "RegisterClient: client_id={}", client_id);
                 router.register_client(client_id);
                 clients.insert(client_id, to_client);
 
@@ -32,7 +33,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
             }
 
             MsgFromClient { client_id, msg } => {
-                sink_debug!(log, "MsgFromClient from {}: {}", client_id, msg_name(&msg));
+                sink_debug!(log, "MsgFromClient: client_id={} msg={:?}", client_id, msg);
 
                 // Let Router+Server handle it
                 router.handle_from_client(client_id, msg);
@@ -56,7 +57,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
             }
 
             Disconnected { client_id } => {
-                sink_info!(log, "client {} disconnected (transport)", client_id);
+                sink_info!(log, "Disconnected: client_id={}", client_id);
                 router.unregister_client(client_id);
                 clients.remove(&client_id);
             }
