@@ -4,6 +4,7 @@ pub mod router;
 pub mod run;
 pub mod runtime;
 pub mod server;
+pub mod server_event;
 pub mod sessions;
 pub mod transport;
 pub mod types;

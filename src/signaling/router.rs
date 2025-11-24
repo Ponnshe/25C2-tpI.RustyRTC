@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::signaling::protocol::Msg;
 use crate::signaling::server::Server;
 use crate::signaling::types::{ClientId, OutgoingMsg};
 
 /// Router glues the Server state machine to per-client "sinks".
-#[derive(Debug, Default)]
 pub struct Router {
     server: Server,
     outboxes: HashMap<ClientId, Vec<Msg>>,
@@ -13,8 +14,12 @@ pub struct Router {
 
 impl Router {
     pub fn new() -> Self {
+        Self::with_log(Arc::new(NoopLogSink))
+    }
+
+    pub fn with_log(log: Arc<dyn LogSink>) -> Self {
         Self {
-            server: Server::new(),
+            server: Server::with_log(log),
             outboxes: HashMap::new(),
         }
     }
@@ -204,5 +209,57 @@ mod tests {
             }
             other => panic!("expected forwarded Offer, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn drain_all_outgoing_collects_messages_for_all_clients() {
+        let mut router = Router::new();
+        let c1: ClientId = 1;
+        let c2: ClientId = 2;
+
+        router.register_client(c1);
+        router.register_client(c2);
+
+        // Both clients log in
+        router.handle_from_client(
+            c1,
+            Msg::Login {
+                username: "alice".into(),
+                password: "pw1".into(),
+            },
+        );
+        router.handle_from_client(
+            c2,
+            Msg::Login {
+                username: "bob".into(),
+                password: "pw2".into(),
+            },
+        );
+
+        let mut outgoing = router.drain_all_outgoing();
+
+        // We don't care about cross-client ordering; make it deterministic
+        outgoing.sort_by_key(|(cid, _)| *cid);
+
+        assert_eq!(outgoing.len(), 2);
+
+        let (cid1, msg1) = &outgoing[0];
+        let (cid2, msg2) = &outgoing[1];
+
+        assert_eq!(*cid1, c1);
+        match msg1 {
+            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            other => panic!("expected LoginOk for c1, got {:?}", other),
+        }
+
+        assert_eq!(*cid2, c2);
+        match msg2 {
+            Msg::LoginOk { username } => assert_eq!(username, "bob"),
+            other => panic!("expected LoginOk for c2, got {:?}", other),
+        }
+
+        // After draining, nothing else should be pending
+        let again = router.drain_all_outgoing();
+        assert!(again.is_empty());
     }
 }

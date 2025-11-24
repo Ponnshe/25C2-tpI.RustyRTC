@@ -1,24 +1,32 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
+use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::signaling::presence::Presence;
 use crate::signaling::protocol::{Msg, SessionCode, SessionId, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
+use crate::{sink_debug, sink_info, sink_warn};
 
-#[derive(Debug, Default)]
 pub struct Server {
     presence: Presence,
     sessions: Sessions,
     // Simple counters for IDs; we might use UUIDs or random codes in the future.
     next_session_id: u64,
+    log: Arc<dyn LogSink>,
 }
 
 impl Server {
     pub fn new() -> Self {
+        Self::with_log(Arc::new(NoopLogSink))
+    }
+
+    pub fn with_log(log: Arc<dyn LogSink>) -> Self {
         Self {
             presence: Presence::new(),
             sessions: Sessions::new(),
             next_session_id: 1,
+            log,
         }
     }
 
@@ -40,7 +48,12 @@ impl Server {
         match msg {
             Msg::Hello { client_version } => {
                 // For now: ignore, or maybe log. No reply required.
-                println!("[server] client {} HELLO {}", from_cid, client_version);
+                sink_debug!(
+                    self.log,
+                    "client {} HELLO (version {})",
+                    from_cid,
+                    client_version
+                );
                 Vec::new()
             }
 
@@ -91,9 +104,11 @@ impl Server {
             | Msg::Ping { .. }
             | Msg::Pong { .. } => {
                 // These are server-to-client in this design; if a client sends them, ignore.
-                println!(
-                    "[server] ignoring unexpected client msg from {}: {:?}",
-                    from_cid, msg
+                sink_warn!(
+                    self.log,
+                    "ignoring unexpected client msg from {}: {:?}",
+                    from_cid,
+                    msg
                 );
                 Vec::new()
             }
@@ -106,7 +121,7 @@ impl Server {
 
         // Remove from presence
         if let Some(username) = self.presence.logout(client) {
-            println!("[server] client {} ({}) disconnected", client, username);
+            sink_info!(self.log, "client {} ({}) disconnected", client, username);
         }
 
         // Remove from any sessions
@@ -141,24 +156,29 @@ impl Server {
         }]
     }
 
-    fn handle_create_session(&mut self, client: ClientId, capacity: u8) -> Vec<OutgoingMsg> {
-        let mut out = Vec::new();
+    fn handle_create_session(&mut self, client_id: ClientId, capacity: u8) -> Vec<OutgoingMsg> {
+        let mut out_msg = Vec::new();
 
         // Require login first
-        let Some(_username) = self.presence.username_for(client).cloned() else {
+        let Some(username) = self.presence.username_for(client_id).cloned() else {
             let msg = Msg::JoinErr { code: 10 }; // "not logged in"
-            out.push(OutgoingMsg {
-                client_id_target: client,
+            sink_warn!(
+                self.log,
+                "client {} attempted CreateSession without being logged in",
+                client_id
+            );
+            out_msg.push(OutgoingMsg {
+                client_id_target: client_id,
                 msg,
             });
-            return out;
+            return out_msg;
         };
 
         let id = self.alloc_session_id();
         let code = self.alloc_session_code();
 
         let mut members = HashSet::new();
-        members.insert(client);
+        members.insert(client_id);
 
         let session = Session {
             session_id: id.clone(),
@@ -169,56 +189,91 @@ impl Server {
 
         self.sessions.insert(session);
 
+        sink_info!(
+            self.log,
+            "client {} ({}) created session id={} code={} capacity={}",
+            client_id,
+            username,
+            id,
+            code,
+            capacity
+        );
+
         let msg = Msg::Created {
             session_id: id,
             session_code: code,
         };
-        out.push(OutgoingMsg {
-            client_id_target: client,
+        out_msg.push(OutgoingMsg {
+            client_id_target: client_id,
             msg,
         });
-        out
+        out_msg
     }
 
-    fn handle_join(&mut self, client: ClientId, session_code: SessionCode) -> Vec<OutgoingMsg> {
-        let mut out = Vec::new();
+    fn handle_join(&mut self, client_id: ClientId, session_code: SessionCode) -> Vec<OutgoingMsg> {
+        let mut out_msg = Vec::new();
 
-        // require login
-        if self.presence.username_for(client).is_none() {
+        let Some(username) = self.presence.username_for(client_id).cloned() else {
             let msg = Msg::JoinErr { code: 10 }; // "not logged in"
-            out.push(OutgoingMsg {
-                client_id_target: client,
+            sink_warn!(
+                self.log,
+                "client {} attempted Join(code={}) without being logged in",
+                client_id,
+                session_code
+            );
+            out_msg.push(OutgoingMsg {
+                client_id_target: client_id,
                 msg,
             });
-            return out;
-        }
+            return out_msg;
+        };
 
-        match self.sessions.join_by_code(&session_code, client) {
+        match self.sessions.join_by_code(&session_code, client_id) {
             Ok(session_id) => {
-                // success
+                sink_info!(
+                    self.log,
+                    "client {} ({}) joined session id={} code={}",
+                    client_id,
+                    username,
+                    session_id,
+                    session_code
+                );
                 let msg = Msg::JoinOk { session_id };
-                out.push(OutgoingMsg {
-                    client_id_target: client,
+                out_msg.push(OutgoingMsg {
+                    client_id_target: client_id,
                     msg,
                 });
             }
             Err(JoinError::NotFound) => {
+                sink_warn!(
+                    self.log,
+                    "client {} ({}) tried to join unknown session code={}",
+                    client_id,
+                    username,
+                    session_code
+                );
                 let msg = Msg::JoinErr { code: 20 }; // "no such session"
-                out.push(OutgoingMsg {
-                    client_id_target: client,
+                out_msg.push(OutgoingMsg {
+                    client_id_target: client_id,
                     msg,
                 });
             }
             Err(JoinError::Full) => {
+                sink_warn!(
+                    self.log,
+                    "client {} ({}) tried to join full session code={}",
+                    client_id,
+                    username,
+                    session_code
+                );
                 let msg = Msg::JoinErr { code: 21 }; // "session full"
-                out.push(OutgoingMsg {
-                    client_id_target: client,
+                out_msg.push(OutgoingMsg {
+                    client_id_target: client_id,
                     msg,
                 });
             }
         }
-
-        out
+        out_msg
     }
 
     fn forward_to_user(&mut self, from: ClientId, msg: Msg) -> Vec<OutgoingMsg> {
@@ -237,9 +292,11 @@ impl Server {
             }]
         } else {
             // target offline; you might want to send an error back or drop silently
-            println!(
-                "[server] cannot forward from {} to {}, user offline",
-                from, to_username
+            sink_warn!(
+                self.log,
+                "cannot forward from client {} to user {:?}: user offline",
+                from,
+                to_username
             );
             Vec::new()
         }
@@ -251,8 +308,8 @@ impl Server {
     }
 
     fn handle_bye(&mut self, from: ClientId, reason: Option<String>) -> Vec<OutgoingMsg> {
-        println!("[server] client {} BYE {:?}", from, reason);
         // You might want to remove them from sessions here or just rely on disconnect.
+        sink_info!(self.log, "client {} BYE {:?}", from, reason);
         Vec::new()
     }
 }

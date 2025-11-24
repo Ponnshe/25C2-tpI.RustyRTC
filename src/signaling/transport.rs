@@ -5,7 +5,7 @@ use std::thread;
 
 use crate::signaling::protocol::{FrameError, Msg};
 use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_write_msg};
-use crate::signaling::runtime::ServerEvent;
+use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
 
 /// Thin wrapper over a blocking stream that speaks in `Msg`.
