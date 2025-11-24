@@ -1,3 +1,4 @@
+use rand::Rng;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -43,8 +44,27 @@ impl Server {
     }
 
     fn alloc_session_code(&mut self) -> SessionCode {
-        // Super naive: 6-digit code; replace with better generator later.
-        format!("{:06}", self.next_session_id - 1)
+        // 6-digit numeric code, random, collision-checked.
+        // Try a bounded number of random attempts, then fall back to a deterministic strategy.
+        let mut rng = rand::thread_rng();
+
+        // First, a bunch of random attempts.
+        for _ in 0..100 {
+            let n: u32 = rng.gen_range(0..1_000_000); // 0..=999_999
+            let code = format!("{:06}", n);
+            if !self.sessions.contains_code(&code) {
+                return code;
+            }
+        }
+
+        // Fallback: deterministic walk (extremely unlikely to be used in practice).
+        loop {
+            let code = format!("{:06}", self.next_session_id);
+            self.next_session_id = self.next_session_id.wrapping_add(1);
+            if !self.sessions.contains_code(&code) {
+                return code;
+            }
+        }
     }
 
     /// Main entrypoint: handle a message from a client.

@@ -112,6 +112,11 @@ impl Sessions {
             .values()
             .any(|sess| sess.members.contains(&a) && sess.members.contains(&b))
     }
+
+    /// Returns true if a session with this code already exists.
+    pub fn contains_code(&self, code: &SessionCode) -> bool {
+        self.by_sess_code.contains_key(code)
+    }
 }
 
 #[cfg(test)]
