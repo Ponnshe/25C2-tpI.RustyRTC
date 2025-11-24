@@ -1,6 +1,10 @@
 mod auth_backend;
 mod auth_error;
+mod file_user_store;
 mod in_memory_auth_backend;
+mod register_error;
 pub use auth_backend::AuthBackend;
 pub use auth_error::AuthError;
+pub use file_user_store::FileUserStore;
 pub use in_memory_auth_backend::{AllowAllAuthBackend, InMemoryAuthBackend};
+pub use register_error::RegisterError;

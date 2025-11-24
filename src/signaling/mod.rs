@@ -11,4 +11,4 @@ pub mod sessions;
 pub mod transport;
 pub mod types;
 
-pub use auth::{AllowAllAuthBackend, AuthBackend, AuthError, InMemoryAuthBackend};
+pub use auth::{AllowAllAuthBackend, AuthBackend, AuthError, FileUserStore, InMemoryAuthBackend};

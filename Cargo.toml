@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 rand = "0.8"
+sha2 = "0.10"
 eframe = { version = "0.28", features = ["wgpu"] }
 egui = "0.28"
 openh264 = "0.9"

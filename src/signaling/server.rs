@@ -91,7 +91,7 @@ impl Server {
     pub fn handle(&mut self, from_cid: ClientId, msg: Msg) -> Vec<OutgoingMsg> {
         match msg {
             Msg::Hello { client_version } => {
-                // For now: ignore, or maybe log. No reply required.
+                // For now: ignore and maybe log. No reply required.
                 sink_debug!(
                     self.log,
                     "client {} HELLO (version {})",

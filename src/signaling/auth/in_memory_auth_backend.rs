@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::signaling::{
-    auth::{AuthBackend, AuthError},
+    auth::{AuthBackend, AuthError, RegisterError},
     protocol::UserName,
 };
 
@@ -34,6 +34,25 @@ impl AuthBackend for InMemoryAuthBackend {
             _ => Err(AuthError::InvalidCredentials),
         }
     }
+    fn register(&mut self, username: &str, password: &str) -> Result<(), RegisterError> {
+        if self.users.contains_key(username) {
+            return Err(RegisterError::UsernameTaken);
+        }
+
+        // Here we could enforce rules:
+        // - min length
+        // - character set for username
+        // For now we'll accept any non-empty username/password.
+        if username.is_empty() {
+            return Err(RegisterError::InvalidUsername);
+        }
+        if password.is_empty() {
+            return Err(RegisterError::WeakPassword);
+        }
+
+        self.users.insert(username.to_owned(), password.to_owned());
+        Ok(())
+    }
 }
 
 /// Dev / test backend that accepts any username/password.
@@ -43,6 +62,11 @@ pub struct AllowAllAuthBackend;
 
 impl AuthBackend for AllowAllAuthBackend {
     fn verify(&self, _username: &str, _password: &str) -> Result<(), AuthError> {
+        Ok(())
+    }
+
+    fn register(&mut self, _username: &str, _password: &str) -> Result<(), RegisterError> {
+        // For dev/test: pretend registration always works.
         Ok(())
     }
 }
