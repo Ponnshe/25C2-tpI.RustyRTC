@@ -1,3 +1,4 @@
+pub mod errors;
 pub mod presence;
 pub mod protocol;
 pub mod router;

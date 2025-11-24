@@ -1,10 +1,11 @@
-use std::io;
 use std::net::TcpListener;
 use std::sync::{Arc, mpsc};
+use std::{io, thread};
 
 use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::signaling::router::Router;
-use crate::signaling::runtime::{ServerEvent, run_server_loop};
+use crate::signaling::runtime::run_server_loop;
+use crate::signaling::server_event::ServerEvent;
 use crate::signaling::transport::spawn_connection_threads;
 use crate::signaling::types::ClientId;
 
@@ -17,10 +18,11 @@ pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> 
 
     // Central Router + Server loop in its own thread
     {
-        let log_sink_clone = log_sink.clone();
-        std::thread::spawn(move || {
-            let router = Router::with_log(log_sink_clone);
-            run_server_loop(router, server_rx);
+        let log_for_loop = log_sink.clone();
+        let log_for_router = log_sink.clone();
+        thread::spawn(move || {
+            let router = Router::with_log(log_for_router);
+            run_server_loop(router, log_for_loop, server_rx);
         });
     }
 

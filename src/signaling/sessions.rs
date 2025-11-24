@@ -93,4 +93,13 @@ impl Sessions {
         self.by_sess_code
             .retain(|_, sess_id| self.by_sess_id.contains_key(sess_id));
     }
+
+    /// Return true if both clients are members of at least one common session.
+    pub fn share_session(&self, a: ClientId, b: ClientId) -> bool {
+        // Scan all sessions and check membership.
+        // For expected small #sessions this is totally fine.
+        self.by_sess_id
+            .values()
+            .any(|sess| sess.members.contains(&a) && sess.members.contains(&b))
+    }
 }
