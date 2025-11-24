@@ -194,6 +194,7 @@ impl RtcApp {
                 Established => {
                     self.conn_state = ConnState::Running;
                     self.status_line = "Established.".into();
+                    self.engine.start_media_transport();
                 }
                 Closing { graceful: _ } => {
                     self.conn_state = ConnState::Stopped;
@@ -201,6 +202,7 @@ impl RtcApp {
                 Closed => {
                     self.conn_state = ConnState::Stopped;
                     self.status_line = "Closed.".into();
+                    self.engine.close_session();
                 }
                 RtpIn(r) => {
                     self.rtp_pkts += 1;

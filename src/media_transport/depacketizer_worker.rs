@@ -9,11 +9,13 @@ use std::{
 
 use crate::{
     app::log_sink::LogSink, logger_debug, logger_warn,
-    media_transport::depacketizer::h264_depacketizer::H264Depacketizer,
+    media_transport::{depacketizer::h264_depacketizer::H264Depacketizer, media_transport_event::RtpIn},
 };
 use crate::{
-    core::events::RtpIn,
-    media_transport::{codec::CodecDescriptor, events::DepacketizerEvent},
+    media_transport::{
+        codec::CodecDescriptor, 
+        events::DepacketizerEvent,
+    },
 };
 
 pub fn spawn_depacketizer_worker(
@@ -21,7 +23,7 @@ pub fn spawn_depacketizer_worker(
     allowed_pts: Arc<RwLock<HashSet<u8>>>,
     rtp_packet_rx: Receiver<RtpIn>,
     event_tx: Sender<DepacketizerEvent>,
-    payload_map: HashMap<u8, CodecDescriptor>,
+    payload_map: Arc<HashMap<u8, CodecDescriptor>>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("media-transport-depack".into())

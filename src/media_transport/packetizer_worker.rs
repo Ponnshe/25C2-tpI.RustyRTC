@@ -1,13 +1,12 @@
 use std::{
-    sync::mpsc::{Receiver, Sender},
+    sync::{Arc, mpsc::{Receiver, Sender}},
     thread::{self, JoinHandle},
 };
 
-use crate::media_agent::spec::CodecSpec;
+use crate::{app::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
 use crate::media_transport::payload::{
     h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk,
 };
-
 use super::events::PacketizerEvent;
 
 #[derive(Debug)]
@@ -27,6 +26,7 @@ pub struct PacketizedFrame {
 pub fn spawn_packetizer_worker(
     order_rx: Receiver<PacketizeOrder>,
     event_tx: Sender<PacketizerEvent>,
+    logger: Arc<dyn LogSink>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("media-transport-packetizer".into())
@@ -34,6 +34,10 @@ pub fn spawn_packetizer_worker(
             let h264_packetizer = H264Packetizer::new(1200); // MTU is hardcoded here, maybe configure it.
 
             while let Ok(order) = order_rx.recv() {
+                sink_info!(
+                    logger.clone(),
+                    "[Packetizer] Received Order"
+                );
                 match order.codec_spec {
                     CodecSpec::H264 => {
                         let chunks =
@@ -44,6 +48,10 @@ pub fn spawn_packetizer_worker(
                                 rtp_ts: order.rtp_ts,
                                 codec_spec: order.codec_spec,
                             };
+                            sink_info!(
+                                logger.clone(),
+                                "[Packetizer] Sending PacketizedFrame to MediaTranport Packetizer Event Loop"
+                            );
                             let _ =
                                 event_tx.send(PacketizerEvent::FramePacketized(packetized_frame));
                         }
