@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::signaling::AuthBackend;
 use crate::signaling::protocol::Msg;
 use crate::signaling::server::Server;
 use crate::signaling::types::{ClientId, OutgoingMsg};
@@ -20,6 +21,13 @@ impl Router {
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
         Self {
             server: Server::with_log(log),
+            outboxes: HashMap::new(),
+        }
+    }
+    /// New: build a Router with explicit log sink *and* auth backend.
+    pub fn with_log_and_auth(log: Arc<dyn LogSink>, auth_backend: Box<dyn AuthBackend>) -> Self {
+        Self {
+            server: Server::with_log_and_auth(log, auth_backend),
             outboxes: HashMap::new(),
         }
     }

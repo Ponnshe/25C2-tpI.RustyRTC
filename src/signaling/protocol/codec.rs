@@ -25,6 +25,19 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
             put_u16(&mut body, *code);
             MsgType::LoginErr
         }
+        Register { username, password } => {
+            put_str16(&mut body, username)?;
+            put_str16(&mut body, password)?;
+            MsgType::Register
+        }
+        RegisterOk { username } => {
+            put_str16(&mut body, username)?;
+            MsgType::RegisterOk
+        }
+        RegisterErr { code } => {
+            put_u16(&mut body, *code);
+            MsgType::RegisterErr
+        }
 
         CreateSession { capacity } => {
             put_u8(&mut body, *capacity);
@@ -145,7 +158,22 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
             let code = cursor.get_u16()?;
             LoginErr { code }
         }
-
+        MsgType::Register => {
+            let u = cursor.get_str16()?.to_owned();
+            let pw = cursor.get_str16()?.to_owned();
+            Register {
+                username: u,
+                password: pw,
+            }
+        }
+        MsgType::RegisterOk => {
+            let u = cursor.get_str16()?.to_owned();
+            RegisterOk { username: u }
+        }
+        MsgType::RegisterErr => {
+            let code = cursor.get_u16()?;
+            RegisterErr { code }
+        }
         MsgType::CreateSession => {
             let cap = cursor.get_u8()?;
             CreateSession { capacity: cap }

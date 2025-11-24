@@ -5,7 +5,7 @@ use rustyrtc::app::logger::Logger;
 use rustyrtc::signaling::run::run_signaling_server_with_log;
 
 fn main() -> std::io::Result<()> {
-    // Start process logger
+    // Start process logger: logs go to ./logs/signaling_server-*.log
     let logger = Logger::start_default("signaling_server", 1024, 128, 10);
     let handle = logger.handle();
     let log_sink: Arc<dyn LogSink> = Arc::new(handle);

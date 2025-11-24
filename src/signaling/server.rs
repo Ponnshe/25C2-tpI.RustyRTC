@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::signaling::AuthError;
 use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
-use crate::signaling::errors::{JoinErrorCode, LoginErrorCode};
+use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};
 use crate::signaling::presence::Presence;
 use crate::signaling::protocol::{Msg, SessionCode, SessionId, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
@@ -103,6 +103,10 @@ impl Server {
 
             Msg::Login { username, password } => self.handle_login(from_cid, username, password),
 
+            Msg::Register { username, password } => {
+                self.handle_register(from_cid, username, password)
+            }
+
             Msg::CreateSession { capacity } => self.handle_create_session(from_cid, capacity),
 
             Msg::Join { session_code } => self.handle_join(from_cid, session_code),
@@ -140,6 +144,8 @@ impl Server {
             }
             Msg::LoginOk { .. }
             | Msg::LoginErr { .. }
+            | Msg::RegisterOk { .. }
+            | Msg::RegisterErr { .. }
             | Msg::Created { .. }
             | Msg::JoinOk { .. }
             | Msg::JoinErr { .. }
@@ -231,6 +237,47 @@ impl Server {
             client_id_target: client,
             msg: Msg::LoginOk { username },
         });
+        out
+    }
+
+    fn handle_register(
+        &mut self,
+        client: ClientId,
+        username: UserName,
+        password: String,
+    ) -> Vec<OutgoingMsg> {
+        let mut out = Vec::new();
+
+        let res = self.auth.register(&username, &password);
+
+        match res {
+            Ok(()) => {
+                sink_info!(self.log, "registered new user '{}'", username);
+                out.push(OutgoingMsg {
+                    client_id_target: client,
+                    msg: Msg::RegisterOk {
+                        username, // moved; fine
+                    },
+                });
+            }
+            Err(err) => {
+                let code: RegisterErrorCode = err.into();
+                sink_warn!(
+                    self.log,
+                    "registration failed for '{}': {:?} (code={})",
+                    username,
+                    err,
+                    code.as_u16()
+                );
+                out.push(OutgoingMsg {
+                    client_id_target: client,
+                    msg: Msg::RegisterErr {
+                        code: code.as_u16(),
+                    },
+                });
+            }
+        }
+
         out
     }
 

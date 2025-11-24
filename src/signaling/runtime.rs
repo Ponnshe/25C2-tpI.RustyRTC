@@ -37,19 +37,20 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
                 // Let Router+Server handle it
                 router.handle_from_client(client_id, msg);
 
-                // Drain all pending outgoing and deliver them
-                let outgoing = router.drain_all_outgoing();
-                for (target_id, out_msg) in outgoing {
-                    if let Some(tx) = clients.get(&target_id) {
+                // Drain all pending outgoing msgs and deliver them to reader
+                // threads
+                let outgoing_msgs = router.drain_all_outgoing();
+                for (c_target_id, out_msg) in outgoing_msgs {
+                    if let Some(tx) = clients.get(&c_target_id) {
                         if tx.send(out_msg).is_err() {
                             sink_warn!(
                                 log,
                                 "failed to deliver message to client {} (channel closed)",
-                                target_id
+                                c_target_id
                             );
                         }
                     } else {
-                        sink_warn!(log, "no client {} to deliver outgoing message", target_id);
+                        sink_warn!(log, "no client {} to deliver outgoing message", c_target_id);
                     }
                 }
             }
@@ -77,6 +78,9 @@ fn msg_name(msg: &Msg) -> &'static str {
         Login { .. } => "Login",
         LoginOk { .. } => "LoginOk",
         LoginErr { .. } => "LoginErr",
+        Register { .. } => "Register",
+        RegisterOk { .. } => "RegisterOk",
+        RegisterErr { .. } => "RegisterErr",
         CreateSession { .. } => "CreateSession",
         Created { .. } => "Created",
         Join { .. } => "Join",

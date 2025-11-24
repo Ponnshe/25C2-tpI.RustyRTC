@@ -18,6 +18,16 @@ pub enum Msg {
     LoginErr {
         code: u16, // map to our AuthErrorCode later
     },
+    Register {
+        username: UserName,
+        password: String,
+    },
+    RegisterOk {
+        username: UserName,
+    },
+    RegisterErr {
+        code: u16, // maps from RegisterErrorCode
+    },
 
     // Session management
     CreateSession {
