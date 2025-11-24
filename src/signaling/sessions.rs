@@ -103,3 +103,62 @@ impl Sessions {
             .any(|sess| sess.members.contains(&a) && sess.members.contains(&b))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_session(
+        session_id: &str,
+        session_code: &str,
+        capacity: u8,
+        members: &[ClientId],
+    ) -> Session {
+        let mut set = HashSet::new();
+        for &m in members {
+            set.insert(m);
+        }
+        Session {
+            session_id: session_id.to_string(),
+            session_code: session_code.to_string(),
+            capacity,
+            members: set,
+        }
+    }
+
+    #[test]
+    fn share_session_false_when_no_sessions() {
+        let sessions = Sessions::new();
+        assert!(!sessions.share_session(1, 2));
+    }
+
+    #[test]
+    fn share_session_true_when_same_session() {
+        let mut sessions = Sessions::new();
+
+        let sess = mk_session("sess-1", "ABC123", 4, &[1, 2]);
+        sessions.insert(sess);
+
+        assert!(sessions.share_session(1, 2));
+        assert!(sessions.share_session(2, 1));
+        // same client trivially shares a session with itself
+        assert!(sessions.share_session(1, 1));
+    }
+
+    #[test]
+    fn share_session_false_when_only_in_different_sessions() {
+        let mut sessions = Sessions::new();
+
+        let s1 = mk_session("sess-1", "AAA111", 4, &[1, 3]);
+        let s2 = mk_session("sess-2", "BBB222", 4, &[2, 4]);
+
+        sessions.insert(s1);
+        sessions.insert(s2);
+
+        assert!(!sessions.share_session(1, 2));
+        assert!(!sessions.share_session(3, 4));
+
+        assert!(sessions.share_session(1, 3));
+        assert!(sessions.share_session(2, 4));
+    }
+}

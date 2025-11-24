@@ -378,6 +378,28 @@ mod tests {
     use super::*;
     use crate::signaling::protocol::Msg;
 
+    fn new_server() -> Server {
+        Server::with_log(Arc::new(NoopLogSink))
+    }
+
+    fn login(server: &mut Server, client_id: ClientId, username: &str) {
+        let out = server.handle(
+            client_id,
+            Msg::Login {
+                username: username.to_string(),
+                password: "pw".to_string(),
+            },
+        );
+
+        // We expect a LoginOk back to that client.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].client_id_target, client_id);
+        match &out[0].msg {
+            Msg::LoginOk { username: u } => assert_eq!(u, username),
+            other => panic!("expected LoginOk, got {:?}", other),
+        }
+    }
+
     #[test]
     fn login_and_create_session_roundtrip() {
         let mut server = Server::new();
@@ -410,6 +432,151 @@ mod tests {
                 assert_eq!(session_code.len(), 6);
             }
             other => panic!("expected Created, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offer_from_unauthenticated_client_is_dropped() {
+        let mut server = new_server();
+
+        let res = server.handle(
+            1,
+            Msg::Offer {
+                txn_id: 1,
+                to: "bob".to_string(),
+                sdp: b"v=0".to_vec(),
+            },
+        );
+
+        assert!(
+            res.is_empty(),
+            "expected no outgoing messages for unauthenticated Offer, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn offer_to_offline_user_is_dropped() {
+        let mut server = new_server();
+
+        // Only alice logs in
+        login(&mut server, 1, "alice");
+
+        // alice sends Offer to bob, who is not logged in
+        let res = server.handle(
+            1,
+            Msg::Offer {
+                txn_id: 1,
+                to: "bob".to_string(),
+                sdp: b"v=0".to_vec(),
+            },
+        );
+
+        assert!(
+            res.is_empty(),
+            "expected no outgoing messages when target user is offline, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn offer_without_shared_session_is_dropped() {
+        let mut server = new_server();
+
+        // alice and bob both logged in, but in no sessions yet
+        login(&mut server, 1, "alice");
+        login(&mut server, 2, "bob");
+
+        let res = server.handle(
+            1,
+            Msg::Offer {
+                txn_id: 1,
+                to: "bob".to_string(),
+                sdp: b"v=0".to_vec(),
+            },
+        );
+
+        assert!(
+            res.is_empty(),
+            "expected no outgoing messages when peers share no session, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn offer_with_shared_session_is_forwarded() {
+        let mut server = new_server();
+
+        let alice: ClientId = 1;
+        let bob: ClientId = 2;
+
+        // 1) both log in
+        login(&mut server, alice, "alice");
+        login(&mut server, bob, "bob");
+
+        // 2) alice creates a session
+        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].client_id_target, alice);
+
+        let session_code = match &created[0].msg {
+            Msg::Created {
+                session_id: _,
+                session_code,
+            } => session_code.clone(),
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        // 3) bob joins that session
+        let joined = server.handle(
+            bob,
+            Msg::Join {
+                session_code: session_code.clone(),
+            },
+        );
+
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].client_id_target, bob);
+        match &joined[0].msg {
+            Msg::JoinOk { session_id: _ } => {}
+            other => panic!("expected JoinOk, got {:?}", other),
+        }
+
+        // 4) now alice sends an Offer to bob; should be forwarded
+        let txn_id = 42;
+        let sdp = b"v=0".to_vec();
+
+        let res = server.handle(
+            alice,
+            Msg::Offer {
+                txn_id,
+                to: "bob".to_string(),
+                sdp: sdp.clone(),
+            },
+        );
+
+        assert_eq!(
+            res.len(),
+            1,
+            "expected one outgoing Offer message, got {:?}",
+            res
+        );
+
+        let out = &res[0];
+        assert_eq!(out.client_id_target, bob);
+
+        match &out.msg {
+            Msg::Offer {
+                txn_id: t,
+                to,
+                sdp: s,
+            } => {
+                assert_eq!(*t, txn_id);
+                assert_eq!(to, "bob");
+                assert_eq!(s, &sdp);
+            }
+            other => panic!("expected forwarded Offer, got {:?}", other),
         }
     }
 }
