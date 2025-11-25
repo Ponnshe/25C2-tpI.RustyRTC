@@ -9,6 +9,7 @@ pub mod server;
 pub mod server_event;
 pub mod sessions;
 pub mod signaling_server;
+pub mod tls;
 pub mod transport;
 pub mod types;
 

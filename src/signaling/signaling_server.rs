@@ -1,6 +1,7 @@
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
+use std::time::Duration;
 use std::{io, thread};
 
 use crate::app::log_sink::{LogSink, NoopLogSink};
@@ -8,9 +9,11 @@ use crate::signaling::auth::{AuthBackend, FileUserStore};
 use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;
 use crate::signaling::server_event::ServerEvent;
-use crate::signaling::transport::spawn_connection_threads;
+use crate::signaling::tls::build_signaling_server_config;
+use crate::signaling::transport::{spawn_connection_threads, spawn_tls_connection_thread};
 use crate::signaling::types::ClientId;
 use crate::{sink_info, sink_warn};
+use rustls::{ServerConnection, StreamOwned};
 
 /// Top-level runtime object for the signaling service.
 ///
@@ -67,8 +70,6 @@ impl SignalingServer {
     {
         Self::with_file_store(bind_addr, Arc::new(NoopLogSink), users_path)
     }
-
-    /// Blocking main loop: bind, spawn central server loop, accept TCP clients.
     pub fn run(self) -> io::Result<()> {
         let Self {
             bind_addr,
@@ -76,6 +77,15 @@ impl SignalingServer {
             auth_backend,
             user_store_path,
         } = self;
+
+        // --- TLS config (mkcert server cert + key) ---
+        // You can later move these to env vars or config.
+        let cert_path = std::env::var("RUSTYRTC_SIGNALING_CERT")
+            .unwrap_or_else(|_| "certs/signal.internal.pem".to_string());
+        let key_path = std::env::var("RUSTYRTC_SIGNALING_KEY")
+            .unwrap_or_else(|_| "certs/signal.internal-key.pem".to_string());
+
+        let tls_config = build_signaling_server_config(&cert_path, &key_path)?;
 
         let listener = TcpListener::bind(&bind_addr)?;
 
@@ -101,7 +111,7 @@ impl SignalingServer {
         }
 
         let mut next_client_id: ClientId = 1;
-        sink_info!(log, "signaling server listening on {}", bind_addr);
+        sink_info!(log, "signaling server (TLS) listening on {}", bind_addr);
 
         for stream in listener.incoming() {
             let stream = match stream {
@@ -116,20 +126,45 @@ impl SignalingServer {
                 }
             };
 
+            // Configure underlying TCP before wrapping in TLS.
+            if let Err(e) = stream.set_nodelay(true) {
+                sink_warn!(log, "set_nodelay failed: {:?}", e);
+            }
+            if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(200))) {
+                sink_warn!(log, "set_read_timeout failed: {:?}", e);
+            }
+
             let client_id = next_client_id;
             next_client_id += 1;
 
             let server_tx_clone = server_tx.clone();
             let log_for_conn = log.clone();
 
-            sink_info!(log, "accepted TCP connection as client_id={}", client_id);
+            sink_info!(log, "accepted TLS connection as client_id={}", client_id);
+
+            // Build a rustls ServerConnection for this client.
+            let conn = match ServerConnection::new(Arc::clone(&tls_config)) {
+                Ok(c) => c,
+                Err(e) => {
+                    sink_warn!(
+                        log,
+                        "failed to create TLS session for client {}: {:?}",
+                        client_id,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            // Combine TLS session + TCP into a single Read+Write stream.
+            let tls_stream = StreamOwned::new(conn, stream);
 
             if let Err(e) =
-                spawn_connection_threads(client_id, stream, server_tx_clone, log_for_conn)
+                spawn_tls_connection_thread(client_id, tls_stream, server_tx_clone, log_for_conn)
             {
                 sink_warn!(
                     log,
-                    "failed to spawn connection threads for client {}: {:?}",
+                    "failed to spawn TLS connection thread for client {}: {:?}",
                     client_id,
                     e
                 );

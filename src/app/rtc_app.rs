@@ -18,6 +18,7 @@ use crate::{
 use eframe::{App, Frame, egui};
 use std::{
     collections::VecDeque,
+    io,
     sync::{Arc, mpsc::TrySendError},
     time::Instant,
 };
@@ -188,12 +189,34 @@ impl RtcApp {
 
     fn connect_to_signaling(&mut self) {
         let log_sink = Arc::new(self.logger.handle());
-        match SignalingClient::connect(&self.server_addr_input, log_sink) {
+
+        // Trim and basic sanity check
+        let addr = self.server_addr_input.trim();
+        if addr.is_empty() {
+            let msg = "Please enter a signaling server address (host:port)".to_string();
+            self.signaling_error = Some(msg.clone());
+            self.push_ui_log(msg);
+            return;
+        }
+
+        // TLS SNI / certificate name.
+        // This MUST match the mkcert-generated certificate (signal.internal).
+        // We keep it fixed for now, even if the user types 127.0.0.1:6000.
+        let domain = "signal.internal";
+
+        // Build TLS config + connect over TLS, handling errors explicitly (no `?`).
+        let res: io::Result<SignalingClient> =
+            SignalingClient::default_tls_config().and_then(|tls_cfg| {
+                // `addr` is "host:port", `domain` is the bare host for SNI
+                SignalingClient::connect_tls(addr, domain, tls_cfg, log_sink.clone())
+            });
+
+        match res {
             Ok(client) => {
                 self.signaling_client = Some(client);
                 self.signaling_screen = SignalingScreen::Login;
                 self.signaling_error = None;
-                self.status_line = format!("Connecting to {}…", self.server_addr_input);
+                self.status_line = format!("Connecting to {}…", addr);
             }
             Err(e) => {
                 let msg = format!("Failed to connect to signaling server: {e}");

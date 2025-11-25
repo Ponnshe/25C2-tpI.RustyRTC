@@ -1,8 +1,9 @@
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
+use std::time::Duration;
 
 use crate::app::log_sink::LogSink;
 use crate::signaling::protocol::{FrameError, Msg};
@@ -10,6 +11,7 @@ use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
 use crate::sink_error;
+use rustls::{ServerConnection, StreamOwned};
 
 /// Thin wrapper over a blocking stream that speaks in `Msg`.
 pub struct Connection<S> {
@@ -35,6 +37,106 @@ where
     pub fn send(&mut self, msg: &Msg) -> Result<(), FrameError> {
         proto_write_msg(&mut self.stream, msg)
     }
+}
+
+/// TLS-enabled variant: single thread that handles both reading and writing.
+///
+/// `stream` is a rustls `StreamOwned<ServerConnection, TcpStream>`.
+pub(crate) fn spawn_tls_connection_thread(
+    client_id: ClientId,
+    stream: StreamOwned<ServerConnection, TcpStream>,
+    server_tx: Sender<ServerEvent>,
+    log: Arc<dyn LogSink>,
+) -> io::Result<()> {
+    let (to_client_tx, to_client_rx) = mpsc::channel::<Msg>();
+
+    // Register client with the central server loop.
+    server_tx
+        .send(ServerEvent::RegisterClient {
+            client_id,
+            to_client: to_client_tx.clone(),
+        })
+        .expect("server loop should be alive");
+
+    let log_for_thread = log.clone();
+
+    thread::spawn(move || {
+        let mut conn = Connection::new(client_id, stream);
+
+        loop {
+            // 1) Drain outgoing messages from server → client.
+            loop {
+                match to_client_rx.try_recv() {
+                    Ok(msg) => {
+                        if let Err(e) = conn.send(&msg) {
+                            sink_error!(
+                                log_for_thread,
+                                "[conn {}] error sending TLS msg: {:?}",
+                                client_id,
+                                e
+                            );
+                            let _ = server_tx.send(ServerEvent::Disconnected { client_id });
+                            return;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        let _ = server_tx.send(ServerEvent::Disconnected { client_id });
+                        return;
+                    }
+                }
+            }
+
+            // 2) Try to read a message from client → server.
+            match conn.recv() {
+                Ok(msg) => {
+                    if server_tx
+                        .send(ServerEvent::MsgFromClient { client_id, msg })
+                        .is_err()
+                    {
+                        // Server loop is gone.
+                        return;
+                    }
+                }
+                // Non-fatal timeouts / would-block: just no data right now.
+                Err(FrameError::Io(ref e))
+                    if e.kind() == io::ErrorKind::TimedOut
+                        || e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted =>
+                {
+                    // nothing to do, fall through
+                }
+                // Fatal IO error: disconnect.
+                Err(FrameError::Io(e)) => {
+                    sink_error!(
+                        log_for_thread,
+                        "[conn {}] IO error in TLS reader: {:?} (kind={:?})",
+                        client_id,
+                        e,
+                        e.kind()
+                    );
+                    let _ = server_tx.send(ServerEvent::Disconnected { client_id });
+                    return;
+                }
+                // Protocol/framig error: also disconnect.
+                Err(other) => {
+                    sink_error!(
+                        log_for_thread,
+                        "[conn {}] frame error in TLS reader: {:?}",
+                        client_id,
+                        other
+                    );
+                    let _ = server_tx.send(ServerEvent::Disconnected { client_id });
+                    return;
+                }
+            }
+
+            // Avoid busy-spinning when idle.
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    Ok(())
 }
 
 /// Spawn reader + writer threads for a single TcpStream client.
