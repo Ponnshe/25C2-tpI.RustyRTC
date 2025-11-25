@@ -329,6 +329,9 @@ impl RtcApp {
                 self.push_ui_log(format!("Peer ended call: {:?}", reason));
                 self.reset_call_flow();
             }
+            Msg::Ack { txn_id } => {
+                self.push_ui_log(format!("Received ACK for txn_id={txn_id}"));
+            }
             other => {
                 self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
             }

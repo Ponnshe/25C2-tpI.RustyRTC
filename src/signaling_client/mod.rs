@@ -69,6 +69,7 @@ impl SignalingClient {
             let mut guard = writer
                 .lock()
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "writer lock poisoned"))?;
+            sink_debug!(log, "[signaling_client] sending Hello to {}", addr);
             protocol::write_msg(
                 &mut *guard,
                 &Msg::Hello {
@@ -109,6 +110,7 @@ impl SignalingClient {
             loop {
                 match protocol::read_msg(&mut reader) {
                     Ok(msg) => {
+                        sink_debug!(log, "[signaling_client] recv {:?}", msg_name(&msg));
                         if tx.send(SignalingEvent::ServerMsg(msg)).is_err() {
                             break;
                         }
@@ -154,6 +156,7 @@ impl SignalingClient {
             .writer
             .lock()
             .map_err(|_| SignalingClientError::Poisoned)?;
+        sink_debug!(self.log, "[signaling_client] send {:?}", msg_name(&msg));
         protocol::write_msg(&mut *guard, &msg).map_err(SignalingClientError::Frame)
     }
 
@@ -174,5 +177,34 @@ impl SignalingClient {
 
     fn is_connected(&self) -> bool {
         self.connected.lock().map(|f| *f).unwrap_or(false)
+    }
+}
+
+fn msg_name(msg: &Msg) -> &'static str {
+    use Msg::*;
+    match msg {
+        Hello { .. } => "Hello",
+        Login { .. } => "Login",
+        LoginOk { .. } => "LoginOk",
+        LoginErr { .. } => "LoginErr",
+        Register { .. } => "Register",
+        RegisterOk { .. } => "RegisterOk",
+        RegisterErr { .. } => "RegisterErr",
+        ListPeers => "ListPeers",
+        PeersOnline { .. } => "PeersOnline",
+        CreateSession { .. } => "CreateSession",
+        Created { .. } => "Created",
+        Join { .. } => "Join",
+        JoinOk { .. } => "JoinOk",
+        JoinErr { .. } => "JoinErr",
+        PeerJoined { .. } => "PeerJoined",
+        PeerLeft { .. } => "PeerLeft",
+        Offer { .. } => "Offer",
+        Answer { .. } => "Answer",
+        Candidate { .. } => "Candidate",
+        Ack { .. } => "Ack",
+        Bye { .. } => "Bye",
+        Ping { .. } => "Ping",
+        Pong { .. } => "Pong",
     }
 }
