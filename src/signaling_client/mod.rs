@@ -2,7 +2,7 @@ use std::{
     fmt, io,
     net::{Shutdown, TcpStream},
     sync::{
-        Arc, Mutex,
+        Arc,
         mpsc::{self, Receiver, Sender},
     },
     thread,
@@ -24,7 +24,18 @@ pub enum SignalingEvent {
     ServerMsg(Msg),
 }
 
+/// Commands issued by the GUI / application into the signaling client.
+#[derive(Debug)]
+enum Command {
+    Send(Msg),
+    Disconnect,
+}
+
 /// Errors that can occur while sending signaling messages.
+///
+/// In this design, the only thing `send()` can reliably report is that the
+/// signaling client is disconnected (i.e. the network thread has exited and
+/// dropped its command receiver).
 #[derive(Debug)]
 pub enum SignalingClientError {
     Io(io::Error),
@@ -47,92 +58,174 @@ impl fmt::Display for SignalingClientError {
 impl std::error::Error for SignalingClientError {}
 
 /// Thin client responsible for sending/receiving signaling messages.
+///
+/// - Only the background thread touches the TCP stream.
+/// - The GUI sends `Command`s in, and receives `SignalingEvent`s out.
 pub struct SignalingClient {
-    writer: Arc<Mutex<TcpStream>>,
+    cmd_tx: Sender<Command>,
     events: Receiver<SignalingEvent>,
-    log: Arc<dyn LogSink>,
-    connected: Arc<Mutex<bool>>,
-    last_seen: Arc<Mutex<Instant>>,
 }
 
 impl SignalingClient {
     const CLIENT_VERSION: &'static str = "rustyrtc-gui-0.1";
 
-    /// Connects to the signaling server and starts the background reader thread.
+    const PING_INTERVAL_SECS: u64 = 5;
+    const TIMEOUT_SECS: u64 = 15;
+
+    /// Connects to the signaling server and starts the background network thread.
+    ///
+    /// This returns `Ok` as soon as the TCP connection is established and the
+    /// network thread is spawned. Any later protocol/IO errors are reported via
+    /// `SignalingEvent::Error` + `SignalingEvent::Disconnected`.
     pub fn connect(addr: &str, log: Arc<dyn LogSink>) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
-        if let Err(e) = stream.set_nodelay(true) {
-            sink_warn!(log, "[signaling_client] set_nodelay failed: {e:?}");
-        }
-        let reader = stream.try_clone()?;
-        let writer = Arc::new(Mutex::new(stream));
-        let (tx, rx) = mpsc::channel::<SignalingEvent>();
-        let connected = Arc::new(Mutex::new(true));
-        let last_seen = Arc::new(Mutex::new(Instant::now()));
 
-        {
-            let mut guard = writer
-                .lock()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "writer lock poisoned"))?;
-            sink_debug!(log, "[signaling_client] sending Hello to {}", addr);
-            protocol::write_msg(
-                &mut *guard,
-                &Msg::Hello {
-                    client_version: Self::CLIENT_VERSION.to_string(),
-                },
-            )
-            .map_err(|err| {
-                io::Error::new(io::ErrorKind::Other, format!("hello failed: {:?}", err))
-            })?;
-        }
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
+        let (ev_tx, ev_rx) = mpsc::channel::<SignalingEvent>();
 
-        Self::spawn_reader_thread(
-            addr.to_string(),
-            reader,
-            tx.clone(),
-            Arc::clone(&connected),
-            Arc::clone(&last_seen),
-            log.clone(),
-        );
-        Self::spawn_ping_thread(
-            addr.to_string(),
-            Arc::clone(&writer),
-            tx.clone(),
-            Arc::clone(&connected),
-            Arc::clone(&last_seen),
-            log.clone(),
-        );
+        Self::spawn_network_thread(addr.to_string(), stream, cmd_rx, ev_tx, log);
 
         Ok(Self {
-            writer,
-            events: rx,
-            log,
-            connected,
-            last_seen,
+            cmd_tx,
+            events: ev_rx,
         })
     }
 
-    fn spawn_reader_thread(
+    /// Background network thread: owns the TCP stream, handles:
+    /// - Hello
+    /// - Reads incoming messages
+    /// - Processes commands (Send/Disconnect)
+    /// - Sends periodic Ping and enforces heartbeat timeout
+    fn spawn_network_thread(
         addr: String,
-        mut reader: TcpStream,
-        tx: Sender<SignalingEvent>,
-        connected: Arc<Mutex<bool>>,
-        last_seen: Arc<Mutex<Instant>>,
+        mut stream: TcpStream,
+        cmd_rx: Receiver<Command>,
+        ev_tx: Sender<SignalingEvent>,
         log: Arc<dyn LogSink>,
     ) {
         thread::spawn(move || {
+            // Configure TCP
+            if let Err(e) = stream.set_nodelay(true) {
+                sink_warn!(
+                    log,
+                    "[signaling_client] set_nodelay failed for {}: {e:?}",
+                    addr
+                );
+            }
+            if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(200))) {
+                sink_warn!(
+                    log,
+                    "[signaling_client] set_read_timeout failed for {}: {e:?}",
+                    addr
+                );
+            }
+
+            // Initial Hello
+            sink_debug!(log, "[signaling_client] sending Hello to {}", addr);
+            if let Err(err) = protocol::write_msg(
+                &mut stream,
+                &Msg::Hello {
+                    client_version: Self::CLIENT_VERSION.to_string(),
+                },
+            ) {
+                sink_error!(
+                    log,
+                    "[signaling_client] hello failed to {}: {:?}",
+                    addr,
+                    err
+                );
+                let _ = ev_tx.send(SignalingEvent::Error(format!("hello failed: {:?}", err)));
+                let _ = stream.shutdown(Shutdown::Both);
+                let _ = ev_tx.send(SignalingEvent::Disconnected);
+                return;
+            }
+
             sink_info!(log, "[signaling_client] connected to {}", addr);
-            let _ = tx.send(SignalingEvent::Connected);
+            let _ = ev_tx.send(SignalingEvent::Connected);
+
+            // Heartbeat state
+            let ping_interval = Duration::from_secs(Self::PING_INTERVAL_SECS);
+            let timeout = Duration::from_secs(Self::TIMEOUT_SECS);
+            let mut last_seen = Instant::now();
+            let mut next_ping = Instant::now() + ping_interval;
+            let mut nonce: u64 = 1;
+
             loop {
-                match protocol::read_msg(&mut reader) {
-                    Ok(msg) => {
-                        if let Ok(mut guard) = last_seen.lock() {
-                            *guard = Instant::now();
+                // 1) Drain commands from the GUI.
+                let mut disconnect_requested = false;
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(Command::Send(msg)) => {
+                            sink_debug!(log, "[signaling_client] send {:?}", msg_name(&msg));
+                            if let Err(e) = protocol::write_msg(&mut stream, &msg) {
+                                match e {
+                                    FrameError::Io(ioe) => {
+                                        sink_error!(
+                                            log,
+                                            "[signaling_client] IO error while sending to {}: {:?} ({:?})",
+                                            addr,
+                                            ioe,
+                                            ioe.kind()
+                                        );
+                                        let _ = ev_tx.send(SignalingEvent::Error(ioe.to_string()));
+                                    }
+                                    FrameError::Proto(err) => {
+                                        sink_error!(
+                                            log,
+                                            "[signaling_client] protocol error while sending to {}: {:?}",
+                                            addr,
+                                            err
+                                        );
+                                        let _ = ev_tx.send(SignalingEvent::Error(format!(
+                                            "protocol error: {:?}",
+                                            err
+                                        )));
+                                    }
+                                }
+                                disconnect_requested = true;
+                                break;
+                            }
                         }
-                        sink_debug!(log, "[signaling_client] recv {:?}", msg_name(&msg));
-                        if tx.send(SignalingEvent::ServerMsg(msg)).is_err() {
+                        Ok(Command::Disconnect) => {
+                            sink_info!(log, "[signaling_client] disconnect requested by client");
+                            disconnect_requested = true;
                             break;
                         }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            sink_info!(
+                                log,
+                                "[signaling_client] command channel closed, shutting down"
+                            );
+                            disconnect_requested = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnect_requested {
+                    break;
+                }
+
+                // 2) Try to read a message (with read_timeout on the socket).
+                match protocol::read_msg(&mut stream) {
+                    Ok(msg) => {
+                        last_seen = Instant::now();
+                        sink_debug!(log, "[signaling_client] recv {:?}", msg_name(&msg));
+                        if ev_tx.send(SignalingEvent::ServerMsg(msg)).is_err() {
+                            sink_warn!(
+                                log,
+                                "[signaling_client] events receiver dropped, shutting down"
+                            );
+                            break;
+                        }
+                    }
+                    Err(FrameError::Io(ref e))
+                        if e.kind() == io::ErrorKind::TimedOut
+                            || e.kind() == io::ErrorKind::WouldBlock
+                            || e.kind() == io::ErrorKind::Interrupted =>
+                    {
+                        // Timed out waiting for data → not fatal, just continue.
                     }
                     Err(FrameError::Io(e)) => {
                         sink_error!(
@@ -142,7 +235,7 @@ impl SignalingClient {
                             e,
                             e.kind()
                         );
-                        let _ = tx.send(SignalingEvent::Error(e.to_string()));
+                        let _ = ev_tx.send(SignalingEvent::Error(e.to_string()));
                         break;
                     }
                     Err(FrameError::Proto(err)) => {
@@ -153,120 +246,96 @@ impl SignalingClient {
                             err
                         );
                         let _ =
-                            tx.send(SignalingEvent::Error(format!("protocol error: {:?}", err)));
+                            ev_tx.send(SignalingEvent::Error(format!("protocol error: {:?}", err)));
                         break;
                     }
                 }
+
+                // 3) Heartbeat / Ping.
+                let now = Instant::now();
+                let idle = now.duration_since(last_seen);
+
+                if idle > timeout {
+                    sink_error!(
+                        log,
+                        "[signaling_client] heartbeat timed out after {:?} to {}",
+                        idle,
+                        addr
+                    );
+                    let _ = ev_tx.send(SignalingEvent::Error("signaling heartbeat timeout".into()));
+                    break;
+                }
+
+                if now >= next_ping {
+                    let ping_msg = Msg::Ping { nonce };
+                    if let Err(e) = protocol::write_msg(&mut stream, &ping_msg) {
+                        match e {
+                            FrameError::Io(ioe) => {
+                                sink_error!(
+                                    log,
+                                    "[signaling_client] failed to send Ping to {}: {:?} ({:?})",
+                                    addr,
+                                    ioe,
+                                    ioe.kind()
+                                );
+                                let _ = ev_tx.send(SignalingEvent::Error(ioe.to_string()));
+                            }
+                            FrameError::Proto(err) => {
+                                sink_error!(
+                                    log,
+                                    "[signaling_client] protocol error while sending Ping to {}: {:?}",
+                                    addr,
+                                    err
+                                );
+                                let _ = ev_tx.send(SignalingEvent::Error(format!(
+                                    "protocol error: {:?}",
+                                    err
+                                )));
+                            }
+                        }
+                        break;
+                    } else {
+                        sink_trace!(
+                            log,
+                            "[signaling_client] sent Ping {} to {} (idle {:?})",
+                            nonce,
+                            addr,
+                            idle
+                        );
+                    }
+                    nonce = nonce.wrapping_add(1);
+                    next_ping = now + ping_interval;
+                }
+
+                // 4) Small sleep to avoid busy-spinning when idle.
+                thread::sleep(Duration::from_millis(10));
             }
 
-            if let Ok(mut flag) = connected.lock() {
-                *flag = false;
-            }
-            let _ = tx.send(SignalingEvent::Disconnected);
+            let _ = stream.shutdown(Shutdown::Both);
+            let _ = ev_tx.send(SignalingEvent::Disconnected);
         });
     }
 
-    /// Attempts to send a message to the server.
+    /// Attempts to send a message to the server (enqueue on the command channel).
+    ///
+    /// Note: actual IO happens in the network thread; any IO/protocol errors
+    /// will be reported asynchronously as `SignalingEvent::Error`. From here we
+    /// can only tell if the client is already disconnected.
     pub fn send(&self, msg: Msg) -> Result<(), SignalingClientError> {
-        if !self.is_connected() {
-            return Err(SignalingClientError::Disconnected);
-        }
-        let mut guard = match self.writer.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                if let Ok(mut flag) = self.connected.lock() {
-                    *flag = false;
-                }
-                return Err(SignalingClientError::Disconnected);
-            }
-        };
-        sink_debug!(self.log, "[signaling_client] send {:?}", msg_name(&msg));
-        protocol::write_msg(&mut *guard, &msg).map_err(SignalingClientError::Frame)
+        self.cmd_tx
+            .send(Command::Send(msg))
+            .map_err(|_| SignalingClientError::Disconnected)
     }
 
     /// Gracefully closes the TCP connection.
     pub fn disconnect(&self) {
-        if let Ok(guard) = self.writer.lock() {
-            let _ = guard.shutdown(Shutdown::Both);
-        }
-        if let Ok(mut flag) = self.connected.lock() {
-            *flag = false;
-        }
+        // If the network thread is already gone, this will just fail silently.
+        let _ = self.cmd_tx.send(Command::Disconnect);
     }
 
     /// Polls the next pending event from the background thread.
     pub fn try_recv(&self) -> Option<SignalingEvent> {
         self.events.try_recv().ok()
-    }
-
-    fn is_connected(&self) -> bool {
-        self.connected.lock().map(|f| *f).unwrap_or(false)
-    }
-
-    fn spawn_ping_thread(
-        addr: String,
-        writer: Arc<Mutex<TcpStream>>,
-        tx: Sender<SignalingEvent>,
-        connected: Arc<Mutex<bool>>,
-        last_seen: Arc<Mutex<Instant>>,
-        log: Arc<dyn LogSink>,
-    ) {
-        const PING_INTERVAL: Duration = Duration::from_secs(5);
-        const TIMEOUT: Duration = Duration::from_secs(15);
-
-        thread::spawn(move || {
-            let mut nonce: u64 = 1;
-            loop {
-                thread::sleep(PING_INTERVAL);
-                let still_connected = connected.lock().map(|f| *f).unwrap_or(false);
-                if !still_connected {
-                    break;
-                }
-
-                let elapsed = last_seen
-                    .lock()
-                    .map(|t| t.elapsed())
-                    .unwrap_or(Duration::MAX);
-                if elapsed > TIMEOUT {
-                    sink_error!(
-                        log,
-                        "[signaling_client] heartbeat timed out after {:?} to {}",
-                        elapsed,
-                        addr
-                    );
-                    if let Ok(mut flag) = connected.lock() {
-                        *flag = false;
-                    }
-                    let _ = tx.send(SignalingEvent::Error("signaling heartbeat timeout".into()));
-                    let _ = tx.send(SignalingEvent::Disconnected);
-                    if let Ok(guard) = writer.lock() {
-                        let _ = guard.shutdown(Shutdown::Both);
-                    }
-                    break;
-                }
-
-                if let Ok(mut guard) = writer.lock() {
-                    let msg = Msg::Ping { nonce };
-                    if let Err(e) = protocol::write_msg(&mut *guard, &msg) {
-                        sink_error!(
-                            log,
-                            "[signaling_client] failed to send Ping to {}: {:?}",
-                            addr,
-                            e
-                        );
-                    } else {
-                        sink_trace!(
-                            log,
-                            "[signaling_client] sent Ping {} to {} (last_seen {:?})",
-                            nonce,
-                            addr,
-                            elapsed
-                        );
-                    }
-                    nonce = nonce.wrapping_add(1);
-                }
-            }
-        });
     }
 }
 
