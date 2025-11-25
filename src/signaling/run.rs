@@ -1,79 +1,29 @@
-use std::net::TcpListener;
-use std::sync::{Arc, mpsc};
-use std::{io, thread};
+use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::app::log_sink::{LogSink, NoopLogSink};
-use crate::signaling::router::Router;
-use crate::signaling::runtime::run_server_loop;
-use crate::signaling::server_event::ServerEvent;
-use crate::signaling::transport::spawn_connection_threads;
-use crate::signaling::types::ClientId;
-use crate::signaling::{AuthBackend, FileUserStore};
-use crate::{sink_info, sink_warn};
+use crate::signaling::signaling_server::SignalingServer;
 
 /// Run the signaling server on `addr` using the given log sink.
+///
+/// Uses FileUserStore at `RUSTYRTC_USERS_PATH` or `users.db` by default.
 pub fn run_signaling_server_with_log(addr: &str, log_sink: Arc<dyn LogSink>) -> io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
-
-    // ---- Open user DB (FileUserStore) ----
-    let user_store_path =
+    let user_store_path_str =
         std::env::var("RUSTYRTC_USERS_PATH").unwrap_or_else(|_| "users.db".to_string());
-    let file_store = FileUserStore::open(&user_store_path)?;
-    let auth_backend: Box<dyn AuthBackend> = Box::new(file_store);
-    sink_info!(log_sink, "using user store file at {:?}", user_store_path);
+    let users_path = PathBuf::from(user_store_path_str);
 
-    // Events from all connections → central server loop
-    let (server_tx, server_rx) = mpsc::channel::<ServerEvent>();
-
-    // Central Router + Server loop in its own thread
-    {
-        let log_for_loop = log_sink.clone();
-        let log_for_router = log_sink.clone();
-        let user_store_path_for_log = user_store_path.clone();
-        thread::spawn(move || {
-            sink_info!(
-                log_for_loop,
-                "[signaling/run] server loop started; user DB at {}",
-                user_store_path_for_log
-            );
-            // Use our FileUserStore-backed auth
-            let router = Router::with_log_and_auth(log_for_router, auth_backend);
-            run_server_loop(router, log_for_loop, server_rx);
-        });
-    }
-
-    let mut next_client_id: ClientId = 1;
-    sink_info!(log_sink, "signaling server listening on {}", addr);
-
-    for stream in listener.incoming() {
-        let stream = stream?;
-
-        let client_id = next_client_id;
-        next_client_id += 1;
-
-        let server_tx_clone = server_tx.clone();
-        let log_for_conn_threads = log_sink.clone();
-
-        sink_info!(
-            log_sink,
-            "accepted TCP connection as client_id={}",
-            client_id
-        );
-        if let Err(e) =
-            spawn_connection_threads(client_id, stream, server_tx_clone, log_for_conn_threads)
-        {
-            sink_warn!(
-                log_sink,
-                "incoming connection failed: {:?} (will continue accepting)",
-                e
-            );
-        }
-    }
-
-    Ok(())
+    let server = SignalingServer::with_file_store(addr.to_string(), log_sink, users_path)?;
+    server.run()
 }
 
-/// Convenience: run signaling server with a `NoopLogSink` (no logging).
+/// Convenience: run signaling server with a `NoopLogSink` (no logging),
+/// still using FileUserStore at the configured path.
 pub fn run_signaling_server(addr: &str) -> io::Result<()> {
-    run_signaling_server_with_log(addr, Arc::new(NoopLogSink))
+    let user_store_path_str =
+        std::env::var("RUSTYRTC_USERS_PATH").unwrap_or_else(|_| "users.db".to_string());
+    let users_path = PathBuf::from(user_store_path_str);
+
+    let server = SignalingServer::with_file_store_no_log(addr.to_string(), users_path)?;
+    server.run()
 }

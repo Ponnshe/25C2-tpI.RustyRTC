@@ -8,7 +8,9 @@ pub mod runtime;
 pub mod server;
 pub mod server_event;
 pub mod sessions;
+pub mod signaling_server;
 pub mod transport;
 pub mod types;
 
 pub use auth::{AllowAllAuthBackend, AuthBackend, AuthError, FileUserStore, InMemoryAuthBackend};
+pub use signaling_server::SignalingServer;

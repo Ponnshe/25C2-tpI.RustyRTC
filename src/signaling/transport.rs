@@ -40,7 +40,7 @@ where
 /// Spawn reader + writer threads for a single TcpStream client.
 ///
 /// `server_tx` is the Sender<ServerEvent> that talks to the central server loop.
-pub fn spawn_connection_threads(
+pub(crate) fn spawn_connection_threads(
     client_id: ClientId,
     stream: TcpStream,
     server_tx: Sender<ServerEvent>,
