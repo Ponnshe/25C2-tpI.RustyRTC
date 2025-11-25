@@ -117,37 +117,17 @@ impl Server {
 
             Msg::Join { session_code } => self.handle_join(from_cid, session_code),
 
-            Msg::Offer { .. } | Msg::Answer { .. } | Msg::Candidate { .. } => {
-                self.forward_signaling(from_cid, msg)
-            }
+            Msg::Offer { .. }
+            | Msg::Answer { .. }
+            | Msg::Candidate { .. }
+            | Msg::Ack { .. }
+            | Msg::Bye { .. } => self.forward_signaling(from_cid, msg),
 
-            Msg::Ack { txn_id } => {
-                if self.require_logged_in(from_cid).is_none() {
-                    sink_warn!(
-                        self.log,
-                        "unauthenticated client {} sent Ack({})",
-                        from_cid,
-                        txn_id
-                    );
-                    Vec::new()
-                } else {
-                    self.handle_ack(from_cid, txn_id)
-                }
-            }
-
-            Msg::Bye { reason } => {
-                if self.require_logged_in(from_cid).is_none() {
-                    sink_warn!(
-                        self.log,
-                        "unauthenticated client {} sent Bye({:?})",
-                        from_cid,
-                        reason
-                    );
-                    Vec::new()
-                } else {
-                    self.handle_bye(from_cid, reason)
-                }
-            }
+            Msg::Ping { nonce } => vec![OutgoingMsg {
+                client_id_target: from_cid,
+                msg: Msg::Pong { nonce },
+            }],
+            Msg::Pong { .. } => Vec::new(),
             Msg::LoginOk { .. }
             | Msg::LoginErr { .. }
             | Msg::RegisterOk { .. }
@@ -567,6 +547,20 @@ impl Server {
                     cand,
                 }
             }),
+            Msg::Ack { txn_id, to, .. } => {
+                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| Msg::Ack {
+                    from: username,
+                    to,
+                    txn_id,
+                })
+            }
+            Msg::Bye { to, reason, .. } => {
+                self.forward(from, &from_username, 0, to, |username, _txn_id, to| Msg::Bye {
+                    from: username,
+                    to,
+                    reason,
+                })
+            }
             other => {
                 sink_warn!(
                     self.log,
@@ -995,7 +989,14 @@ mod tests {
     fn ack_from_unauthenticated_client_is_dropped() {
         let mut server = new_server();
 
-        let res = server.handle(1, Msg::Ack { txn_id: 123 });
+        let res = server.handle(
+            1,
+            Msg::Ack {
+                from: "alice".into(),
+                to: "bob".into(),
+                txn_id: 123,
+            },
+        );
 
         assert!(
             res.is_empty(),
@@ -1005,18 +1006,32 @@ mod tests {
     }
 
     #[test]
-    fn ack_from_logged_in_client_is_accepted_but_silent() {
+    fn ack_is_forwarded_between_logged_in_peers() {
         let mut server = new_server();
 
         login(&mut server, 1, "alice");
+        login(&mut server, 2, "bob");
 
-        let res = server.handle(1, Msg::Ack { txn_id: 123 });
-
-        assert!(
-            res.is_empty(),
-            "expected Ack from logged-in client to be silent (no outgoing), got {:?}",
-            res
+        let res = server.handle(
+            1,
+            Msg::Ack {
+                from: "alice".into(),
+                to: "bob".into(),
+                txn_id: 123,
+            },
         );
+
+        assert_eq!(res.len(), 1);
+        let out = &res[0];
+        assert_eq!(out.client_id_target, 2);
+        match &out.msg {
+            Msg::Ack { from, to, txn_id } => {
+                assert_eq!(from, "alice");
+                assert_eq!(to, "bob");
+                assert_eq!(*txn_id, 123);
+            }
+            other => panic!("expected forwarded Ack, got {:?}", other),
+        }
     }
 
     // ---- Bye invariants ---------------------------------------------------
@@ -1028,6 +1043,8 @@ mod tests {
         let res = server.handle(
             42,
             Msg::Bye {
+                from: "alice".into(),
+                to: "bob".into(),
                 reason: Some("bye".into()),
             },
         );
@@ -1037,150 +1054,47 @@ mod tests {
             "expected no outgoing messages for unauthenticated Bye, got {:?}",
             res
         );
-        // No sessions exist, so nothing else to check.
     }
 
     #[test]
-    fn bye_removes_client_from_single_member_session_and_deletes_session() {
+    fn bye_is_forwarded_between_logged_in_peers() {
         let mut server = new_server();
-        let alice: ClientId = 1;
+        login(&mut server, 1, "alice");
+        login(&mut server, 2, "bob");
 
-        login(&mut server, alice, "alice");
-
-        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
-
-        assert_eq!(created.len(), 1);
-        let (session_id, _session_code) = match &created[0].msg {
-            Msg::Created {
-                session_id,
-                session_code,
-            } => (session_id.clone(), session_code.clone()),
-            other => panic!("expected Created, got {:?}", other),
-        };
-
-        {
-            let sess = server
-                .sessions
-                .get(&session_id)
-                .expect("session must exist");
-            assert!(sess.members.contains(&alice));
-            assert_eq!(sess.members.len(), 1);
-        }
-
-        // alice sends Bye
         let res = server.handle(
-            alice,
+            1,
             Msg::Bye {
+                from: "alice".into(),
+                to: "bob".into(),
                 reason: Some("done".into()),
             },
         );
-        assert!(
-            res.is_empty(),
-            "Bye should not produce any outgoing messages, got {:?}",
-            res
-        );
 
-        // Session should be removed because it became empty
-        assert!(
-            server.sessions.get(&session_id).is_none(),
-            "session should be deleted after sole member leaves with Bye"
-        );
+        assert_eq!(res.len(), 1);
+        let out = &res[0];
+        assert_eq!(out.client_id_target, 2);
+        match &out.msg {
+            Msg::Bye { from, to, reason } => {
+                assert_eq!(from, "alice");
+                assert_eq!(to, "bob");
+                assert_eq!(reason.as_deref(), Some("done"));
+            }
+            other => panic!("expected forwarded Bye, got {:?}", other),
+        }
     }
 
     #[test]
-    fn bye_removes_client_but_keeps_session_if_other_members_remain() {
+    fn ping_replies_with_pong() {
         let mut server = new_server();
-        let alice: ClientId = 1;
-        let bob: ClientId = 2;
+        login(&mut server, 1, "alice");
 
-        login(&mut server, alice, "alice");
-        login(&mut server, bob, "bob");
-
-        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
-        assert_eq!(created.len(), 1);
-        let (session_id, session_code) = match &created[0].msg {
-            Msg::Created {
-                session_id,
-                session_code,
-            } => (session_id.clone(), session_code.clone()),
-            other => panic!("expected Created, got {:?}", other),
-        };
-
-        // bob joins: we expect 2 messages (JoinOk to bob, PeerJoined to alice)
-        let joined = server.handle(bob, Msg::Join { session_code });
-        assert_eq!(
-            joined.len(),
-            2,
-            "expected JoinOk + PeerJoined, got {:?}",
-            joined
-        );
-
-        let mut saw_join_ok = false;
-        let mut saw_peer_joined = false;
-        for m in &joined {
-            match &m.msg {
-                Msg::JoinOk { session_id: sid } => {
-                    assert_eq!(m.client_id_target, bob);
-                    assert_eq!(sid, &session_id);
-                    saw_join_ok = true;
-                }
-                Msg::PeerJoined {
-                    session_id: sid,
-                    username,
-                } => {
-                    assert_eq!(m.client_id_target, alice);
-                    assert_eq!(sid, &session_id);
-                    assert_eq!(username, "bob");
-                    saw_peer_joined = true;
-                }
-                other => panic!("unexpected msg in join: {:?}", other),
-            }
-        }
-        assert!(saw_join_ok);
-        assert!(saw_peer_joined);
-
-        {
-            let sess = server
-                .sessions
-                .get(&session_id)
-                .expect("session must exist");
-            assert!(sess.members.contains(&alice));
-            assert!(sess.members.contains(&bob));
-            assert_eq!(sess.members.len(), 2);
-        }
-
-        // alice sends Bye
-        let res = server.handle(alice, Msg::Bye { reason: None });
-
-        // Bye produce a notification: PeerLeft(alice) to bob
-        assert_eq!(
-            res.len(),
-            1,
-            "Bye should produce PeerLeft to remaining member, got {:?}",
-            res
-        );
-        let m = &res[0];
-        assert_eq!(m.client_id_target, bob);
-        match &m.msg {
-            Msg::PeerLeft {
-                session_id: sid,
-                username,
-            } => {
-                assert_eq!(sid, &session_id);
-                assert_eq!(username, "alice");
-            }
-            other => panic!("expected PeerLeft, got {:?}", other),
-        }
-
-        // Session should still exist, but only bob remains
-        {
-            let sess = server
-                .sessions
-                .get(&session_id)
-                .expect("session must still exist");
-            assert!(!sess.members.contains(&alice));
-            assert!(sess.members.contains(&bob));
-            assert_eq!(sess.members.len(), 1);
+        let res = server.handle(1, Msg::Ping { nonce: 42 });
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].client_id_target, 1);
+        match &res[0].msg {
+            Msg::Pong { nonce } => assert_eq!(*nonce, 42),
+            other => panic!("expected Pong, got {:?}", other),
         }
     }
 
@@ -1237,53 +1151,6 @@ mod tests {
 
         assert!(saw_join_ok);
         assert!(saw_peer_joined);
-    }
-    #[test]
-    fn bye_sends_peerleft_to_remaining_members() {
-        let mut server = new_server();
-        let alice: ClientId = 1;
-        let bob: ClientId = 2;
-
-        login(&mut server, alice, "alice");
-        login(&mut server, bob, "bob");
-
-        // alice creates + bob joins
-        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
-        assert_eq!(created.len(), 1);
-
-        let (session_id, session_code) = match &created[0].msg {
-            Msg::Created {
-                session_id,
-                session_code,
-            } => (session_id.clone(), session_code.clone()),
-            other => panic!("expected Created, got {:?}", other),
-        };
-
-        let _ = server.handle(bob, Msg::Join { session_code });
-
-        // alice Bye
-        let out = server.handle(
-            alice,
-            Msg::Bye {
-                reason: Some("bye".into()),
-            },
-        );
-
-        // Only bob should get PeerLeft(alice)
-        assert_eq!(out.len(), 1);
-        let m = &out[0];
-        assert_eq!(m.client_id_target, bob);
-
-        match &m.msg {
-            Msg::PeerLeft {
-                session_id: sid,
-                username,
-            } => {
-                assert_eq!(sid, &session_id);
-                assert_eq!(username, "alice");
-            }
-            other => panic!("expected PeerLeft, got {:?}", other),
-        }
     }
 
     #[test]

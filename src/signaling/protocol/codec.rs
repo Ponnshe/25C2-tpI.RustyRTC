@@ -132,11 +132,15 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
             body.extend_from_slice(cand);
             MsgType::Candidate
         }
-        Ack { txn_id } => {
+        Ack { txn_id, from, to } => {
+            put_str16(&mut body, from)?;
+            put_str16(&mut body, to)?;
             put_u64(&mut body, *txn_id);
             MsgType::Ack
         }
-        Bye { reason } => {
+        Bye { from, to, reason } => {
+            put_str16(&mut body, from)?;
+            put_str16(&mut body, to)?;
             match reason {
                 Some(s) => put_str16(&mut body, s)?,
                 None => put_u16(&mut body, 0), // len=0 string
@@ -295,13 +299,17 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
             }
         }
         MsgType::Ack => {
+            let from = cursor.get_str16()?.to_owned();
+            let to = cursor.get_str16()?.to_owned();
             let txn_id = cursor.get_u64()?;
-            Ack { txn_id }
+            Ack { from, to, txn_id }
         }
         MsgType::Bye => {
+            let from = cursor.get_str16()?.to_owned();
+            let to = cursor.get_str16()?.to_owned();
             let s = cursor.get_str16()?.to_owned();
             let reason = if s.is_empty() { None } else { Some(s) };
-            Bye { reason }
+            Bye { from, to, reason }
         }
         MsgType::Ping => {
             let nonce = cursor.get_u64()?;

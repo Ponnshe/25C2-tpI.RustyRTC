@@ -81,9 +81,13 @@ pub enum Msg {
         cand: Vec<u8>, // raw UTF-8 text
     },
     Ack {
+        from: UserName,
+        to: UserName,
         txn_id: TxnId,
     },
     Bye {
+        from: UserName,
+        to: UserName,
         reason: Option<String>,
     },
 

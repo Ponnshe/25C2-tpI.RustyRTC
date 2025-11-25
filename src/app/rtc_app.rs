@@ -288,7 +288,11 @@ impl RtcApp {
                         sdp: body,
                     };
                     self.status_line = format!("Incoming call from {from}");
-                    let _ = self.send_signaling(Msg::Ack { txn_id });
+                    let _ = self.send_signaling(Msg::Ack {
+                        from: self.current_username.clone().unwrap_or_default(),
+                        to: from.clone(),
+                        txn_id,
+                    });
                 }
                 Err(e) => {
                     self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
@@ -303,7 +307,11 @@ impl RtcApp {
                     self.call_flow = CallFlow::Active { peer: from.clone() };
                     self.status_line = format!("Received answer from {from}");
                     // Acknowledge receipt so the sender can stop retries if they add reliability.
-                    let _ = self.send_signaling(Msg::Ack { txn_id });
+                    let _ = self.send_signaling(Msg::Ack {
+                        from: self.current_username.clone().unwrap_or_default(),
+                        to: from.clone(),
+                        txn_id,
+                    });
                 }
                 Err(e) => self.push_ui_log(format!("Invalid answer from {from}: {e}")),
             },
@@ -325,12 +333,13 @@ impl RtcApp {
             Msg::Ping { nonce } => {
                 let _ = self.send_signaling(Msg::Pong { nonce });
             }
-            Msg::Bye { reason } => {
-                self.push_ui_log(format!("Peer ended call: {:?}", reason));
-                self.reset_call_flow();
+            Msg::Bye { from, reason, .. } => {
+                self.push_ui_log(format!("Peer {from} ended call: {:?}", reason));
+                // Remote already sent BYE; don't echo it back.
+                self.teardown_call(reason, false);
             }
-            Msg::Ack { txn_id } => {
-                self.push_ui_log(format!("Received ACK for txn_id={txn_id}"));
+            Msg::Ack { txn_id, from, .. } => {
+                self.push_ui_log(format!("Received ACK from {from} for txn_id={txn_id}"));
             }
             other => {
                 self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
@@ -380,6 +389,18 @@ impl RtcApp {
         }
     }
 
+    fn send_bye(&mut self, peer: &str, reason: Option<String>) {
+        let Some(user) = self.current_username.clone() else {
+            return;
+        };
+        let msg = Msg::Bye {
+            from: user,
+            to: peer.to_string(),
+            reason,
+        };
+        let _ = self.send_signaling(msg);
+    }
+
     fn start_outgoing_call(&mut self, peer: &str) {
         if !matches!(self.call_flow, CallFlow::Idle) {
             self.status_line = "Finish or cancel the current call first.".into();
@@ -394,27 +415,27 @@ impl RtcApp {
             return;
         }
         if self.local_sdp_text.trim().is_empty() {
-                self.status_line = "Local SDP is empty.".into();
-                return;
-            }
-            let txn_id = self.next_txn_id;
-            self.next_txn_id += 1;
-            let from = self.current_username.clone().unwrap_or_default();
-            let msg = Msg::Offer {
-                txn_id,
-                from: from.clone(),
-                to: peer.to_string(),
-                sdp: self.local_sdp_text.as_bytes().to_vec(),
-            };
-            if self.send_signaling(msg).is_ok() {
-                self.call_flow = CallFlow::Dialing {
-                    peer: peer.to_string(),
-                    txn_id,
-                };
-                self.status_line = format!("Sent offer to {peer}");
-                self.send_local_candidates(peer);
-            }
+            self.status_line = "Local SDP is empty.".into();
+            return;
         }
+        let txn_id = self.next_txn_id;
+        self.next_txn_id += 1;
+        let from = self.current_username.clone().unwrap_or_default();
+        let msg = Msg::Offer {
+            txn_id,
+            from: from.clone(),
+            to: peer.to_string(),
+            sdp: self.local_sdp_text.as_bytes().to_vec(),
+        };
+        if self.send_signaling(msg).is_ok() {
+            self.call_flow = CallFlow::Dialing {
+                peer: peer.to_string(),
+                txn_id,
+            };
+            self.status_line = format!("Sent offer to {peer}");
+            self.send_local_candidates(peer);
+        }
+    }
 
     fn accept_incoming_call(&mut self) {
         let CallFlow::Incoming { from, txn_id, sdp } = self.call_flow.clone() else {
@@ -445,8 +466,7 @@ impl RtcApp {
     }
 
     fn decline_incoming_call(&mut self) {
-        self.status_line = "Declined incoming call.".into();
-        self.call_flow = CallFlow::Idle;
+        self.teardown_call(Some("declined".into()), true);
     }
 
     fn reset_call_flow(&mut self) {
@@ -601,6 +621,13 @@ impl RtcApp {
                             );
                         });
                     }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("Call controls:");
+                        if ui.button(egui::RichText::new("Hang up").strong()).clicked() {
+                            self.teardown_call(Some("hangup".into()), true);
+                        }
+                    });
                 });
         }
     }
@@ -730,14 +757,14 @@ impl RtcApp {
 
     fn render_call_flow_ui(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        match &self.call_flow {
+        match self.call_flow.clone() {
             CallFlow::Idle => {
                 ui.label("No active calls.");
             }
             CallFlow::Dialing { peer, .. } => {
                 ui.label(format!("Calling {peer}…"));
                 if ui.button("Cancel outgoing call").clicked() {
-                    self.call_flow = CallFlow::Idle;
+                    self.teardown_call(Some("cancelled".into()), true);
                 }
             }
             CallFlow::Incoming { from, .. } => {
@@ -754,7 +781,7 @@ impl RtcApp {
             CallFlow::Active { peer } => {
                 ui.label(format!("In call with {peer}"));
                 if ui.button("Hang up").clicked() {
-                    self.reset_call_flow();
+                    self.teardown_call(Some("hangup".into()), true);
                 }
             }
         }
@@ -821,11 +848,11 @@ impl RtcApp {
             if ui
                 .add_enabled(
                     matches!(self.conn_state, ConnState::Running),
-                    egui::Button::new("Stop"),
+                    egui::Button::new("End call"),
                 )
                 .clicked()
             {
-                self.engine.stop();
+                self.teardown_call(Some("stopped".into()), true);
             }
             ui.label(format!("State: {:?}", self.conn_state));
         });
@@ -879,6 +906,38 @@ impl RtcApp {
                     format!("⚠️ Remote bad len: {} vs {}", r.bytes.len(), r_need),
                 );
             }
+        }
+    }
+    fn current_peer(&self) -> Option<String> {
+        match &self.call_flow {
+            CallFlow::Dialing { peer, .. } => Some(peer.clone()),
+            CallFlow::Incoming { from, .. } => Some(from.clone()),
+            CallFlow::Active { peer } => Some(peer.clone()),
+            CallFlow::Idle => None,
+        }
+    }
+
+    fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
+        // 1) Optionally send BYE
+        if send_bye {
+            if let Some(peer) = self.current_peer() {
+                self.send_bye(&peer, reason.clone());
+            }
+        }
+
+        // 2) Tear down media (safe to call even if session never started)
+        self.engine.stop();
+
+        // 3) Reset call-related state
+        self.call_flow = CallFlow::Idle;
+        self.pending_remote_sdp = None;
+        self.has_local_description = false;
+        self.has_remote_description = false;
+
+        if let Some(r) = reason {
+            self.status_line = format!("Call ended: {r}");
+        } else {
+            self.status_line = "Call ended.".into();
         }
     }
 }

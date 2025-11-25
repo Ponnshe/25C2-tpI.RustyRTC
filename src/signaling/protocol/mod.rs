@@ -136,12 +136,18 @@ mod tests {
     #[test]
     fn roundtrip_bye_some_and_none() {
         let bye_some = Msg::Bye {
+            from: "alice".into(),
+            to: "bob".into(),
             reason: Some("done".to_string()),
         };
         let decoded_some = roundtrip(&bye_some);
         assert_eq!(decoded_some, bye_some);
 
-        let bye_none = Msg::Bye { reason: None };
+        let bye_none = Msg::Bye {
+            from: "alice".into(),
+            to: "bob".into(),
+            reason: None,
+        };
         let decoded_none = roundtrip(&bye_none);
         assert_eq!(decoded_none, bye_none);
     }
