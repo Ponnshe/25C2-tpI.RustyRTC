@@ -1,28 +1,30 @@
 use std::{
     sync::{
-        Arc, atomic::{AtomicBool, Ordering}, mpsc::{Receiver, RecvTimeoutError, Sender}
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
     },
-    thread::{self, JoinHandle}, time::Duration,
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use crate::{
     app::log_sink::LogSink,
     logger_debug, logger_error,
     media_agent::{
-        constants::CHANNELS_TIMEOUT, decoder_event::DecoderEvent, events::MediaAgentEvent, h264_decoder::H264Decoder, spec::CodecSpec
-    }, sink_info,
+        constants::CHANNELS_TIMEOUT, decoder_event::DecoderEvent, events::MediaAgentEvent,
+        h264_decoder::H264Decoder, spec::CodecSpec,
+    },
+    sink_info,
 };
 
 pub fn spawn_decoder_worker(
     logger: Arc<dyn LogSink>,
     ma_decoder_event_rx: Receiver<DecoderEvent>,
     media_agent_event_tx: Sender<MediaAgentEvent>,
-    running: Arc<AtomicBool>
+    running: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    sink_info!(
-        logger,
-        "[Decoder] Starting..."
-    );
+    sink_info!(logger, "[Decoder] Starting...");
     thread::Builder::new()
         .name("media-agent-decoder".into())
         .spawn(move || {

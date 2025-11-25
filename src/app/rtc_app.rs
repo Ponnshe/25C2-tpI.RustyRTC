@@ -12,6 +12,8 @@ use crate::{
         },
     },
     media_agent::video_frame::VideoFrame,
+    signaling::protocol::Msg,
+    signaling_client::{SignalingClient, SignalingEvent},
 };
 use eframe::{App, Frame, egui};
 use std::{
@@ -19,6 +21,30 @@ use std::{
     sync::{Arc, mpsc::TrySendError},
     time::Instant,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalingScreen {
+    Connect,
+    Login,
+    Home,
+}
+
+#[derive(Debug, Clone)]
+enum CallFlow {
+    Idle,
+    Dialing {
+        peer: String,
+        txn_id: u64,
+    },
+    Incoming {
+        from: String,
+        txn_id: u64,
+        sdp: String,
+    },
+    Active {
+        peer: String,
+    },
+}
 
 pub struct RtcApp {
     // UI text areas
@@ -49,6 +75,19 @@ pub struct RtcApp {
 
     local_camera_texture: Option<egui::TextureHandle>,
     remote_camera_texture: Option<egui::TextureHandle>,
+
+    signaling_client: Option<SignalingClient>,
+    signaling_screen: SignalingScreen,
+    server_addr_input: String,
+    login_username: String,
+    login_password: String,
+    register_username: String,
+    register_password: String,
+    peers_online: Vec<String>,
+    current_username: Option<String>,
+    signaling_error: Option<String>,
+    call_flow: CallFlow,
+    next_txn_id: u64,
 }
 
 impl RtcApp {
@@ -79,6 +118,18 @@ impl RtcApp {
             rtp_last_report: Instant::now(),
             local_camera_texture: None,
             remote_camera_texture: None,
+            signaling_client: None,
+            signaling_screen: SignalingScreen::Connect,
+            server_addr_input: "127.0.0.1:6000".into(),
+            login_username: String::new(),
+            login_password: String::new(),
+            register_username: String::new(),
+            register_password: String::new(),
+            peers_online: Vec::new(),
+            current_username: None,
+            signaling_error: None,
+            call_flow: CallFlow::Idle,
+            next_txn_id: 1,
         }
     }
 
@@ -133,6 +184,272 @@ impl RtcApp {
             self.rtp_bytes = 0;
             self.rtp_last_report = now;
         }
+    }
+
+    fn connect_to_signaling(&mut self) {
+        let log_sink = Arc::new(self.logger.handle());
+        match SignalingClient::connect(&self.server_addr_input, log_sink) {
+            Ok(client) => {
+                self.signaling_client = Some(client);
+                self.signaling_screen = SignalingScreen::Login;
+                self.signaling_error = None;
+                self.status_line = format!("Connecting to {}…", self.server_addr_input);
+            }
+            Err(e) => {
+                let msg = format!("Failed to connect to signaling server: {e}");
+                self.signaling_error = Some(msg.clone());
+                self.push_ui_log(msg);
+            }
+        }
+    }
+
+    fn disconnect_from_signaling(&mut self) {
+        if let Some(client) = &self.signaling_client {
+            client.disconnect();
+        }
+        self.clear_signaling_state();
+        self.status_line = "Disconnected from signaling server.".into();
+    }
+
+    fn clear_signaling_state(&mut self) {
+        self.signaling_client = None;
+        self.signaling_screen = SignalingScreen::Connect;
+        self.current_username = None;
+        self.peers_online.clear();
+        self.call_flow = CallFlow::Idle;
+    }
+
+    fn poll_signaling_events(&mut self) {
+        if self.signaling_client.is_none() {
+            return;
+        }
+        let mut events = Vec::new();
+        if let Some(client) = self.signaling_client.as_ref() {
+            while let Some(ev) = client.try_recv() {
+                events.push(ev);
+            }
+        }
+        for ev in events {
+            self.handle_signaling_event(ev);
+        }
+    }
+
+    fn handle_signaling_event(&mut self, event: SignalingEvent) {
+        match event {
+            SignalingEvent::Connected => {
+                self.status_line = "Connected to signaling server.".into();
+            }
+            SignalingEvent::Disconnected => {
+                self.push_ui_log("Signaling server disconnected.");
+                self.clear_signaling_state();
+            }
+            SignalingEvent::Error(err) => {
+                self.signaling_error = Some(err.clone());
+                self.push_ui_log(format!("Signaling error: {err}"));
+            }
+            SignalingEvent::ServerMsg(msg) => self.handle_server_msg(msg),
+        }
+    }
+
+    fn handle_server_msg(&mut self, msg: Msg) {
+        match msg {
+            Msg::LoginOk { username } => {
+                self.current_username = Some(username.clone());
+                self.signaling_screen = SignalingScreen::Home;
+                self.status_line = format!("Logged in as {username}");
+                self.login_password.clear();
+                self.request_peer_list();
+            }
+            Msg::LoginErr { code } => {
+                let msg = format!("Login failed with code {}", code);
+                self.signaling_error = Some(msg.clone());
+                self.push_ui_log(msg);
+            }
+            Msg::RegisterOk { username } => {
+                self.status_line = format!("Registered {username}. You can now log in.");
+                self.login_username = username;
+            }
+            Msg::RegisterErr { code } => {
+                let msg = format!("Registration failed with code {}", code);
+                self.signaling_error = Some(msg.clone());
+                self.push_ui_log(msg);
+            }
+            Msg::PeersOnline { peers } => {
+                self.peers_online = peers;
+            }
+            Msg::Offer {
+                from, txn_id, sdp, ..
+            } => match String::from_utf8(sdp) {
+                Ok(body) => {
+                    self.remote_sdp_text = body.clone();
+                    self.call_flow = CallFlow::Incoming {
+                        from: from.clone(),
+                        txn_id,
+                        sdp: body,
+                    };
+                    self.status_line = format!("Incoming call from {from}");
+                    let _ = self.send_signaling(Msg::Ack { txn_id });
+                }
+                Err(e) => {
+                    self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
+                }
+            },
+            Msg::Answer {
+                from, txn_id, sdp, ..
+            } => match String::from_utf8(sdp) {
+                Ok(body) => {
+                    self.remote_sdp_text = body.clone();
+                    self.pending_remote_sdp = Some(body);
+                    self.call_flow = CallFlow::Active { peer: from.clone() };
+                    self.status_line = format!("Received answer from {from}");
+                    // Acknowledge receipt so the sender can stop retries if they add reliability.
+                    let _ = self.send_signaling(Msg::Ack { txn_id });
+                }
+                Err(e) => self.push_ui_log(format!("Invalid answer from {from}: {e}")),
+            },
+            Msg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
+                Ok(line) => match self.engine.apply_remote_candidate(&line) {
+                    Ok(()) => {
+                        self.push_ui_log(format!("Applied ICE candidate from {from}"));
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to apply ICE candidate from {from}: {e}");
+                        self.signaling_error = Some(msg.clone());
+                        self.push_ui_log(msg);
+                    }
+                },
+                Err(e) => {
+                    self.push_ui_log(format!("Invalid ICE candidate from {from}: {e}"));
+                }
+            },
+            Msg::Ping { nonce } => {
+                let _ = self.send_signaling(Msg::Pong { nonce });
+            }
+            Msg::Bye { reason } => {
+                self.push_ui_log(format!("Peer ended call: {:?}", reason));
+                self.reset_call_flow();
+            }
+            other => {
+                self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
+            }
+        }
+    }
+
+    fn request_peer_list(&mut self) {
+        let _ = self.send_signaling(Msg::ListPeers);
+    }
+
+    fn send_signaling(&mut self, msg: Msg) -> Result<(), ()> {
+        if let Some(client) = self.signaling_client.as_ref() {
+            if let Err(e) = client.send(msg) {
+                let err = format!("Failed to send signaling message: {e}");
+                self.signaling_error = Some(err.clone());
+                self.push_ui_log(err);
+                return Err(());
+            }
+            Ok(())
+        } else {
+            let err = "Not connected to signaling server.".to_string();
+            self.signaling_error = Some(err.clone());
+            self.push_ui_log(err);
+            Err(())
+        }
+    }
+
+    fn send_local_candidates(&mut self, peer: &str) {
+        let Some(user) = self.current_username.clone() else {
+            self.signaling_error = Some("Please login before sending candidates.".into());
+            return;
+        };
+        let candidates = self.engine.local_candidates_as_sdp_lines();
+        if candidates.is_empty() {
+            return;
+        }
+        for cand_line in candidates {
+            let msg = Msg::Candidate {
+                from: user.clone(),
+                to: peer.to_string(),
+                mid: "0".into(),
+                mline_index: 0,
+                cand: cand_line.into_bytes(),
+            };
+            let _ = self.send_signaling(msg);
+        }
+    }
+
+    fn start_outgoing_call(&mut self, peer: &str) {
+        if !matches!(self.call_flow, CallFlow::Idle) {
+            self.status_line = "Finish or cancel the current call first.".into();
+            return;
+        }
+        if self.current_username.is_none() {
+            self.signaling_error = Some("Please login before calling.".into());
+            return;
+        }
+        if let Err(e) = self.create_or_renegotiate_local_sdp() {
+            self.status_line = format!("Failed to create local SDP: {e:?}");
+            return;
+        }
+        if self.local_sdp_text.trim().is_empty() {
+                self.status_line = "Local SDP is empty.".into();
+                return;
+            }
+            let txn_id = self.next_txn_id;
+            self.next_txn_id += 1;
+            let from = self.current_username.clone().unwrap_or_default();
+            let msg = Msg::Offer {
+                txn_id,
+                from: from.clone(),
+                to: peer.to_string(),
+                sdp: self.local_sdp_text.as_bytes().to_vec(),
+            };
+            if self.send_signaling(msg).is_ok() {
+                self.call_flow = CallFlow::Dialing {
+                    peer: peer.to_string(),
+                    txn_id,
+                };
+                self.status_line = format!("Sent offer to {peer}");
+                self.send_local_candidates(peer);
+            }
+        }
+
+    fn accept_incoming_call(&mut self) {
+        let CallFlow::Incoming { from, txn_id, sdp } = self.call_flow.clone() else {
+            return;
+        };
+        match self.set_remote_sdp(&sdp) {
+            Ok(()) => {
+                if self.local_sdp_text.trim().is_empty() {
+                    self.status_line = "Answer not generated.".into();
+                    return;
+                }
+                let msg = Msg::Answer {
+                    txn_id,
+                    from: self.current_username.clone().unwrap_or_default(),
+                    to: from.clone(),
+                    sdp: self.local_sdp_text.as_bytes().to_vec(),
+                };
+                if self.send_signaling(msg).is_ok() {
+                    self.call_flow = CallFlow::Active { peer: from.clone() };
+                    self.status_line = format!("Sent answer to {from}");
+                    self.send_local_candidates(&from);
+                }
+            }
+            Err(e) => {
+                self.status_line = format!("Failed to accept call: {e:?}");
+            }
+        }
+    }
+
+    fn decline_incoming_call(&mut self) {
+        self.status_line = "Declined incoming call.".into();
+        self.call_flow = CallFlow::Idle;
+    }
+
+    fn reset_call_flow(&mut self) {
+        self.call_flow = CallFlow::Idle;
+        self.pending_remote_sdp = None;
+        self.engine.stop();
     }
 
     fn create_or_renegotiate_local_sdp(&mut self) -> Result<(), GuiError> {
@@ -198,11 +515,13 @@ impl RtcApp {
                 }
                 Closing { graceful: _ } => {
                     self.conn_state = ConnState::Stopped;
+                    self.call_flow = CallFlow::Idle;
                 }
                 Closed => {
                     self.conn_state = ConnState::Stopped;
                     self.status_line = "Closed.".into();
                     self.engine.close_session();
+                    self.call_flow = CallFlow::Idle;
                 }
                 RtpIn(r) => {
                     self.rtp_pkts += 1;
@@ -244,10 +563,6 @@ impl RtcApp {
         if let Some(f) = remote_frame {
             update_camera_texture(ctx, f, &mut self.remote_camera_texture, "camera/remote");
         }
-
-        // show the window if we are running OR we already have any texture
-        let have_any_texture =
-            self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
         if matches!(self.conn_state, ConnState::Running) {
             self.push_kbps_log_from_rtp_packets();
@@ -313,6 +628,133 @@ impl RtcApp {
             "Remote video: {}",
             Self::summarize_frame(remote_frame)
         ));
+    }
+
+    fn render_signaling_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Signaling");
+        match self.signaling_screen {
+            SignalingScreen::Connect => self.render_connect_screen(ui),
+            SignalingScreen::Login => self.render_login_screen(ui),
+            SignalingScreen::Home => self.render_home_screen(ui),
+        }
+        if let Some(err) = &self.signaling_error {
+            ui.colored_label(egui::Color32::LIGHT_RED, err);
+        }
+    }
+
+    fn render_connect_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label("Server address:");
+        ui.text_edit_singleline(&mut self.server_addr_input);
+        if ui.button("Connect").clicked() {
+            self.connect_to_signaling();
+        }
+    }
+
+    fn render_login_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label("Login");
+        ui.horizontal(|ui| {
+            ui.label("Username");
+            ui.text_edit_singleline(&mut self.login_username);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Password");
+            ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
+        });
+        if ui.button("Login").clicked() {
+            let _ = self.send_signaling(Msg::Login {
+                username: self.login_username.clone(),
+                password: self.login_password.clone(),
+            });
+        }
+        ui.separator();
+        ui.label("Register");
+        ui.horizontal(|ui| {
+            ui.label("Username");
+            ui.text_edit_singleline(&mut self.register_username);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Password");
+            ui.add(egui::TextEdit::singleline(&mut self.register_password).password(true));
+        });
+        if ui.button("Register").clicked() {
+            let _ = self.send_signaling(Msg::Register {
+                username: self.register_username.clone(),
+                password: self.register_password.clone(),
+            });
+        }
+        if ui.button("Disconnect").clicked() {
+            self.disconnect_from_signaling();
+        }
+    }
+
+    fn render_home_screen(&mut self, ui: &mut egui::Ui) {
+        if let Some(user) = &self.current_username {
+            ui.label(format!("Logged in as {user}"));
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Refresh peers").clicked() {
+                self.request_peer_list();
+            }
+            if ui.button("Disconnect").clicked() {
+                self.disconnect_from_signaling();
+            }
+        });
+        ui.separator();
+        ui.label("Available peers:");
+        if self.peers_online.is_empty() {
+            ui.label("No peers online.");
+        } else {
+            let peers: Vec<String> = self.peers_online.clone();
+            for peer in peers {
+                ui.horizontal(|ui| {
+                    ui.label(&peer);
+                    let busy = matches!(
+                        self.call_flow,
+                        CallFlow::Dialing { .. } | CallFlow::Active { .. }
+                    );
+                    if ui
+                        .add_enabled(!busy, egui::Button::new(format!("Call {peer}")))
+                        .clicked()
+                    {
+                        self.start_outgoing_call(&peer);
+                    }
+                });
+            }
+        }
+        self.render_call_flow_ui(ui);
+    }
+
+    fn render_call_flow_ui(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        match &self.call_flow {
+            CallFlow::Idle => {
+                ui.label("No active calls.");
+            }
+            CallFlow::Dialing { peer, .. } => {
+                ui.label(format!("Calling {peer}…"));
+                if ui.button("Cancel outgoing call").clicked() {
+                    self.call_flow = CallFlow::Idle;
+                }
+            }
+            CallFlow::Incoming { from, .. } => {
+                ui.label(format!("Incoming call from {from}"));
+                ui.horizontal(|ui| {
+                    if ui.button("Accept").clicked() {
+                        self.accept_incoming_call();
+                    }
+                    if ui.button("Decline").clicked() {
+                        self.decline_incoming_call();
+                    }
+                });
+            }
+            CallFlow::Active { peer } => {
+                ui.label(format!("In call with {peer}"));
+                if ui.button("Hang up").clicked() {
+                    self.reset_call_flow();
+                }
+            }
+        }
     }
 
     fn render_remote_sdp_input(&mut self, ui: &mut egui::Ui) {
@@ -454,6 +896,7 @@ impl App for RtcApp {
         }
 
         self.poll_engine_events();
+        self.poll_signaling_events();
         self.drain_ui_log_tap();
 
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
@@ -463,6 +906,14 @@ impl App for RtcApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             Self::render_header(ui);
+            self.render_signaling_panel(ui);
+            if !matches!(self.signaling_screen, SignalingScreen::Home) {
+                ui.separator();
+                ui.label("Connect and log in to place a call.");
+                self.render_status_line(ui);
+                self.render_log_section(ui);
+                return;
+            }
             Self::render_video_summary(ui, local_frame.as_ref(), remote_frame.as_ref());
             self.render_remote_sdp_input(ui);
             self.render_local_sdp_output(ui);

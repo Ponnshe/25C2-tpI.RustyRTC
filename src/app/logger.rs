@@ -84,6 +84,7 @@ impl Logger {
 
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
+                    let _ = out.flush();
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);

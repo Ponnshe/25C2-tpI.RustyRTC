@@ -1,6 +1,8 @@
 use std::{
     sync::{
-        Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError}
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -11,12 +13,22 @@ use crate::{
     core::events::EngineEvent,
     logger_debug, logger_error, logger_info, logger_warn,
     media_agent::{
-        camera_worker::spawn_camera_worker, decoder_event::DecoderEvent, decoder_worker::spawn_decoder_worker, encoder_instruction::EncoderInstruction, encoder_worker::spawn_encoder_worker, events::MediaAgentEvent, media_agent_error::MediaAgentError, spec::{CodecSpec, MediaSpec, MediaType}, utils::discover_camera_id, video_frame::VideoFrame
+        camera_worker::spawn_camera_worker,
+        decoder_event::DecoderEvent,
+        decoder_worker::spawn_decoder_worker,
+        encoder_instruction::EncoderInstruction,
+        encoder_worker::spawn_encoder_worker,
+        events::MediaAgentEvent,
+        media_agent_error::MediaAgentError,
+        spec::{CodecSpec, MediaSpec, MediaType},
+        utils::discover_camera_id,
+        video_frame::VideoFrame,
     },
-    media_transport::media_transport_event::MediaTransportEvent, sink_info,
+    media_transport::media_transport_event::MediaTransportEvent,
+    sink_info,
 };
 
-use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS, KEYINT};
+use super::constants::{DEFAULT_CAMERA_ID, KEYINT, TARGET_FPS};
 
 pub struct MediaAgent {
     logger: Arc<dyn LogSink>,
@@ -34,9 +46,7 @@ pub struct MediaAgent {
 }
 
 impl MediaAgent {
-    pub fn new(
-        logger: Arc<dyn LogSink>,
-    ) -> Self {
+    pub fn new(logger: Arc<dyn LogSink>) -> Self {
         let sent_any_frame = Arc::new(AtomicBool::new(false));
 
         let supported_media = vec![MediaSpec {
@@ -56,19 +66,16 @@ impl MediaAgent {
             sent_any_frame,
             media_agent_event_tx: None,
             ma_encoder_event_tx: None,
-            running: Arc::new(AtomicBool::new(false))
+            running: Arc::new(AtomicBool::new(false)),
         }
     }
     pub fn start(
-        &mut self, 
+        &mut self,
         event_tx: Sender<EngineEvent>,
         media_transport_event_tx: Sender<MediaTransportEvent>,
     ) -> Result<(), MediaAgentError> {
         let logger = self.logger.clone();
-        sink_info!(
-            logger,
-            "[MediaAgent] Starting MediaAgent"
-        );
+        sink_info!(logger, "[MediaAgent] Starting MediaAgent");
         self.running.store(true, Ordering::SeqCst);
         let logger = self.logger.clone();
         let running = self.running.clone();
@@ -77,16 +84,10 @@ impl MediaAgent {
 
         //Start camera worker
         let camera_id = discover_camera_id().unwrap_or(DEFAULT_CAMERA_ID);
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Starting Camera Worker..."
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Starting Camera Worker...");
         let (local_frame_rx, status, handle) =
             spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id, running.clone());
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Camera Worker Started"
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Camera Worker Started");
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
@@ -98,46 +99,33 @@ impl MediaAgent {
         self.media_agent_event_tx = Some(media_agent_event_tx_clone);
 
         // Start decoder worker
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Starting Decoder Worker..."
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Starting Decoder Worker...");
         let decoder_handle = Some(spawn_decoder_worker(
             logger.clone(),
             ma_decoder_event_rx,
             media_agent_event_tx.clone(),
-            running.clone()
+            running.clone(),
         ));
         self.decoder_handle = decoder_handle;
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Decoder Worker Started"
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Decoder Worker Started");
 
         // Start encoder worker
         let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
         let ma_encoder_event_tx_clone = ma_encoder_event_tx.clone();
         self.ma_encoder_event_tx = Some(ma_encoder_event_tx_clone);
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Starting Encoder Worker..."
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Starting Encoder Worker...");
         let encoder_handle = spawn_encoder_worker(
             logger.clone(),
-            ma_encoder_event_rx, media_agent_event_tx,
+            ma_encoder_event_rx,
+            media_agent_event_tx,
             running.clone(),
-        ).map_err(|e| MediaAgentError::EncoderSpawn(e.to_string()))?;
+        )
+        .map_err(|e| MediaAgentError::EncoderSpawn(e.to_string()))?;
         self.encoder_handle = Some(encoder_handle);
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Encoder Worker Started"
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Encoder Worker Started");
 
         // Start listener
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Starting Listener..."
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Starting Listener...");
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
             local_frame_rx,
@@ -151,10 +139,7 @@ impl MediaAgent {
             running,
         );
         self.listener_handle = listener_handle;
-        sink_info!(
-            logger.clone(),
-            "[MediaAgent] Listener Started"
-        );
+        sink_info!(logger.clone(), "[MediaAgent] Listener Started");
 
         Ok(())
     }
@@ -200,8 +185,9 @@ impl MediaAgent {
     }
 
     pub fn post_event(&self, event: MediaAgentEvent) {
-        if let Some(media_agent_event_tx) = self.media_agent_event_tx.clone() && 
-            let Err(err) = media_agent_event_tx.send(event) {
+        if let Some(media_agent_event_tx) = self.media_agent_event_tx.clone()
+            && let Err(err) = media_agent_event_tx.send(event)
+        {
             logger_error!(
                 self.logger,
                 "[MediaAgent] failed to enqueue event for listener: {err}"
@@ -235,8 +221,9 @@ impl MediaAgent {
             bitrate: new_bitrate,
             keyint: KEYINT,
         };
-        if let Some(ma_encoder_event_tx) = self.ma_encoder_event_tx.clone() && 
-            ma_encoder_event_tx.send(instruction).is_ok() {
+        if let Some(ma_encoder_event_tx) = self.ma_encoder_event_tx.clone()
+            && ma_encoder_event_tx.send(instruction).is_ok()
+        {
             logger_info!(
                 self.logger,
                 "Reconfigured H264 encoder: bitrate={}bps",
@@ -255,12 +242,9 @@ impl MediaAgent {
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
         sent_any_frame: Arc<AtomicBool>,
-        running: Arc<AtomicBool>
+        running: Arc<AtomicBool>,
     ) -> Option<JoinHandle<()>> {
-        sink_info!(
-            logger,
-            "[MA Listener] Starting..."
-        );
+        sink_info!(logger, "[MA Listener] Starting...");
         thread::Builder::new()
             .name("media-agent-listener".into())
             .spawn(move || {
@@ -274,7 +258,7 @@ impl MediaAgent {
                     local_frame,
                     remote_frame,
                     sent_any_frame,
-                    running
+                    running,
                 );
             })
             .ok()
@@ -292,7 +276,7 @@ impl MediaAgent {
         sent_any_frame: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
     ) {
-        while running.load(Ordering::Relaxed){
+        while running.load(Ordering::Relaxed) {
             Self::drain_camera_frames(
                 &logger,
                 &local_frame_rx,
@@ -311,7 +295,7 @@ impl MediaAgent {
                         &remote_frame,
                     );
                 }
-                Err(RecvTimeoutError::Timeout) => {},
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     logger_info!(
                         logger,
@@ -321,10 +305,7 @@ impl MediaAgent {
                 }
             }
         }
-        logger_info!(
-            logger,
-            "[MediaAgent Listener] Thread closing gracefully"
-        );
+        logger_info!(logger, "[MediaAgent Listener] Thread closing gracefully");
     }
 
     fn drain_camera_frames(

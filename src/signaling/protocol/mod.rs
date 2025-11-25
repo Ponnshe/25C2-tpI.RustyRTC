@@ -66,6 +66,19 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_list_peers_and_peers_online() {
+        let list = Msg::ListPeers;
+        let decoded_list = roundtrip(&list);
+        assert_eq!(decoded_list, list);
+
+        let peers = Msg::PeersOnline {
+            peers: vec!["alice".into(), "bob".into()],
+        };
+        let decoded_peers = roundtrip(&peers);
+        assert_eq!(decoded_peers, peers);
+    }
+
+    #[test]
     fn roundtrip_created() {
         let original = Msg::Created {
             session_id: "sess-123".to_string(),
@@ -93,6 +106,7 @@ mod tests {
 
         let offer = Msg::Offer {
             txn_id: 42,
+            from: "alice".to_string(),
             to: "bob".to_string(),
             sdp: sdp.clone(),
         };
@@ -101,6 +115,7 @@ mod tests {
 
         let answer = Msg::Answer {
             txn_id: 43,
+            from: "bob".to_string(),
             to: "alice".to_string(),
             sdp: sdp.clone(),
         };
@@ -108,6 +123,7 @@ mod tests {
         assert_eq!(decoded_answer, answer);
 
         let candidate = Msg::Candidate {
+            from: "alice".to_string(),
             to: "bob".to_string(),
             mid: "0".to_string(),
             mline_index: 0,

@@ -7,14 +7,12 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use crate::media_transport::{codec::CodecDescriptor, events::DepacketizerEvent};
 use crate::{
-    app::log_sink::LogSink, logger_debug, logger_warn,
-    media_transport::{depacketizer::h264_depacketizer::H264Depacketizer, media_transport_event::RtpIn},
-};
-use crate::{
+    app::log_sink::LogSink,
+    logger_debug, logger_warn,
     media_transport::{
-        codec::CodecDescriptor, 
-        events::DepacketizerEvent,
+        depacketizer::h264_depacketizer::H264Depacketizer, media_transport_event::RtpIn,
     },
 };
 

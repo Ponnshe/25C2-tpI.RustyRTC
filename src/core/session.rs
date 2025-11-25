@@ -288,7 +288,6 @@ impl Session {
                     let _ = hs_sock.send(syn.as_bytes());
                     sink_log!(&logger2, LogLevel::Debug, "[HS] send SYN (retransmit)");
 
-
                     if hs_got_syn.load(Ordering::SeqCst) && hs_sent_synack.load(Ordering::SeqCst) {
                         let their = hs_peer_tok.load(Ordering::SeqCst);
                         if their != 0 {
@@ -506,7 +505,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
         AppMsg::Syn { token: their } => {
             // If already established, ignore handshake messages.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv SYN after established -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv SYN after established -> ignored"
+                );
                 return;
             }
 
@@ -556,7 +559,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
         AppMsg::SynAck { your, mine } => {
             // If already established, ignore handshake messages.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv SYN-ACK after established -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv SYN-ACK after established -> ignored"
+                );
                 return;
             }
 
@@ -578,7 +585,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 if !args.rx_est.swap(true, Ordering::SeqCst) {
                     // rx_est was false, now true: emit event
                     let _ = args.tx.send(EngineEvent::Established);
-                    sink_log!(args.logger, LogLevel::Debug, "[HS] ESTABLISHED (via SYN-ACK -> ACK)");
+                    sink_log!(
+                        args.logger,
+                        LogLevel::Debug,
+                        "[HS] ESTABLISHED (via SYN-ACK -> ACK)"
+                    );
                 } else {
                     sink_log!(args.logger, LogLevel::Debug, "[HS] ESTABLISHED already set");
                 }
@@ -587,14 +598,22 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 args.hs_sent_synack.store(false, Ordering::SeqCst);
                 args.hs_got_syn.store(false, Ordering::SeqCst);
             } else {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv SYN-ACK not for us -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv SYN-ACK not for us -> ignored"
+                );
             }
         }
 
         AppMsg::Ack { your } => {
             // If already established, ignore duplicate ACKs.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv ACK after established -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv ACK after established -> ignored"
+                );
                 return;
             }
 
@@ -612,7 +631,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 args.hs_sent_synack.store(false, Ordering::SeqCst);
                 args.hs_got_syn.store(false, Ordering::SeqCst);
             } else {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv ACK not for us -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv ACK not for us -> ignored"
+                );
             }
         }
 
@@ -645,9 +668,17 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 );
             } else if peer_tok_now != 0 && your == peer_tok_now {
                 // idempotent echo related to their-initiated close; ignore quietly
-                sink_log!(args.logger, LogLevel::Debug, "[CLOSE] recv FIN-ACK for peer-initiated close -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[CLOSE] recv FIN-ACK for peer-initiated close -> ignored"
+                );
             } else {
-                sink_log!(args.logger, LogLevel::Debug, "[CLOSE] recv FIN-ACK not for us -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[CLOSE] recv FIN-ACK not for us -> ignored"
+                );
             }
         }
 
@@ -665,7 +696,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                     "[CLOSE] graceful close complete",
                 );
             } else {
-                sink_log!(args.logger, LogLevel::Debug, "[CLOSE] recv FIN-ACK2 not for us -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[CLOSE] recv FIN-ACK2 not for us -> ignored"
+                );
             }
         }
 
@@ -681,7 +716,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                     let _ = tx_media.send(pkt);
                 }
             } else {
-                sink_log!(args.logger, LogLevel::Debug, "[HS] recv media before established -> ignored");
+                sink_log!(
+                    args.logger,
+                    LogLevel::Debug,
+                    "[HS] recv media before established -> ignored"
+                );
             }
         }
     }

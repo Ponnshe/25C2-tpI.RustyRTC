@@ -49,4 +49,9 @@ impl Presence {
     pub fn username_for(&self, client: ClientId) -> Option<&UserName> {
         self.client_to_user.get(&client)
     }
+
+    /// Return all usernames currently online.
+    pub fn online_usernames(&self) -> Vec<UserName> {
+        self.user_to_client.keys().cloned().collect()
+    }
 }

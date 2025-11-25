@@ -1,7 +1,7 @@
-    use std::{
+use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc, RwLock, Mutex,
+        Arc, Mutex, RwLock,
         mpsc::{self, Sender, SyncSender},
     },
     thread::JoinHandle,
@@ -9,23 +9,22 @@
 
 use crate::{
     app::log_sink::LogSink,
-    core::{
-        events::EngineEvent,
-        session::Session,
-    },
-    media_agent::{
-        media_agent::MediaAgent, spec::CodecSpec, video_frame::VideoFrame },
+    core::{events::EngineEvent, session::Session},
+    media_agent::{media_agent::MediaAgent, spec::CodecSpec, video_frame::VideoFrame},
     media_transport::{
-        codec::CodecDescriptor, constants::{
-            DYNAMIC_PAYLOAD_TYPE_START, 
-            RTP_TX_CHANNEL_SIZE
-        }, depacketizer_worker::spawn_depacketizer_worker, 
+        codec::CodecDescriptor,
+        constants::{DYNAMIC_PAYLOAD_TYPE_START, RTP_TX_CHANNEL_SIZE},
+        depacketizer_worker::spawn_depacketizer_worker,
         event_loops::{
-            depacketizer_event_loop::DepacketizerEventLoop, 
-            media_agent_event_loop::MediaAgentEventLoop, packetizer_event_loop::PacketizerEventLoop, 
-        }, media_transport_event::{MediaTransportEvent, RtpIn}, packetizer_worker::spawn_packetizer_worker
+            depacketizer_event_loop::DepacketizerEventLoop,
+            media_agent_event_loop::MediaAgentEventLoop,
+            packetizer_event_loop::PacketizerEventLoop,
+        },
+        media_transport_event::{MediaTransportEvent, RtpIn},
+        packetizer_worker::spawn_packetizer_worker,
     },
-    rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec}, sink_error, sink_info,
+    rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
+    sink_error, sink_info,
 };
 
 pub struct MediaTransport {
@@ -45,14 +44,8 @@ pub struct MediaTransport {
 }
 
 impl MediaTransport {
-    pub fn new(
-        event_tx: Sender<EngineEvent>, 
-        logger: Arc<dyn LogSink>, 
-        target_fps: u32
-    ) -> Self {
-        let media_agent = MediaAgent::new(
-            logger.clone(),
-        );
+    pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>, target_fps: u32) -> Self {
+        let media_agent = MediaAgent::new(logger.clone());
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
 
         let depacketizer_event_loop = DepacketizerEventLoop::new(logger.clone());
@@ -76,7 +69,7 @@ impl MediaTransport {
         }
     }
 
-    pub fn start_event_loops(&mut self, session: Arc<Mutex<Option<Session>>>){
+    pub fn start_event_loops(&mut self, session: Arc<Mutex<Option<Session>>>) {
         let logger = self.logger.clone();
 
         let (media_transport_event_tx, media_transport_event_rx) = mpsc::channel();
@@ -86,7 +79,8 @@ impl MediaTransport {
         let (packetizer_order_tx, packetizer_order_rx) = mpsc::channel();
         let (packetizer_event_tx, packetizer_event_rx) = mpsc::channel();
 
-        self.media_agent.start(self.event_tx.clone(), media_transport_event_tx);
+        self.media_agent
+            .start(self.event_tx.clone(), media_transport_event_tx);
 
         // Start Depacketizer worker
         let mut payload_map_inner = HashMap::new();
@@ -121,8 +115,9 @@ impl MediaTransport {
             payload_map_for_worker.clone(),
         ));
         //Start DepacketizerEventLoop
-        if let Some(media_agent_event_tx) = self.media_agent.media_agent_event_tx(){
-            self.depacketizer_event_loop.start(depacketizer_event_rx, media_agent_event_tx);
+        if let Some(media_agent_event_tx) = self.media_agent.media_agent_event_tx() {
+            self.depacketizer_event_loop
+                .start(depacketizer_event_rx, media_agent_event_tx);
         } else {
             sink_error!(
                 self.logger,
@@ -130,10 +125,11 @@ impl MediaTransport {
             );
         }
 
-        if let Some(rtp_tx) = self.rtp_tx.clone() &&
-            let Some(allowed_pts) = self.allowed_pts.clone() {
+        if let Some(rtp_tx) = self.rtp_tx.clone()
+            && let Some(allowed_pts) = self.allowed_pts.clone()
+        {
             self.media_agent_event_loop.start(
-                media_transport_event_rx, 
+                media_transport_event_rx,
                 packetizer_order_tx,
                 rtp_tx.clone(),
                 session.clone(),
@@ -144,13 +140,18 @@ impl MediaTransport {
             );
         }
 
-
         self.packetizer_handle = Some(spawn_packetizer_worker(
             packetizer_order_rx,
             packetizer_event_tx,
             logger.clone(),
         ));
-        self.packetizer_event_loop.start(packetizer_event_rx, self.outbound_tracks.clone(), payload_map_for_worker.clone(), session, self.event_tx.clone());
+        self.packetizer_event_loop.start(
+            packetizer_event_rx,
+            self.outbound_tracks.clone(),
+            payload_map_for_worker.clone(),
+            session,
+            self.event_tx.clone(),
+        );
     }
 
     #[must_use]
@@ -179,16 +180,12 @@ impl MediaTransport {
     }
 
     pub fn stop(&mut self) {
-        sink_info!(
-            self.logger,
-            "[MediaTransport] Stopping..."
-        );
+        sink_info!(self.logger, "[MediaTransport] Stopping...");
         self.media_agent.stop();
 
         self.media_agent_event_loop.stop();
         self.depacketizer_event_loop.stop();
         self.packetizer_event_loop.stop();
-
 
         self.media_transport_event_tx = None;
 
@@ -203,9 +200,6 @@ impl MediaTransport {
 
         self.allowed_pts = None;
         self.payload_map = Arc::new(HashMap::new());
-        sink_info!(
-            self.logger,
-            "[MediaTransport] Stopped" 
-        );
+        sink_info!(self.logger, "[MediaTransport] Stopped");
     }
 }

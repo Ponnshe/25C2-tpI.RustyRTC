@@ -214,6 +214,7 @@ mod tests {
             c1,
             Msg::Offer {
                 txn_id: 42,
+                from: "alice".into(),
                 to: "bob".into(),
                 sdp: fake_sdp.clone(),
             },
@@ -231,8 +232,14 @@ mod tests {
         let outs2_after_offer = router.take_outgoing_for(c2);
         assert_eq!(outs2_after_offer.len(), 1);
         match &outs2_after_offer[0] {
-            Msg::Offer { txn_id, to, sdp } => {
+            Msg::Offer {
+                txn_id,
+                from,
+                to,
+                sdp,
+            } => {
                 assert_eq!(*txn_id, 42);
+                assert_eq!(from, "alice");
                 assert_eq!(to, "bob");
                 assert_eq!(sdp, &fake_sdp);
             }

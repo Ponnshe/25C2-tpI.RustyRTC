@@ -82,6 +82,8 @@ fn msg_name(msg: &Msg) -> &'static str {
         Register { .. } => "Register",
         RegisterOk { .. } => "RegisterOk",
         RegisterErr { .. } => "RegisterErr",
+        ListPeers => "ListPeers",
+        PeersOnline { .. } => "PeersOnline",
         CreateSession { .. } => "CreateSession",
         Created { .. } => "Created",
         Join { .. } => "Join",

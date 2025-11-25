@@ -12,6 +12,8 @@ pub enum MsgType {
     Register = 0x05,
     RegisterOk = 0x06,
     RegisterErr = 0x07,
+    ListPeers = 0x08,
+    PeersOnline = 0x09,
 
     CreateSession = 0x10,
     Created = 0x11,
@@ -42,6 +44,8 @@ impl MsgType {
             0x05 => Ok(Register),
             0x06 => Ok(RegisterOk),
             0x07 => Ok(RegisterErr),
+            0x08 => Ok(ListPeers),
+            0x09 => Ok(PeersOnline),
             0x10 => Ok(CreateSession),
             0x11 => Ok(Created),
             0x12 => Ok(Join),

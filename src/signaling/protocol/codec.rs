@@ -38,6 +38,17 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
             put_u16(&mut body, *code);
             MsgType::RegisterErr
         }
+        ListPeers => MsgType::ListPeers,
+        PeersOnline { peers } => {
+            if peers.len() > u16::MAX as usize {
+                return Err(ProtoError::InvalidFormat("too many peers"));
+            }
+            put_u16(&mut body, peers.len() as u16);
+            for peer in peers {
+                put_str16(&mut body, peer)?;
+            }
+            MsgType::PeersOnline
+        }
 
         CreateSession { capacity } => {
             put_u8(&mut body, *capacity);
@@ -80,26 +91,40 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
             MsgType::PeerLeft
         }
 
-        Offer { txn_id, to, sdp } => {
+        Offer {
+            txn_id,
+            from,
+            to,
+            sdp,
+        } => {
             put_u64(&mut body, *txn_id);
+            put_str16(&mut body, from)?;
             put_str16(&mut body, to)?;
             put_u32(&mut body, sdp.len() as u32);
             body.extend_from_slice(sdp);
             MsgType::Offer
         }
-        Answer { txn_id, to, sdp } => {
+        Answer {
+            txn_id,
+            from,
+            to,
+            sdp,
+        } => {
             put_u64(&mut body, *txn_id);
+            put_str16(&mut body, from)?;
             put_str16(&mut body, to)?;
             put_u32(&mut body, sdp.len() as u32);
             body.extend_from_slice(sdp);
             MsgType::Answer
         }
         Candidate {
+            from,
             to,
             mid,
             mline_index,
             cand,
         } => {
+            put_str16(&mut body, from)?;
             put_str16(&mut body, to)?;
             put_str16(&mut body, mid)?;
             put_u16(&mut body, *mline_index);
@@ -174,6 +199,16 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
             let code = cursor.get_u16()?;
             RegisterErr { code }
         }
+        MsgType::ListPeers => ListPeers,
+        MsgType::PeersOnline => {
+            let count = cursor.get_u16()? as usize;
+            let mut peers = Vec::with_capacity(count);
+            for _ in 0..count {
+                let peer = cursor.get_str16()?.to_owned();
+                peers.push(peer);
+            }
+            PeersOnline { peers }
+        }
         MsgType::CreateSession => {
             let cap = cursor.get_u8()?;
             CreateSession { capacity: cap }
@@ -220,25 +255,39 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
 
         MsgType::Offer => {
             let txn_id = cursor.get_u64()?;
+            let from = cursor.get_str16()?.to_owned();
             let to = cursor.get_str16()?.to_owned();
             let len = cursor.get_u32()? as usize;
             let sdp = cursor.get_bytes(len)?.to_vec();
-            Offer { txn_id, to, sdp }
+            Offer {
+                txn_id,
+                from,
+                to,
+                sdp,
+            }
         }
         MsgType::Answer => {
             let txn_id = cursor.get_u64()?;
+            let from = cursor.get_str16()?.to_owned();
             let to = cursor.get_str16()?.to_owned();
             let len = cursor.get_u32()? as usize;
             let sdp = cursor.get_bytes(len)?.to_vec();
-            Answer { txn_id, to, sdp }
+            Answer {
+                txn_id,
+                from,
+                to,
+                sdp,
+            }
         }
         MsgType::Candidate => {
+            let from = cursor.get_str16()?.to_owned();
             let to = cursor.get_str16()?.to_owned();
             let mid = cursor.get_str16()?.to_owned();
             let mline_index = cursor.get_u16()?;
             let len = cursor.get_u32()? as usize;
             let cand = cursor.get_bytes(len)?.to_vec();
             Candidate {
+                from,
                 to,
                 mid,
                 mline_index,

@@ -1,14 +1,22 @@
 use std::{
-    io::Error, 
+    io::Error,
     sync::{
-        Arc, atomic::{AtomicBool, Ordering}, mpsc::{Receiver, RecvTimeoutError, Sender}
-    }, thread::{self, JoinHandle}, time::Duration
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use crate::{
-    app::log_sink::LogSink, logger_debug, logger_error, media_agent::{
-        constants::CHANNELS_TIMEOUT, encoder_instruction::EncoderInstruction, events::MediaAgentEvent, h264_encoder::H264Encoder, spec::CodecSpec
-    }, sink_info
+    app::log_sink::LogSink,
+    logger_debug, logger_error,
+    media_agent::{
+        constants::CHANNELS_TIMEOUT, encoder_instruction::EncoderInstruction,
+        events::MediaAgentEvent, h264_encoder::H264Encoder, spec::CodecSpec,
+    },
+    sink_info,
 };
 
 use super::constants::{BITRATE, KEYINT, TARGET_FPS};
@@ -17,18 +25,15 @@ pub fn spawn_encoder_worker(
     logger: Arc<dyn LogSink>,
     ma_encoder_event_rx: Receiver<EncoderInstruction>,
     media_agent_event_tx: Sender<MediaAgentEvent>,
-    running: Arc<AtomicBool>
+    running: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, Error> {
-    sink_info!(
-        logger.clone(),
-        "[Encoder] Starting..."
-    );
+    sink_info!(logger.clone(), "[Encoder] Starting...");
     thread::Builder::new()
         .name("media-agent-encoder".into())
         .spawn(move || {
             let mut h264_encoder = H264Encoder::new(TARGET_FPS, BITRATE, KEYINT);
 
-            while running.load(Ordering::Relaxed){
+            while running.load(Ordering::Relaxed) {
                 match ma_encoder_event_rx.recv_timeout(Duration::from_millis(CHANNELS_TIMEOUT)) {
                     Ok(order) => match order {
                         EncoderInstruction::Encode(frame, force_keyframe) => {
@@ -41,12 +46,13 @@ pub fn spawn_encoder_worker(
                                         logger.clone(),
                                         "[Encoder] Sending EncodedVideoFrame to MediaAgent"
                                     );
-                                    let _ =
-                                        media_agent_event_tx.send(MediaAgentEvent::EncodedVideoFrame {
+                                    let _ = media_agent_event_tx.send(
+                                        MediaAgentEvent::EncodedVideoFrame {
                                             annexb_frame,
                                             timestamp_ms: frame.timestamp_ms,
                                             codec_spec: CodecSpec::H264,
-                                        });
+                                        },
+                                    );
                                 }
                                 Err(e) => {
                                     logger_error!(logger, "[EncoderWorker] encode error: {e:?}");
@@ -71,16 +77,15 @@ pub fn spawn_encoder_worker(
                             "[MediaAgent Encoder] The channel received nothing in {}ms",
                             CHANNELS_TIMEOUT
                         );
-                    },
+                    }
 
                     Err(RecvTimeoutError::Disconnected) => {
                         logger_error!(
                             logger,
                             "[MediaAgent Encoder] The channel has been disconnected"
                         );
-                    },
+                    }
                 }
             }
-        }
-    )
+        })
 }

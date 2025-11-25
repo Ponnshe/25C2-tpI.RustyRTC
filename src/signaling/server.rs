@@ -111,6 +111,8 @@ impl Server {
                 self.handle_register(from_cid, username, password)
             }
 
+            Msg::ListPeers => self.handle_list_peers(from_cid),
+
             Msg::CreateSession { capacity } => self.handle_create_session(from_cid, capacity),
 
             Msg::Join { session_code } => self.handle_join(from_cid, session_code),
@@ -150,6 +152,7 @@ impl Server {
             | Msg::LoginErr { .. }
             | Msg::RegisterOk { .. }
             | Msg::RegisterErr { .. }
+            | Msg::PeersOnline { .. }
             | Msg::Created { .. }
             | Msg::JoinOk { .. }
             | Msg::JoinErr { .. }
@@ -296,6 +299,12 @@ impl Server {
                     username,
                     client_id
                 );
+                out.push(OutgoingMsg {
+                    client_id_target: client_id,
+                    msg: Msg::RegisterOk {
+                        username: username.clone(),
+                    },
+                });
             }
             Err(err) => {
                 let code: RegisterErrorCode = err.into();
@@ -316,6 +325,45 @@ impl Server {
             }
         }
 
+        out
+    }
+
+    fn handle_list_peers(&mut self, client_id: ClientId) -> Vec<OutgoingMsg> {
+        let mut out = Vec::new();
+        let requester = self.require_logged_in(client_id);
+
+        if requester.is_none() {
+            sink_warn!(
+                self.log,
+                "client {} requested peer list without logging in",
+                client_id
+            );
+            out.push(OutgoingMsg {
+                client_id_target: client_id,
+                msg: Msg::PeersOnline { peers: Vec::new() },
+            });
+            return out;
+        } else if let Some(username) = requester.as_ref() {
+            sink_info!(
+                self.log,
+                "client {} ({}) requested peer list",
+                client_id,
+                username
+            );
+        }
+
+        let peers = {
+            let mut all = self.presence.online_usernames();
+            if let Some(current) = requester.as_ref() {
+                all.retain(|peer| peer != current);
+            }
+            all
+        };
+
+        out.push(OutgoingMsg {
+            client_id_target: client_id,
+            msg: Msg::PeersOnline { peers },
+        });
         out
     }
 
@@ -470,55 +518,97 @@ impl Server {
     /// Forward Offer/Answer/Candidate, enforcing:
     /// - sender must be logged in
     /// - target must be logged in
-    /// - both must share at least one session
     ///
     /// On violation: log a warning and drop the message.
     fn forward_signaling(&mut self, from: ClientId, msg: Msg) -> Vec<OutgoingMsg> {
-        // Extract `to` username and a short kind name for logging.
-        let (to_username, kind) = match &msg {
-            Msg::Offer { to, .. } => (to.as_str(), "Offer"),
-            Msg::Answer { to, .. } => (to.as_str(), "Answer"),
-            Msg::Candidate { to, .. } => (to.as_str(), "Candidate"),
-            _ => unreachable!("forward_signaling only for Offer/Answer/Candidate"),
-        };
-
         // 1) sender must be logged in
         let Some(from_username) = self.require_logged_in(from) else {
             sink_warn!(
                 self.log,
-                "unauthenticated client {} attempted to send {} to {}",
-                from,
-                kind,
-                to_username
+                "unauthenticated client {} attempted to send signaling message",
+                from
             );
             return Vec::new();
         };
 
-        // 2) resolve target client by username
-        let Some(target_client) = self.presence.client_id_for(&to_username.to_owned()) else {
-            sink_warn!(
-                self.log,
-                "client {} ({}) tried to send {} to offline user {}",
-                from,
-                from_username,
-                kind,
-                to_username
-            );
-            return Vec::new();
-        };
-
-        // 3) enforce they share at least one session
-        if !self.sessions.share_session(from, target_client) {
-            sink_warn!(
-                self.log,
-                "client {} ({}) tried to send {} to {} (no shared session)",
-                from,
-                from_username,
-                kind,
-                to_username
-            );
-            return Vec::new();
+        match msg {
+            Msg::Offer {
+                txn_id, to, sdp, ..
+            } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                Msg::Offer {
+                    txn_id,
+                    from: username,
+                    to,
+                    sdp,
+                }
+            }),
+            Msg::Answer {
+                txn_id, to, sdp, ..
+            } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                Msg::Answer {
+                    txn_id,
+                    from: username,
+                    to,
+                    sdp,
+                }
+            }),
+            Msg::Candidate {
+                to,
+                mid,
+                mline_index,
+                cand,
+                ..
+            } => self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+                Msg::Candidate {
+                    from: username,
+                    to,
+                    mid,
+                    mline_index,
+                    cand,
+                }
+            }),
+            other => {
+                sink_warn!(
+                    self.log,
+                    "forward_signaling received unexpected message {:?}",
+                    other
+                );
+                Vec::new()
+            }
         }
+    }
+
+    fn forward<F>(
+        &mut self,
+        from: ClientId,
+        from_username: &UserName,
+        txn_id: u64,
+        to_username: UserName,
+        builder: F,
+    ) -> Vec<OutgoingMsg>
+    where
+        F: FnOnce(UserName, u64, UserName) -> Msg,
+    {
+        // 2) resolve target client by username
+        let Some(target_client) = self.presence.client_id_for(&to_username) else {
+            sink_warn!(
+                self.log,
+                "client {} ({}) tried to send signaling to offline user {}",
+                from,
+                from_username,
+                to_username
+            );
+            return Vec::new();
+        };
+
+        let msg = builder(from_username.clone(), txn_id, to_username.clone());
+
+        let kind = match &msg {
+            Msg::Offer { .. } => "Offer",
+            Msg::Answer { .. } => "Answer",
+            Msg::Candidate { .. } => "Candidate",
+            _ => "Signaling",
+        };
 
         sink_debug!(
             self.log,
@@ -667,6 +757,7 @@ mod tests {
             1,
             Msg::Offer {
                 txn_id: 1,
+                from: "alice".to_string(),
                 to: "bob".to_string(),
                 sdp: b"v=0".to_vec(),
             },
@@ -691,6 +782,7 @@ mod tests {
             1,
             Msg::Offer {
                 txn_id: 1,
+                from: "alice".to_string(),
                 to: "bob".to_string(),
                 sdp: b"v=0".to_vec(),
             },
@@ -704,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn offer_without_shared_session_is_dropped() {
+    fn offer_without_shared_session_is_forwarded() {
         let mut server = new_server();
 
         // alice and bob both logged in, but in no sessions yet
@@ -715,16 +807,28 @@ mod tests {
             1,
             Msg::Offer {
                 txn_id: 1,
+                from: "alice".to_string(),
                 to: "bob".to_string(),
                 sdp: b"v=0".to_vec(),
             },
         );
 
-        assert!(
-            res.is_empty(),
-            "expected no outgoing messages when peers share no session, got {:?}",
-            res
-        );
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].client_id_target, 2);
+        match &res[0].msg {
+            Msg::Offer {
+                txn_id,
+                from,
+                to,
+                sdp,
+            } => {
+                assert_eq!(*txn_id, 1);
+                assert_eq!(from, "alice");
+                assert_eq!(to, "bob");
+                assert_eq!(sdp, b"v=0");
+            }
+            other => panic!("expected forwarded Offer, got {:?}", other),
+        }
     }
 
     #[test]
@@ -800,6 +904,7 @@ mod tests {
             alice,
             Msg::Offer {
                 txn_id,
+                from: "alice".to_string(),
                 to: "bob".to_string(),
                 sdp: sdp.clone(),
             },
@@ -818,14 +923,69 @@ mod tests {
         match &out.msg {
             Msg::Offer {
                 txn_id: t,
+                from,
                 to,
                 sdp: s,
             } => {
                 assert_eq!(*t, txn_id);
+                assert_eq!(from, "alice");
                 assert_eq!(to, "bob");
                 assert_eq!(s, &sdp);
             }
             other => panic!("expected forwarded Offer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_peers_excludes_requester() {
+        let mut server = new_server();
+        login(&mut server, 1, "alice");
+        login(&mut server, 2, "bob");
+        login(&mut server, 3, "carol");
+
+        let res = server.handle(1, Msg::ListPeers);
+        assert_eq!(res.len(), 1);
+        let out = &res[0];
+        assert_eq!(out.client_id_target, 1);
+        match &out.msg {
+            Msg::PeersOnline { peers } => {
+                assert_eq!(peers.len(), 2);
+                assert!(peers.contains(&"bob".to_string()));
+                assert!(peers.contains(&"carol".to_string()));
+                assert!(!peers.contains(&"alice".to_string()));
+            }
+            other => panic!("expected PeersOnline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_peers_without_login_returns_empty() {
+        let mut server = new_server();
+        login(&mut server, 2, "bob");
+
+        let res = server.handle(1, Msg::ListPeers);
+        assert_eq!(res.len(), 1);
+        match &res[0].msg {
+            Msg::PeersOnline { peers } => assert!(peers.is_empty()),
+            other => panic!("expected PeersOnline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn register_success_emits_register_ok() {
+        let mut server = new_server();
+        let res = server.handle(
+            5,
+            Msg::Register {
+                username: "newuser".into(),
+                password: "pw".into(),
+            },
+        );
+
+        assert_eq!(res.len(), 1);
+        match &res[0].msg {
+            Msg::RegisterOk { username } => assert_eq!(username, "newuser"),
+            other => panic!("expected RegisterOk, got {:?}", other),
         }
     }
 

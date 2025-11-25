@@ -1,6 +1,9 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex, mpsc::{self, Receiver, Sender}},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
     time::{Duration, Instant},
 };
 
@@ -13,10 +16,12 @@ use crate::{
         session::{Session, SessionConfig},
     },
     media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
-    media_transport::{media_transport::MediaTransport, media_transport_event::{self, MediaTransportEvent}}, sink_info,
+    media_transport::{media_transport::MediaTransport, media_transport_event::MediaTransportEvent},
+    sink_info,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
+use crate::connection_manager::ice_and_sdp::ICEAndSDP;
 
 pub struct Engine {
     logger_sink: Arc<dyn LogSink>,
@@ -31,7 +36,8 @@ pub struct Engine {
 impl Engine {
     pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
-        let media_transport = MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
+        let media_transport =
+            MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
         let initial_bitrate = crate::media_agent::constants::BITRATE;
         let congestion_controller = CongestionController::new(
             initial_bitrate,
@@ -74,6 +80,20 @@ impl Engine {
         }
     }
 
+    pub fn apply_remote_candidate(&mut self, candidate_line: &str) -> Result<(), ConnectionError> {
+        self.cm.apply_remote_trickle_candidate(candidate_line)
+    }
+
+    /// Returns local ICE candidates encoded as SDP attribute lines (`candidate:...`).
+    pub fn local_candidates_as_sdp_lines(&self) -> Vec<String> {
+        self.cm
+            .ice_agent
+            .local_candidates
+            .iter()
+            .map(|c| ICEAndSDP::new(c.clone()).to_string())
+            .collect()
+    }
+
     pub fn start(&mut self) -> Result<(), String> {
         let mut guard = self.session.lock().unwrap();
         if let Some(sess) = guard.as_mut() {
@@ -95,7 +115,7 @@ impl Engine {
         // keep ICE reactive
         self.cm.drain_ice_events();
 
-        if self.session.lock().unwrap().is_none(){
+        if self.session.lock().unwrap().is_none() {
             if let Ok((sock, peer)) = self.cm.ice_agent.get_data_channel_socket() {
                 if let Err(e) = sock.connect(peer) {
                     let _ = self
@@ -139,7 +159,9 @@ impl Engine {
             }
             match self.event_rx.try_recv() {
                 Ok(ev) => {
-                    if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx(){
+                    if let Some(media_transport_event_tx) =
+                        self.media_transport.media_transport_event_tx()
+                    {
                         match &ev {
                             EngineEvent::NetworkMetrics(metrics) => {
                                 self.congestion_controller
@@ -150,9 +172,10 @@ impl Engine {
                             }
                             EngineEvent::Closed | EngineEvent::Closing { .. } => {
                                 media_transport_event_tx.send(MediaTransportEvent::Closed);
-                            },
+                            }
                             EngineEvent::RtpIn(pkt) => {
-                                media_transport_event_tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
+                                media_transport_event_tx
+                                    .send(MediaTransportEvent::RtpIn(pkt.clone()));
                             }
                             _ => {}
                         }
@@ -171,7 +194,7 @@ impl Engine {
         self.media_transport.snapshot_frames()
     }
 
-    pub fn close_session(&mut self){
+    pub fn close_session(&mut self) {
         let mut guard = self.session.lock().unwrap();
         *guard = None;
     }
@@ -182,7 +205,7 @@ impl Engine {
             self.logger_sink,
             "[Engine] Sending Established Event to Media Transport"
         );
-        if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx(){
+        if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx() {
             media_transport_event_tx.send(MediaTransportEvent::Established);
         }
     }

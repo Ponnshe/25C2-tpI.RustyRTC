@@ -1,13 +1,16 @@
 use std::{
-    sync::{Arc, mpsc::{Receiver, Sender}},
+    sync::{
+        Arc,
+        mpsc::{Receiver, Sender},
+    },
     thread::{self, JoinHandle},
 };
 
-use crate::{app::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
+use super::events::PacketizerEvent;
 use crate::media_transport::payload::{
     h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk,
 };
-use super::events::PacketizerEvent;
+use crate::{app::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
 
 #[derive(Debug)]
 pub struct PacketizeOrder {

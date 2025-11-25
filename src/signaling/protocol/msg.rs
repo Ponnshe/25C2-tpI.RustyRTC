@@ -28,6 +28,10 @@ pub enum Msg {
     RegisterErr {
         code: u16, // maps from RegisterErrorCode
     },
+    ListPeers,
+    PeersOnline {
+        peers: Vec<UserName>,
+    },
 
     // Session management
     CreateSession {
@@ -59,15 +63,18 @@ pub enum Msg {
     // Signaling
     Offer {
         txn_id: TxnId,
+        from: UserName,
         to: UserName, // for now, PeerId = username
         sdp: Vec<u8>, // raw UTF-8 text
     },
     Answer {
         txn_id: TxnId,
+        from: UserName,
         to: UserName,
         sdp: Vec<u8>,
     },
     Candidate {
+        from: UserName,
         to: UserName,
         mid: String,
         mline_index: u16,
