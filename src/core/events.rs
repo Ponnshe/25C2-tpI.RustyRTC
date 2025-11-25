@@ -1,16 +1,6 @@
 use std::net::SocketAddr;
 
-use crate::{app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics};
-
-#[derive(Debug, Clone)]
-pub struct RtpIn {
-    pub pt: u8,
-    pub marker: bool,
-    pub timestamp_90khz: u32,
-    pub seq: u16,
-    pub ssrc: u32,
-    pub payload: Vec<u8>,
-}
+use crate::{app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics, media_transport::media_transport_event::RtpIn};
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {

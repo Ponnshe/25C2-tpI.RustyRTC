@@ -1,7 +1,6 @@
 use std::{
     sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
+        Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError}
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -12,106 +11,197 @@ use crate::{
     core::events::EngineEvent,
     logger_debug, logger_error, logger_info, logger_warn,
     media_agent::{
-        camera_worker::spawn_camera_worker,
-        decoder_event::DecoderEvent,
-        decoder_worker::spawn_decoder_worker,
-        encoder_instruction::EncoderInstruction,
-        encoder_worker::spawn_encoder_worker,
-        events::MediaAgentEvent,
-        spec::{CodecSpec, MediaSpec, MediaType},
-        utils::discover_camera_id,
-        video_frame::VideoFrame,
+        camera_worker::spawn_camera_worker, decoder_event::DecoderEvent, decoder_worker::spawn_decoder_worker, encoder_instruction::EncoderInstruction, encoder_worker::spawn_encoder_worker, events::MediaAgentEvent, media_agent_error::MediaAgentError, spec::{CodecSpec, MediaSpec, MediaType}, utils::discover_camera_id, video_frame::VideoFrame
     },
-    media_transport::media_transport_event::MediaTransportEvent,
+    media_transport::media_transport_event::MediaTransportEvent, sink_info,
 };
 
-use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS};
+use super::constants::{DEFAULT_CAMERA_ID, TARGET_FPS, KEYINT};
 
 pub struct MediaAgent {
+    logger: Arc<dyn LogSink>,
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
-    pub logger: Arc<dyn LogSink>,
     supported_media: Vec<MediaSpec>,
-    _decoder_handle: Option<JoinHandle<()>>,
-    _encoder_handle: Option<JoinHandle<()>>,
-    _listener_handle: Option<JoinHandle<()>>,
-    _ma_decoder_event_tx: Sender<DecoderEvent>,
-    ma_encoder_event_tx: Sender<EncoderInstruction>,
-    media_agent_event_tx: Sender<MediaAgentEvent>,
-    _sent_any_frame: Arc<Mutex<bool>>,
+    decoder_handle: Option<JoinHandle<()>>,
+    encoder_handle: Option<JoinHandle<()>>,
+    listener_handle: Option<JoinHandle<()>>,
+    camera_handle: Option<JoinHandle<()>>,
+    sent_any_frame: Arc<AtomicBool>,
+    media_agent_event_tx: Option<Sender<MediaAgentEvent>>,
+    ma_encoder_event_tx: Option<Sender<EncoderInstruction>>,
+    running: Arc<AtomicBool>,
 }
 
 impl MediaAgent {
     pub fn new(
-        event_tx: Sender<EngineEvent>,
         logger: Arc<dyn LogSink>,
-        media_transport_event_tx: Sender<MediaTransportEvent>,
     ) -> Self {
-        let camera_id = discover_camera_id().unwrap_or(DEFAULT_CAMERA_ID);
-        let remote_frame = Arc::new(Mutex::new(None));
-        let local_frame = Arc::new(Mutex::new(None));
-        let sent_any_frame = Arc::new(Mutex::new(false));
-
-        let (local_frame_rx, status, _handle) =
-            spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id);
-        if let Some(msg) = status {
-            let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
-        }
+        let sent_any_frame = Arc::new(AtomicBool::new(false));
 
         let supported_media = vec![MediaSpec {
             media_type: MediaType::Video,
             codec_spec: CodecSpec::H264,
         }];
 
+        Self {
+            logger,
+            local_frame: Arc::new(Mutex::new(None)),
+            remote_frame: Arc::new(Mutex::new(None)),
+            supported_media,
+            decoder_handle: None,
+            encoder_handle: None,
+            listener_handle: None,
+            camera_handle: None,
+            sent_any_frame,
+            media_agent_event_tx: None,
+            ma_encoder_event_tx: None,
+            running: Arc::new(AtomicBool::new(false))
+        }
+    }
+    pub fn start(
+        &mut self, 
+        event_tx: Sender<EngineEvent>,
+        media_transport_event_tx: Sender<MediaTransportEvent>,
+    ) -> Result<(), MediaAgentError> {
+        let logger = self.logger.clone();
+        sink_info!(
+            logger,
+            "[MediaAgent] Starting MediaAgent"
+        );
+        self.running.store(true, Ordering::SeqCst);
+        let logger = self.logger.clone();
+        let running = self.running.clone();
+        let remote_frame = self.remote_frame.clone();
+        let local_frame = self.local_frame.clone();
+
+        //Start camera worker
+        let camera_id = discover_camera_id().unwrap_or(DEFAULT_CAMERA_ID);
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Starting Camera Worker..."
+        );
+        let (local_frame_rx, status, handle) =
+            spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id, running.clone());
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Camera Worker Started"
+        );
+        if let Some(msg) = status {
+            let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
+        }
+        self.camera_handle = handle;
+
         let (ma_decoder_event_tx, ma_decoder_event_rx) = mpsc::channel::<DecoderEvent>();
         let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel::<MediaAgentEvent>();
+        let media_agent_event_tx_clone = media_agent_event_tx.clone();
+        self.media_agent_event_tx = Some(media_agent_event_tx_clone);
 
+        // Start decoder worker
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Starting Decoder Worker..."
+        );
         let decoder_handle = Some(spawn_decoder_worker(
             logger.clone(),
             ma_decoder_event_rx,
             media_agent_event_tx.clone(),
+            running.clone()
         ));
-
-        let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
-        let encoder_handle = Some(spawn_encoder_worker(
+        self.decoder_handle = decoder_handle;
+        sink_info!(
             logger.clone(),
-            ma_encoder_event_rx,
-            media_agent_event_tx.clone(),
-        ));
+            "[MediaAgent] Decoder Worker Started"
+        );
 
+        // Start encoder worker
+        let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
+        let ma_encoder_event_tx_clone = ma_encoder_event_tx.clone();
+        self.ma_encoder_event_tx = Some(ma_encoder_event_tx_clone);
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Starting Encoder Worker..."
+        );
+        let encoder_handle = spawn_encoder_worker(
+            logger.clone(),
+            ma_encoder_event_rx, media_agent_event_tx,
+            running.clone(),
+        ).map_err(|e| MediaAgentError::EncoderSpawn(e.to_string()))?;
+        self.encoder_handle = Some(encoder_handle);
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Encoder Worker Started"
+        );
+
+        // Start listener
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Starting Listener..."
+        );
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
             local_frame_rx,
             media_agent_event_rx,
-            ma_decoder_event_tx.clone(),
-            ma_encoder_event_tx.clone(),
+            ma_decoder_event_tx,
+            ma_encoder_event_tx,
             media_transport_event_tx,
-            local_frame.clone(),
-            remote_frame.clone(),
-            sent_any_frame.clone(),
-        );
-
-        Self {
             local_frame,
             remote_frame,
-            logger,
-            supported_media,
-            _decoder_handle: decoder_handle,
-            _encoder_handle: encoder_handle,
-            _listener_handle: listener_handle,
-            _ma_decoder_event_tx: ma_decoder_event_tx,
-            ma_encoder_event_tx,
-            media_agent_event_tx,
-            _sent_any_frame: sent_any_frame,
-        }
+            self.sent_any_frame.clone(),
+            running,
+        );
+        self.listener_handle = listener_handle;
+        sink_info!(
+            logger.clone(),
+            "[MediaAgent] Listener Started"
+        );
+
+        Ok(())
     }
 
+    pub fn stop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+
+        self.media_agent_event_tx = None;
+        self.ma_encoder_event_tx = None;
+
+        if let Some(handle) = self.listener_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.decoder_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.encoder_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.camera_handle.take() {
+            let _ = handle.join();
+        }
+
+        self.sent_any_frame.store(false, Ordering::SeqCst);
+
+        if let Ok(mut lf) = self.local_frame.lock() {
+            *lf = None;
+        }
+
+        if let Ok(mut rf) = self.remote_frame.lock() {
+            *rf = None;
+        }
+
+        logger_info!(self.logger, "[MediaAgent] stopped cleanly");
+    }
+
+    #[must_use]
     pub fn supported_media(&self) -> &[MediaSpec] {
         &self.supported_media
     }
 
     pub fn post_event(&self, event: MediaAgentEvent) {
-        if let Err(err) = self.media_agent_event_tx.send(event) {
+        if let Some(media_agent_event_tx) = self.media_agent_event_tx.clone() && 
+            let Err(err) = media_agent_event_tx.send(event) {
             logger_error!(
                 self.logger,
                 "[MediaAgent] failed to enqueue event for listener: {err}"
@@ -119,10 +209,12 @@ impl MediaAgent {
         }
     }
 
-    pub fn media_agent_event_tx(&self) -> Sender<MediaAgentEvent> {
+    #[must_use]
+    pub fn media_agent_event_tx(&self) -> Option<Sender<MediaAgentEvent>> {
         self.media_agent_event_tx.clone()
     }
 
+    #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         let local = self
             .local_frame
@@ -138,32 +230,17 @@ impl MediaAgent {
     }
 
     pub fn set_bitrate(&self, new_bitrate: u32) {
-        let new_fps;
-        let new_keyint;
-
-        if new_bitrate >= 1_500_000 {
-            new_fps = 30;
-            new_keyint = 60;
-        } else if new_bitrate >= 800_000 {
-            new_fps = 25;
-            new_keyint = 90;
-        } else {
-            new_fps = 20;
-            new_keyint = 120;
-        }
-
         let instruction = EncoderInstruction::SetConfig {
-            fps: new_fps,
+            fps: TARGET_FPS,
             bitrate: new_bitrate,
-            keyint: new_keyint,
+            keyint: KEYINT,
         };
-        if self.ma_encoder_event_tx.send(instruction).is_ok() {
+        if let Some(ma_encoder_event_tx) = self.ma_encoder_event_tx.clone() && 
+            ma_encoder_event_tx.send(instruction).is_ok() {
             logger_info!(
                 self.logger,
-                "Reconfigured H264 encoder: bitrate={}bps, fps={}, keyint={}",
+                "Reconfigured H264 encoder: bitrate={}bps",
                 new_bitrate,
-                new_fps,
-                new_keyint,
             );
         }
     }
@@ -177,8 +254,13 @@ impl MediaAgent {
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
-        sent_any_frame: Arc<Mutex<bool>>,
+        sent_any_frame: Arc<AtomicBool>,
+        running: Arc<AtomicBool>
     ) -> Option<JoinHandle<()>> {
+        sink_info!(
+            logger,
+            "[MA Listener] Starting..."
+        );
         thread::Builder::new()
             .name("media-agent-listener".into())
             .spawn(move || {
@@ -192,6 +274,7 @@ impl MediaAgent {
                     local_frame,
                     remote_frame,
                     sent_any_frame,
+                    running
                 );
             })
             .ok()
@@ -206,9 +289,10 @@ impl MediaAgent {
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
-        sent_any_frame: Arc<Mutex<bool>>,
+        sent_any_frame: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
     ) {
-        loop {
+        while running.load(Ordering::Relaxed){
             Self::drain_camera_frames(
                 &logger,
                 &local_frame_rx,
@@ -227,7 +311,7 @@ impl MediaAgent {
                         &remote_frame,
                     );
                 }
-                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Timeout) => {},
                 Err(RecvTimeoutError::Disconnected) => {
                     logger_info!(
                         logger,
@@ -237,6 +321,10 @@ impl MediaAgent {
                 }
             }
         }
+        logger_info!(
+            logger,
+            "[MediaAgent Listener] Thread closing gracefully"
+        );
     }
 
     fn drain_camera_frames(
@@ -244,7 +332,7 @@ impl MediaAgent {
         local_frame_rx: &Receiver<VideoFrame>,
         ma_encoder_event_tx: &Sender<EncoderInstruction>,
         local_frame: &Arc<Mutex<Option<VideoFrame>>>,
-        sent_any_frame: &Arc<Mutex<bool>>,
+        sent_any_frame: &Arc<AtomicBool>,
     ) {
         loop {
             match local_frame_rx.try_recv() {
@@ -271,7 +359,7 @@ impl MediaAgent {
         frame: VideoFrame,
         ma_encoder_event_tx: &Sender<EncoderInstruction>,
         local_frame: &Arc<Mutex<Option<VideoFrame>>>,
-        sent_any_frame: &Arc<Mutex<bool>>,
+        sent_any_frame: &Arc<AtomicBool>,
     ) {
         if let Ok(mut guard) = local_frame.lock() {
             *guard = Some(frame.clone());
@@ -279,15 +367,7 @@ impl MediaAgent {
             logger_warn!(logger, "[MediaAgent] failed to lock local frame for update");
         }
 
-        let force_keyframe = {
-            let mut sent = sent_any_frame.lock().unwrap();
-            if !*sent {
-                *sent = true;
-                true
-            } else {
-                false
-            }
-        };
+        let force_keyframe = !sent_any_frame.swap(true, Ordering::SeqCst);
 
         let ts = frame.timestamp_ms;
         let instruction = EncoderInstruction::Encode(frame, force_keyframe);
@@ -336,6 +416,10 @@ impl MediaAgent {
                 logger_debug!(
                     logger,
                     "[MediaAgent] encoded frame ready for transport (ts={timestamp_ms})"
+                );
+                logger_info!(
+                    logger,
+                    "[MediaAgent] Received EncodedVideoFrame from Encoder. Now sending SendEncodedFrame to Media Transport"
                 );
                 if media_transport_event_tx
                     .send(MediaTransportEvent::SendEncodedFrame {

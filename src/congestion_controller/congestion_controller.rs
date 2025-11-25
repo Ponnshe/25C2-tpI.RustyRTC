@@ -47,7 +47,6 @@ pub struct CongestionController {
     logger: Arc<dyn LogSink>,
     tx_evt: Sender<EngineEvent>,
 }
-
 impl CongestionController {
     pub fn new(
         initial_bitrate: u32,

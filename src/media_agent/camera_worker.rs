@@ -9,13 +9,12 @@ use crate::{
         media_agent_error::{MediaAgentError, Result},
         utils::now_millis,
         video_frame::VideoFrame,
-    },
+    }, sink_info,
 };
 use opencv::{core::Mat, imgproc};
 use std::{
     sync::{
-        Arc,
-        mpsc::{self, Receiver, Sender},
+        Arc, atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, Sender}
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -26,12 +25,13 @@ pub fn camera_loop(
     mut cam: CameraManager,
     tx: Sender<VideoFrame>,
     target_fps: u32,
+    running: Arc<AtomicBool>
 ) -> Result<()> {
     let fps = target_fps.clamp(1, 120);
     let period = Duration::from_millis(1000 / fps as u64);
     let mut next_deadline = Instant::now() + period;
 
-    loop {
+    while running.load(Ordering::SeqCst){
         match cam.get_frame() {
             Ok(frame) => {
                 let w = cam.width();
@@ -105,11 +105,12 @@ pub fn synthetic_loop(
     logger: Arc<dyn LogSink>,
     tx: Sender<VideoFrame>,
     target_fps: u32,
+    running: Arc<AtomicBool>
 ) -> Result<()> {
     let fps = target_fps.clamp(1, 120);
     let period = Duration::from_millis(1_000 / fps as u64);
     let mut phase = 0u8;
-    loop {
+    while running.load(Ordering::SeqCst) {
         let frame = VideoFrame::synthetic(320, 240, phase);
         phase = phase.wrapping_add(1);
         if tx.send(frame).is_err() {
@@ -125,7 +126,12 @@ pub fn spawn_camera_worker(
     target_fps: u32,
     logger: Arc<dyn LogSink>,
     camera_id: i32,
+    running: Arc<AtomicBool>
 ) -> (Receiver<VideoFrame>, Option<String>, Option<JoinHandle<()>>) {
+    sink_info!(
+        logger,
+        "[CameraWorker] Starting camera worker"
+    );
     let (local_frame_tx, local_frame_rx) = mpsc::channel();
     let camera_manager = CameraManager::new(camera_id, logger.clone());
 
@@ -145,11 +151,11 @@ pub fn spawn_camera_worker(
         .name("media-agent-camera".into())
         .spawn(move || {
             if let Ok(cam) = camera_manager {
-                if let Err(e) = camera_loop(log_for_cam, cam, local_frame_tx, target_fps) {
+                if let Err(e) = camera_loop(log_for_cam, cam, local_frame_tx, target_fps, running.clone()) {
                     logger_error!(logger, "camera loop stopped: {e:?}");
                 }
             } else {
-                if let Err(e) = synthetic_loop(log_for_synthetic, local_frame_tx, target_fps) {
+                if let Err(e) = synthetic_loop(log_for_synthetic, local_frame_tx, target_fps, running.clone()) {
                     logger_error!(logger, "synthetic loop stopped: {e:?}");
                 }
             }

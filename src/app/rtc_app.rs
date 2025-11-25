@@ -194,6 +194,7 @@ impl RtcApp {
                 Established => {
                     self.conn_state = ConnState::Running;
                     self.status_line = "Established.".into();
+                    self.engine.start_media_transport();
                 }
                 Closing { graceful: _ } => {
                     self.conn_state = ConnState::Stopped;
@@ -201,6 +202,7 @@ impl RtcApp {
                 Closed => {
                     self.conn_state = ConnState::Stopped;
                     self.status_line = "Closed.".into();
+                    self.engine.close_session();
                 }
                 RtpIn(r) => {
                     self.rtp_pkts += 1;
@@ -441,7 +443,7 @@ impl App for RtcApp {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(32));
         }
 
         if let Some(sdp) = self.pending_remote_sdp.take() {

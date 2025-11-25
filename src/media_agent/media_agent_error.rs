@@ -7,6 +7,7 @@ pub enum MediaAgentError {
     Codec(String),
     Send(String),
     Io(String),
+    EncoderSpawn(String),
 }
 impl fmt::Display for MediaAgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -16,6 +17,7 @@ impl fmt::Display for MediaAgentError {
             Codec(e) => write!(f, "Codec error: {e}"),
             Send(e) => write!(f, "Send error: {e}"),
             Io(e) => write!(f, "Io error: {e}"),
+            EncoderSpawn(e) => write!(f, "Encoder Spawn error: {e}"),
         }
     }
 }

@@ -1,7 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::Arc,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{Arc, Mutex, mpsc::{self, Receiver, Sender}},
     time::{Duration, Instant},
 };
 
@@ -13,8 +12,8 @@ use crate::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
-    media_agent::video_frame::VideoFrame,
-    media_transport::media_transport::MediaTransport,
+    media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
+    media_transport::{media_transport::MediaTransport, media_transport_event::{self, MediaTransportEvent}}, sink_info,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -22,7 +21,7 @@ use super::constants::{MAX_BITRATE, MIN_BITRATE};
 pub struct Engine {
     logger_sink: Arc<dyn LogSink>,
     cm: ConnectionManager,
-    session: Option<Session>,
+    session: Arc<Mutex<Option<Session>>>,
     event_tx: Sender<EngineEvent>,
     event_rx: Receiver<EngineEvent>,
     media_transport: MediaTransport,
@@ -32,7 +31,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
-        let media_transport = MediaTransport::new(event_tx.clone(), logger_sink.clone());
+        let media_transport = MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
         let initial_bitrate = crate::media_agent::constants::BITRATE;
         let congestion_controller = CongestionController::new(
             initial_bitrate,
@@ -44,7 +43,7 @@ impl Engine {
         Self {
             cm: ConnectionManager::new(logger_sink.clone()),
             logger_sink,
-            session: None,
+            session: Arc::new(Mutex::new(None)),
             event_tx,
             event_rx,
             media_transport,
@@ -76,55 +75,55 @@ impl Engine {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
-        if self.session.is_none() {
-            return Err("no nominated pair yet".into());
-        }
-        if let Some(sess) = &mut self.session {
+        let mut guard = self.session.lock().unwrap();
+        if let Some(sess) = guard.as_mut() {
             sess.start();
+        } else {
+            return Err("no nominated pair yet".into());
         }
         Ok(())
     }
 
     pub fn stop(&mut self) {
-        if let Some(sess) = &mut self.session {
+        if let Some(sess) = self.session.lock().unwrap().as_mut() {
             sess.request_close();
         }
+        self.media_transport.stop();
     }
 
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
         self.cm.drain_ice_events();
 
-        if let (None, Ok((sock, peer))) = (
-            self.session.as_ref(),
-            self.cm.ice_agent.get_data_channel_socket(),
-        ) {
-            if let Err(e) = sock.connect(peer) {
-                let _ = self
-                    .event_tx
-                    .send(EngineEvent::Error(format!("socket.connect: {e}")));
-            } else {
-                let local = sock
-                    .local_addr()
-                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-                let _ = self.event_tx.send(EngineEvent::IceNominated {
-                    local,
-                    remote: peer,
-                });
-                let sess = Session::new(
-                    Arc::clone(&sock),
-                    peer,
-                    self.cm.remote_codecs().clone(),
-                    self.event_tx.clone(),
-                    self.logger_sink.clone(),
-                    SessionConfig {
-                        handshake_timeout: Duration::from_secs(10),
-                        resend_every: Duration::from_millis(250),
-                        close_timeout: Duration::from_secs(5),
-                        close_resend_every: Duration::from_millis(250),
-                    },
-                );
-                self.session = Some(sess);
+        if self.session.lock().unwrap().is_none(){
+            if let Ok((sock, peer)) = self.cm.ice_agent.get_data_channel_socket() {
+                if let Err(e) = sock.connect(peer) {
+                    let _ = self
+                        .event_tx
+                        .send(EngineEvent::Error(format!("socket.connect: {e}")));
+                } else {
+                    let local = sock
+                        .local_addr()
+                        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+                    let _ = self.event_tx.send(EngineEvent::IceNominated {
+                        local,
+                        remote: peer,
+                    });
+                    let sess = Session::new(
+                        Arc::clone(&sock),
+                        peer,
+                        self.cm.remote_codecs().clone(),
+                        self.event_tx.clone(),
+                        self.logger_sink.clone(),
+                        SessionConfig {
+                            handshake_timeout: Duration::from_secs(10),
+                            resend_every: Duration::from_millis(250),
+                            close_timeout: Duration::from_secs(5),
+                            close_resend_every: Duration::from_millis(250),
+                        },
+                    );
+                    *self.session.lock().unwrap() = Some(sess);
+                }
             }
         }
 
@@ -140,15 +139,23 @@ impl Engine {
             }
             match self.event_rx.try_recv() {
                 Ok(ev) => {
-                    match &ev {
-                        EngineEvent::NetworkMetrics(metrics) => {
-                            self.congestion_controller
-                                .on_network_metrics(metrics.clone());
+                    if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx(){
+                        match &ev {
+                            EngineEvent::NetworkMetrics(metrics) => {
+                                self.congestion_controller
+                                    .on_network_metrics(metrics.clone());
+                            }
+                            EngineEvent::UpdateBitrate(new_bitrate) => {
+                                self.media_transport.set_bitrate(*new_bitrate);
+                            }
+                            EngineEvent::Closed | EngineEvent::Closing { .. } => {
+                                media_transport_event_tx.send(MediaTransportEvent::Closed);
+                            },
+                            EngineEvent::RtpIn(pkt) => {
+                                media_transport_event_tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
+                            }
+                            _ => {}
                         }
-                        EngineEvent::UpdateBitrate(new_bitrate) => {
-                            self.media_transport.set_bitrate(*new_bitrate);
-                        }
-                        _ => {}
                     }
                     out.push(ev);
                     processed += 1;
@@ -157,11 +164,26 @@ impl Engine {
             }
         }
 
-        self.media_transport.tick(self.session.as_ref());
         out
     }
 
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_transport.snapshot_frames()
+    }
+
+    pub fn close_session(&mut self){
+        let mut guard = self.session.lock().unwrap();
+        *guard = None;
+    }
+
+    pub fn start_media_transport(&mut self) {
+        self.media_transport.start_event_loops(self.session.clone());
+        sink_info!(
+            self.logger_sink,
+            "[Engine] Sending Established Event to Media Transport"
+        );
+        if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx(){
+            media_transport_event_tx.send(MediaTransportEvent::Established);
+        }
     }
 }
