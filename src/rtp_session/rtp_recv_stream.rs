@@ -5,7 +5,7 @@ use crate::media_transport::media_transport_event::RtpIn;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
-use crate::sink_log;
+use crate::{sink_debug, sink_info, sink_log};
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
 use std::collections::BTreeMap;
@@ -68,6 +68,17 @@ impl RtpRecvStream {
     }
 
     pub fn receive_rtp_packet(&mut self, packet: RtpPacket) {
+        sink_info!(
+            self.logger,
+            "[Recv Stream] Receive packet"
+        );
+
+        sink_debug!(
+            self.logger,
+            "[Recv Stream] Receive packet - ssrc: {}, seq: {}",
+            packet.ssrc(),
+            packet.seq()
+        );
         let now = Instant::now();
         self.last_activity = now;
 
@@ -115,17 +126,33 @@ impl RtpRecvStream {
     }
 
     fn process_buffer(&mut self) {
-        let mut next_seq = if let Some(s) = self.next_seq {
-            s
-        } else {
+
+        let Some(s) = self.next_seq else {
             return; // Nothing to do if not initialized
         };
+
+        let mut next_seq = s;
 
         loop {
             // Try to get the next in-sequence packet
             if let Some(buffered) = self.jitter_buffer.remove(&next_seq) {
                 let packet = buffered.packet;
                 // It's the one we were waiting for. Emit it.
+                if let Some(ssrc) = self.remote_ssrc{
+                    sink_info!(
+                        self.logger,
+                        "[Recv Stream {}] Sending RTP Packet to Engine::RtpIn",
+                        ssrc
+                    );
+
+                    sink_debug!(
+                        self.logger,
+                        "[Recv Stream {}] RTP Packet seq: {}",
+                        ssrc,
+                        s
+                    );
+                }
+
                 let evt = EngineEvent::RtpIn(RtpIn {
                     pt: packet.payload_type(),
                     marker: packet.marker(),
