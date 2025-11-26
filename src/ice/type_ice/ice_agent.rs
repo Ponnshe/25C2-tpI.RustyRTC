@@ -4,10 +4,11 @@ use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
+use crate::ice::type_ice::candidate_type::CandidateType::ServerReflexive;
 use crate::{sink_debug, sink_error, sink_info, sink_warn};
 use rand::{Rng, rngs::OsRng};
 use std::sync::Arc;
-use std::{io::Error, net::SocketAddr, net::UdpSocket, time::Duration};
+use std::{io::Error, net::SocketAddr, net::UdpSocket, time::Duration, net::ToSocketAddrs};
 
 const NOMINATION_REQUEST: &[u8] = b"NOMINATE-BINDING-REQUEST";
 
@@ -336,6 +337,8 @@ impl IceAgent {
         self.remote_candidates.push(candidate);
     }
 
+    // RFC 5389 constants
+    const HOSTNAME_STUN_GOOGLE: &str = "stun.l.google.com:19302";
     /// Gathers local ICE candidates and adds them to the agent.
     ///
     /// This method collects the local host candidates available on the system and
@@ -351,12 +354,132 @@ impl IceAgent {
     /// * Returns an `Error` if candidate gathering fails. Currently, this is a placeholder
     ///   for future scenarios where gathering may fail asynchronously or due to network/system issues.
     pub fn gather_candidates(&mut self) -> Result<&Vec<Candidate>, Error> {
-        let candidates = gather_host_candidates();
+        let mut candidates = gather_host_candidates();
+        match self.gather_stun_candidates(HOSTNAME_STUN_GOOGLE) {
+            Ok(srflx) => candidates.extend(srflx),
+            Err(e) => sink_warn!(self.logger, "STUN gathering failed: {}", e),
+        }
         for c in candidates {
             self.add_local_candidate(c);
         }
         Ok(&self.local_candidates)
     }
+
+    // RFC 5389 constants
+    const STUN_BINDING_REQUEST: u16 = 0x0001;
+    const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+    const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+    const FAMILY_IPV4: u8 = 0x01;
+    const TIMEOUT_SECS: u64 = 2;
+    /// Gathers Server Reflexive (srflx) candidates using a public STUN server.
+    ///
+    /// This method discovers the public (NAT-translated) address of the local socket,
+    /// and returns a `Candidate` of type `ServerReflexive`.
+    ///
+    /// It follows RFC 5389, sending a Binding Request and parsing the XOR-MAPPED-ADDRESS.
+    ///
+    /// # Arguments
+    /// * `stun_server` - STUN server (domain:port), e.g. "stun.l.google.com:19302"
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Candidate>)` with one `ServerReflexive` candidate
+    /// * `Err(String)` if no reflexive address could be retrieved
+    pub fn gather_stun_candidates(&self, stun_server: &str) -> Result<Vec<Candidate>, String> {
+        
+        // Resolver STUN server
+        let server_addr = stun_server
+            .to_socket_addrs()
+            .map_err(|_| format!("Cannot resolve STUN server: {stun_server}"))?
+            .next()
+            .ok_or_else(|| format!("No valid address found for STUN server: {stun_server}"))?;
+
+        // Bind UDP socket localmente (0.0.0.0:0 → cualquier puerto libre)
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .map_err(|e| format!("Failed to bind UDP socket: {e}"))?;
+        socket
+            .set_read_timeout(Some(Duration::from_secs(TIMEOUT_SECS)))
+            .map_err(|e| format!("Failed to set socket timeout: {e}"))?;
+
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| format!("Could not get local address: {e}"))?;
+
+        // Construir un STUN Binding Request minimal
+        let transaction_id: [u8; 12] = rand::random();
+        let mut request = Vec::with_capacity(20);
+        request.extend_from_slice(&STUN_BINDING_REQUEST.to_be_bytes()); // type
+        request.extend_from_slice(&0u16.to_be_bytes()); // message length
+        request.extend_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+        request.extend_from_slice(&transaction_id);
+
+        //  Enviar el request al STUN server
+        socket
+            .send_to(&request, server_addr)
+            .map_err(|e| format!("Failed to send STUN request: {e}"))?;
+
+        //  Esperar respuesta (Binding Response)
+        let mut buf = [0u8; 512];
+        let (len, _) = socket
+            .recv_from(&mut buf)
+            .map_err(|e| format!("No STUN response received: {e}"))?;
+
+        if len < 20 {
+            return Err("Invalid STUN response (too short)".into());
+        }
+
+        // Parsear XOR-MAPPED-ADDRESS
+        let mut offset = 20;
+        let mut reflexive_addr: Option<SocketAddr> = None;
+
+        while offset + 4 <= len {
+            let attr_type = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+            let attr_len = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
+            offset += 4;
+
+            if attr_type == ATTR_XOR_MAPPED_ADDRESS && attr_len >= 8 {
+                let family = buf[offset + 1];
+                if family == FAMILY_IPV4 {
+                    let port = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]])
+                        ^ ((STUN_MAGIC_COOKIE >> 16) as u16);
+                    let ip = [
+                        buf[offset + 4] ^ ((STUN_MAGIC_COOKIE >> 24) as u8),
+                        buf[offset + 5] ^ ((STUN_MAGIC_COOKIE >> 16) as u8),
+                        buf[offset + 6] ^ ((STUN_MAGIC_COOKIE >> 8) as u8),
+                        buf[offset + 7] ^ (STUN_MAGIC_COOKIE as u8),
+                    ];
+                    reflexive_addr = Some(SocketAddr::from((ip, port)));
+                    break;
+                }
+            }
+
+            offset += attr_len + (attr_len % 4);
+        }
+
+        let public_addr = reflexive_addr
+            .ok_or("XOR-MAPPED-ADDRESS not found in STUN response")?;
+
+        sink_info!(
+            self.logger,
+            "[STUN] Reflexive address discovered: {} => public {}",
+            local_addr,
+            public_addr
+        );
+
+        // Create candidate of type ServerReflexive
+        let candidate = Candidate::new(
+            String::new(), // calculate foundation by default
+            1,            
+            "udp",
+            0,             // calculate priority by default
+            public_addr,
+            ServerReflexive,
+            Some(local_addr),
+            Some(Arc::new(socket)),
+        );
+        sink_info!(logger, "STUN candidate gathered: {}", candidate);
+        Ok(vec![candidate])
+    }
+
 
     /// Builds all possible candidate pairs between local and remote candidates.
     /// According to RFC 8445 §6.1.2.3:
@@ -686,6 +809,7 @@ mod tests {
     use super::*;
     use crate::ice::type_ice::candidate_type::CandidateType;
     use std::{
+        thread,
         net::{SocketAddr, UdpSocket},
         sync::Arc,
     };
