@@ -1,22 +1,23 @@
 use super::{
     conn_state::ConnState,
+    gpu_yuv_renderer::GpuYuvRenderer,
     gui_error::GuiError,
-    utils::{show_camera_in_ui, update_camera_texture},
+    utils::show_camera_in_ui,
 };
 use crate::{
-    app::{log_level::LogLevel, logger::Logger},
+    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     core::{
         engine::Engine,
         events::EngineEvent::{
             self, Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
         },
     },
-    media_agent::video_frame::VideoFrame,
+    media_agent::video_frame::{VideoFrame, VideoFrameData}, sink_debug,
 };
-use eframe::{App, Frame, egui};
+use eframe::{App, Frame, egui, egui_wgpu::{self, RenderState}};
 use std::{
     collections::VecDeque,
-    sync::{Arc, mpsc::TrySendError},
+    sync::{mpsc::TrySendError, Arc},
     time::Instant,
 };
 
@@ -47,8 +48,11 @@ pub struct RtcApp {
     rtp_bytes: u64,
     rtp_last_report: Instant,
 
-    local_camera_texture: Option<egui::TextureHandle>,
-    remote_camera_texture: Option<egui::TextureHandle>,
+    local_camera_texture: Option<(egui::TextureId, (u32, u32))>,
+    remote_camera_texture: Option<(egui::TextureId, (u32, u32))>,
+
+    local_yuv_renderer: Option<GpuYuvRenderer>,
+    remote_yuv_renderer: Option<GpuYuvRenderer>,
 }
 
 impl RtcApp {
@@ -59,14 +63,33 @@ impl RtcApp {
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
 
     #[must_use]
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
+        let logger_handle = Arc::new(logger.handle());
+
+        let (local_yuv_renderer, remote_yuv_renderer) =
+            if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+                let local = GpuYuvRenderer::new(
+                    &render_state.device,
+                    render_state.target_format,
+                    logger_handle.clone(),
+                );
+                let remote = GpuYuvRenderer::new(
+                    &render_state.device,
+                    render_state.target_format,
+                    logger_handle.clone(),
+                );
+                (Some(local), Some(remote))
+            } else {
+                (None, None)
+            };
+
         Self {
             remote_sdp_text: String::new(),
             local_sdp_text: String::new(),
             pending_remote_sdp: None,
             status_line: "Ready.".into(),
-            engine: Engine::new(Arc::new(logger.handle())),
+            engine: Engine::new(logger_handle),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
@@ -79,6 +102,8 @@ impl RtcApp {
             rtp_last_report: Instant::now(),
             local_camera_texture: None,
             remote_camera_texture: None,
+            local_yuv_renderer,
+            remote_yuv_renderer,
         }
     }
 
@@ -113,10 +138,19 @@ impl RtcApp {
     }
     fn summarize_frame(frame: Option<&VideoFrame>) -> String {
         match frame {
-            Some(f) if f.width > 0 && f.height > 0 => {
-                format!("{}x{} • {} bytes", f.width, f.height, f.bytes.len())
+            Some(f) => {
+                let (w, h) = (f.width, f.height);
+                let format = f.format;
+                let bytes = match &f.data {
+                    VideoFrameData::Rgb(d) => d.len(),
+                    VideoFrameData::Yuv420 { y, u, v, .. } => y.len() + u.len() + v.len(),
+                };
+                if w > 0 && h > 0 {
+                    format!("{w}x{h} ({format:?}) • {bytes} bytes")
+                } else {
+                    format!("{bytes} bytes (pending decode)")
+                }
             }
-            Some(f) => format!("{} bytes (pending decode)", f.bytes.len()),
             None => "no frame".into(),
         }
     }
@@ -234,23 +268,26 @@ impl RtcApp {
     fn render_camera_view(
         &mut self,
         ctx: &egui::Context,
-        local_frame: Option<&VideoFrame>,
-        remote_frame: Option<&VideoFrame>,
+        _local_frame: Option<&VideoFrame>,
+        _remote_frame: Option<&VideoFrame>,
     ) {
-        // update textures first, independently of connection state
-        if let Some(f) = local_frame {
-            update_camera_texture(ctx, f, &mut self.local_camera_texture, "camera/local");
-        }
-        if let Some(f) = remote_frame {
-            update_camera_texture(ctx, f, &mut self.remote_camera_texture, "camera/remote");
-        }
 
+        sink_debug!(
+            self.logger.handle(),
+            "[UI] remote_camera_texture exists? {} (id={:?})",
+            self.remote_camera_texture.is_some(),
+            self.remote_camera_texture.map(|(id, _)| id)
+        );
         // show the window if we are running OR we already have any texture
         let have_any_texture =
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
-        if matches!(self.conn_state, ConnState::Running) {
-            self.push_kbps_log_from_rtp_packets();
+
+        if matches!(self.conn_state, ConnState::Running) || have_any_texture {
+            if matches!(self.conn_state, ConnState::Running) {
+                self.push_kbps_log_from_rtp_packets();
+            }
+
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
@@ -262,7 +299,7 @@ impl RtcApp {
                     if only_remote {
                         show_camera_in_ui(
                             ui,
-                            self.remote_camera_texture.as_ref(),
+                            self.remote_camera_texture,
                             Self::CAMERAS_WINDOW_WIDTH - 16.0,
                             Self::CAMERAS_WINDOW_HEIGHT - 16.0,
                         );
@@ -270,14 +307,14 @@ impl RtcApp {
                         ui.horizontal(|ui| {
                             show_camera_in_ui(
                                 ui,
-                                self.local_camera_texture.as_ref(),
+                                self.local_camera_texture,
                                 Self::LOCAL_CAMERA_SIZE,
                                 Self::LOCAL_CAMERA_SIZE,
                             );
                             ui.separator();
                             show_camera_in_ui(
                                 ui,
-                                self.remote_camera_texture.as_ref(),
+                                self.remote_camera_texture,
                                 Self::REMOTE_CAMERA_SIZE,
                                 Self::REMOTE_CAMERA_SIZE,
                             );
@@ -409,41 +446,45 @@ impl RtcApp {
         remote: Option<&VideoFrame>,
     ) {
         if let (Some(l), Some(r)) = (local, remote) {
-            // 1) Same underlying buffer?
-            let lp = l.bytes.as_ptr() as usize;
-            let rp = r.bytes.as_ptr() as usize;
-            if !l.bytes.is_empty() && lp == rp {
-                self.background_log(
-                    LogLevel::Error,
-                    "⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x}).",
-                );
-            }
+            if let (VideoFrameData::Rgb(l_buf), VideoFrameData::Rgb(r_buf)) = (&l.data, &r.data) {
+                // 1) Same underlying buffer?
+                let lp = l_buf.as_ptr() as usize;
+                let rp = r_buf.as_ptr() as usize;
+                if !l_buf.is_empty() && lp == rp {
+                    self.background_log(
+                        LogLevel::Error,
+                        "⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x}).",
+                    );
+                }
 
-            // 2) Basic size checks (RGB24 expected)
-            let l_need = (l.width as usize) * (l.height as usize) * 3;
-            let r_need = (r.width as usize) * (r.height as usize) * 3;
-            if l.bytes.len() != l_need {
-                self.background_log(
-                    LogLevel::Error,
-                    format!("⚠️ Local bad len: {} vs {}", l.bytes.len(), l_need),
-                );
-            }
-            if r.bytes.len() != r_need {
-                self.background_log(
-                    LogLevel::Error,
-                    format!("⚠️ Remote bad len: {} vs {}", r.bytes.len(), r_need),
-                );
+                // 2) Basic size checks (RGB24 expected)
+                let l_need = (l.width as usize) * (l.height as usize) * 3;
+                let r_need = (r.width as usize) * (r.height as usize) * 3;
+                if l_buf.len() != l_need {
+                    self.background_log(
+                        LogLevel::Error,
+                        format!("⚠️ Local bad len: {} vs {}", l_buf.len(), l_need),
+                    );
+                }
+                if r_buf.len() != r_need {
+                    self.background_log(
+                        LogLevel::Error,
+                        format!("⚠️ Remote bad len: {} vs {}", r_buf.len(), r_need),
+                    );
+                }
+            } else {
+                self.background_log(LogLevel::Warn, "Skipping debug checks for non-RGB frames");
             }
         }
     }
 }
 
 impl App for RtcApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {
-            ctx.request_repaint_after(std::time::Duration::from_millis(32));
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         if let Some(sdp) = self.pending_remote_sdp.take() {
@@ -459,6 +500,18 @@ impl App for RtcApp {
         let (local_frame, remote_frame) = self.engine.snapshot_frames();
         self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
 
+        let logger_handle = Arc::new(self.logger.handle());
+
+        // Inlined texture update logic
+        if let Some(render_state) = frame.wgpu_render_state() {
+            if let Some(f) = local_frame.as_ref() {
+                update_texture_from_frame(ctx, f, &mut self.local_camera_texture, &mut self.local_yuv_renderer, Some(render_state), "camera/local", logger_handle.clone());
+            }
+            if let Some(f) = remote_frame.as_ref() {
+                update_texture_from_frame(ctx, f, &mut self.remote_camera_texture, &mut self.remote_yuv_renderer, Some(render_state), "camera/remote", logger_handle.clone());
+            }
+        }
+
         self.render_camera_view(ctx, local_frame.as_ref(), remote_frame.as_ref());
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -470,5 +523,106 @@ impl App for RtcApp {
             self.render_status_line(ui);
             self.render_log_section(ui);
         });
+    }
+}
+
+fn update_texture_from_frame(
+    ctx: &egui::Context,
+    frame: &VideoFrame,
+    texture: &mut Option<(egui::TextureId, (u32, u32))>,
+    yuv_renderer: &mut Option<GpuYuvRenderer>,
+    render_state: Option<&RenderState>,
+    unique_name: &str,
+    logger: Arc<dyn LogSink>,
+) {
+    let w = frame.width;
+    let h = frame.height;
+    if w == 0 || h == 0 {
+        return;
+    }
+
+    sink_debug!(
+        logger,
+        "[VIDEO] {:?}: {}x{}, kind={:?}",
+        unique_name,
+        w,
+        h,
+        match &frame.data {
+            VideoFrameData::Rgb(_) => "RGB",
+            VideoFrameData::Yuv420 { .. } => "YUV420",
+        }
+    );
+    match &frame.data {
+        crate::media_agent::video_frame::VideoFrameData::Rgb(rgb) => {
+            let image = egui::ColorImage::from_rgb([w as usize, h as usize], rgb);
+            let options = egui::TextureOptions {
+                magnification: egui::TextureFilter::Linear,
+                minification: egui::TextureFilter::Linear,
+                ..Default::default()
+            };
+            let mut tex_mngr = ctx.tex_manager();
+
+            if let Some((id, (prev_w, prev_h))) = texture {
+                if *prev_w != w || *prev_h != h {
+                    tex_mngr.write().free(*id);
+                    let new_id = tex_mngr
+                        .write()
+                        .alloc(unique_name.to_owned(), image.into(), options);
+                    *texture = Some((new_id, (w, h)));
+                } else {
+                    let delta = egui::epaint::ImageDelta { image: egui::epaint::ImageData::Color(image.into()), options, pos: None };
+                    tex_mngr.write().set(*id, delta);
+                }
+            } else {
+                let new_id = tex_mngr
+                    .write()
+                    .alloc(unique_name.to_owned(), image.into(), options);
+                *texture = Some((new_id, (w, h)));
+            }
+        }
+        crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
+            if let (Some(renderer), Some(render_state)) = (yuv_renderer, render_state) {
+                sink_debug!(&logger, "[YUV] Using renderer for {}", unique_name,);
+                renderer.update_frame(
+                    &render_state.device,
+                    &render_state.queue,
+                    frame,
+                    logger.clone(),
+                );
+
+                if let Some(output_texture) = renderer.output_texture() {
+                    let view =
+                        output_texture.create_view(&eframe::wgpu::TextureViewDescriptor::default());
+                    let filter = eframe::wgpu::FilterMode::Linear;
+                    let mut wgpu_renderer = render_state.renderer.write();
+
+                    if let Some((id, (prev_w, prev_h))) = texture {
+                        if *prev_w != w || *prev_h != h {
+                            wgpu_renderer.free_texture(id);
+                            let new_id = wgpu_renderer.register_native_texture(
+                                &render_state.device,
+                                &view,
+                                filter,
+                            );
+                            *texture = Some((new_id, (w, h)));
+                        } else {
+                            wgpu_renderer.update_egui_texture_from_wgpu_texture(
+                                &render_state.device,
+                                &view,
+                                filter,
+                                *id,
+                            );
+                        }
+                    } else {
+                        let new_id = wgpu_renderer.register_native_texture(
+                            &render_state.device,
+                            &view,
+                            filter,
+                        );
+                        *texture = Some((new_id, (w, h)));
+                    }
+                }
+            }
+        }
     }
 }

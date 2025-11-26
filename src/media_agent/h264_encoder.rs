@@ -66,8 +66,17 @@ impl H264Encoder {
 
         let w = frame.width as usize;
         let h = frame.height as usize;
-        let rgb = RgbSliceU8::new(frame.bytes.as_slice(), (w, h));
-        let yuv = YUVBuffer::from_rgb_source(rgb);
+        let rgb_slice = match &frame.data {
+            crate::media_agent::video_frame::VideoFrameData::Rgb(buf) => {
+                RgbSliceU8::new(buf.as_slice(), (w, h))
+            }
+            crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
+                // This should be implemented if you want to avoid RGB conversion
+                panic!("Direct YUV encoding not implemented yet");
+            }
+        };
+
+        let yuv = YUVBuffer::from_rgb_source(rgb_slice);
 
         let bitstream = enc
             .encode(&yuv)

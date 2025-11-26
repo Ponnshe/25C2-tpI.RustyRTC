@@ -50,6 +50,10 @@ impl DepacketizerEventLoop {
                     Ok(event) => {
                         match event {
                             DepacketizerEvent::AnnexBFrameReady { codec_spec, bytes } => {
+                                sink_info!(
+                                    logger,
+                                    "[DepacketizerEventLoop (MT)] Received AnnexBFrameReady. Sending it to MediaAgent"
+                                );
                                 media_agent_event_tx.send(
                                     MediaAgentEvent::AnnexBFrameReady { 
                                         codec_spec, 

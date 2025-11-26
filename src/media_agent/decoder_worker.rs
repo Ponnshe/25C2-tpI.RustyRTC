@@ -6,12 +6,12 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
-    logger_debug, logger_error,
-    media_agent::{
-        constants::CHANNELS_TIMEOUT, decoder_event::DecoderEvent, events::MediaAgentEvent, h264_decoder::H264Decoder, spec::CodecSpec
-    }, sink_info,
+    app::log_sink::LogSink, logger_debug, logger_error, media_agent::{
+        constants::CHANNELS_TIMEOUT, decoder_event::DecoderEvent, events::MediaAgentEvent, frame_format::FrameFormat, h264_decoder::H264Decoder, spec::CodecSpec
+    }, sink_debug, sink_info
 };
+
+const FRAME_FORMAT: FrameFormat = FrameFormat::Yuv420;
 
 pub fn spawn_decoder_worker(
     logger: Arc<dyn LogSink>,
@@ -26,7 +26,7 @@ pub fn spawn_decoder_worker(
     thread::Builder::new()
         .name("media-agent-decoder".into())
         .spawn(move || {
-            let mut h264_decoder = H264Decoder::new();
+            let mut h264_decoder = H264Decoder::new(logger.clone());
 
             while running.load(Ordering::Relaxed){
                 match ma_decoder_event_rx.recv_timeout(Duration::from_millis(CHANNELS_TIMEOUT)) {
@@ -70,8 +70,19 @@ pub fn spawn_decoder_worker(
                                             bytes.len(),
                                             &bytes[..bytes.len().min(12)]
                                         );
-                                        match h264_decoder.decode_frame(&bytes) {
+                                        let t0 = std::time::Instant::now();
+                                        match h264_decoder.decode_frame(&bytes, FRAME_FORMAT) {
                                             Ok(Some(frame)) => {
+                                                let took = t0.elapsed();
+                                                sink_info!(
+                                                    logger,
+                                                    "[Decoder] Frame Ready sending MediaAgentEvent::DecodedVideoFrame"
+                                                );
+                                                sink_debug!(
+                                                    logger,
+                                                    "[Decoder] [Decoder] decode_frame total took: {:?}(including rgb conversion)", 
+                                                    took
+                                                );
                                                 let _ = media_agent_event_tx
                                                     .send(MediaAgentEvent::DecodedVideoFrame(Box::new(frame)));
                                             }

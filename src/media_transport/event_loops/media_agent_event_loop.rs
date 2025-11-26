@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}, mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender}}, thread::JoinHandle, time::Duration};
 
-use crate::{app::log_sink::LogSink, core::{events::EngineEvent, session::Session}, log_ev, media_transport::{
+use crate::{app::log_sink::LogSink, core::{events::EngineEvent, session::Session}, log_ev, media_agent::events::MediaAgentEvent, media_transport::{
     codec::CodecDescriptor, error::{MediaTransportError, Result}, event_loops::constants::RECV_TIMEOUT, media_transport_event::{MediaTransportEvent, RtpIn}, packetizer_worker::PacketizeOrder
 }, rtp_session::outbound_track_handle::OutboundTrackHandle, sink_debug, sink_error, sink_info};
 
@@ -37,7 +37,8 @@ impl MediaAgentEventLoop {
             payload_map: Arc<HashMap<u8, CodecDescriptor>>,
             outbound_tracks: Arc<Mutex<HashMap<u8, OutboundTrackHandle>>>,
             event_tx: Sender<EngineEvent>,
-            allowed_pts: Arc<RwLock<HashSet<u8>>>
+            allowed_pts: Arc<RwLock<HashSet<u8>>>,
+            media_agent_tx: Sender<MediaAgentEvent>,
         ){
         let stop_flag = self.stop_flag.clone();
         let running_flag = self.running_flag.clone();
@@ -82,6 +83,16 @@ impl MediaAgentEventLoop {
                                 }
                             },
                             MediaTransportEvent::RtpIn(pkt) => {
+                                sink_info!(
+                                    logger,
+                                    "[MediaAgent Event Loop (MT)] Received Rtp Packet. Sending it to Depacketizer"
+                                );
+                                sink_debug!(
+                                    logger,
+                                    "[MediaAgent Event Loop (MT)] ssrc: {}, seq: {}",
+                                    pkt.ssrc,
+                                    pkt.seq,
+                                );
                                 let _ = rtp_tx.try_send(pkt.clone());
                             },
                             MediaTransportEvent::Established => {
@@ -106,6 +117,14 @@ impl MediaAgentEventLoop {
 
                                 let mut guard = outbound_tracks.lock().unwrap();
                                 guard.clear();
+                            },
+                            MediaTransportEvent::UpdateBitrate(b) => {
+                                sink_info!(
+                                    logger,
+                                    "[MediaTransport] Telling MediaAgent to update bitrate {}",
+                                    b
+                                );
+                                media_agent_tx.send(MediaAgentEvent::UpdateBitrate(b));
                             }
                         }
                     },

@@ -229,22 +229,6 @@ impl MediaAgent {
         (local, remote)
     }
 
-    pub fn set_bitrate(&self, new_bitrate: u32) {
-        let instruction = EncoderInstruction::SetConfig {
-            fps: TARGET_FPS,
-            bitrate: new_bitrate,
-            keyint: KEYINT,
-        };
-        if let Some(ma_encoder_event_tx) = self.ma_encoder_event_tx.clone() && 
-            ma_encoder_event_tx.send(instruction).is_ok() {
-            logger_info!(
-                self.logger,
-                "Reconfigured H264 encoder: bitrate={}bps",
-                new_bitrate,
-            );
-        }
-    }
-
     fn spawn_listener_thread(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
@@ -307,6 +291,7 @@ impl MediaAgent {
                         &logger,
                         event,
                         &ma_decoder_event_tx,
+                        &ma_encoder_event_tx,
                         &media_transport_event_tx,
                         &remote_frame,
                     );
@@ -390,11 +375,16 @@ impl MediaAgent {
         logger: &Arc<dyn LogSink>,
         event: MediaAgentEvent,
         ma_decoder_event_tx: &Sender<DecoderEvent>,
+        ma_encoder_event_tx: &Sender<EncoderInstruction>,
         media_transport_event_tx: &Sender<MediaTransportEvent>,
         remote_frame: &Arc<Mutex<Option<VideoFrame>>>,
     ) {
         match event {
             MediaAgentEvent::DecodedVideoFrame(frame) => {
+                sink_info!(
+                    logger,
+                    "[MediaAgent] Received DecodedVideoFrame"
+                );
                 let frame = *frame;
                 let ts = frame.timestamp_ms;
                 if let Ok(mut guard) = remote_frame.lock() {
@@ -448,6 +438,20 @@ impl MediaAgent {
                     logger_warn!(
                         logger,
                         "[MediaAgent] decoder worker offline, dropping AnnexB frame"
+                    );
+                }
+            },
+            MediaAgentEvent::UpdateBitrate(b) => {
+                let instruction = EncoderInstruction::SetConfig {
+                    fps: TARGET_FPS,
+                    bitrate: b,
+                    keyint: KEYINT,
+                };
+                    if ma_encoder_event_tx.send(instruction).is_ok() {
+                    logger_info!(
+                        logger,
+                        "Reconfigured H264 encoder: bitrate={}bps",
+                        b,
                     );
                 }
             }

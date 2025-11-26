@@ -97,7 +97,7 @@ fn convert_to_videoframe(mat: &Mat, w: u32, h: u32) -> Result<VideoFrame> {
         height: h,
         timestamp_ms: now_millis(),
         format: FrameFormat::Rgb,
-        bytes: Arc::new(bytes),
+        data: crate::media_agent::video_frame::VideoFrameData::Rgb(Arc::new(bytes)),
     })
 }
 
@@ -111,7 +111,7 @@ pub fn synthetic_loop(
     let period = Duration::from_millis(1_000 / fps as u64);
     let mut phase = 0u8;
     while running.load(Ordering::SeqCst) {
-        let frame = VideoFrame::synthetic(320, 240, phase);
+        let frame = VideoFrame::synthetic_rgb(320, 240, phase);
         phase = phase.wrapping_add(1);
         if tx.send(frame).is_err() {
             logger_error!(logger, "[Synthethic Loop]: an error occured, exiting!");
