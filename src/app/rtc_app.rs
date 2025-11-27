@@ -146,7 +146,7 @@ impl RtcApp {
             remote_camera_texture: None,
             signaling_client: None,
             signaling_screen: SignalingScreen::Connect,
-            server_addr_input: SIGNALING_SERVER_ADDR.into(),
+            server_addr_input: Self::SIGNALING_SERVER_ADDR.into(),
             login_username: String::new(),
             login_password: String::new(),
             register_username: String::new(),
