@@ -12,4 +12,5 @@ pub enum MediaAgentEvent {
         codec_spec: CodecSpec,
     },
     DecodedVideoFrame(Box<VideoFrame>),
+    UpdateBitrate(u32)
 }

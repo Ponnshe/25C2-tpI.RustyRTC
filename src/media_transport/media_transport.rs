@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, RwLock,
-        mpsc::{self, Sender, SyncSender},
+        mpsc::{self, Receiver, Sender, SyncSender},
     },
     thread::JoinHandle,
 };
@@ -41,6 +41,7 @@ pub struct MediaTransport {
     outbound_tracks: Arc<Mutex<HashMap<u8, OutboundTrackHandle>>>,
     allowed_pts: Option<Arc<RwLock<HashSet<u8>>>>,
     media_transport_event_tx: Option<Sender<MediaTransportEvent>>,
+    media_transport_event_rx: Option<Receiver<MediaTransportEvent>>,
 }
 
 impl MediaTransport {
@@ -52,6 +53,9 @@ impl MediaTransport {
 
         let packetizer_event_loop = PacketizerEventLoop::new(logger.clone());
 
+        let (mt_event_tx, mt_event_rx) = mpsc::channel();
+        let media_transport_event_tx = Some(mt_event_tx);
+        let media_transport_event_rx = Some(mt_event_rx);
         Self {
             logger,
             media_agent,
@@ -65,22 +69,25 @@ impl MediaTransport {
             payload_map: Arc::new(HashMap::new()),
             outbound_tracks: Arc::new(Mutex::new(HashMap::new())),
             allowed_pts: None,
-            media_transport_event_tx: None,
+            media_transport_event_tx,
+            media_transport_event_rx,
         }
     }
 
     pub fn start_event_loops(&mut self, session: Arc<Mutex<Option<Session>>>) {
         let logger = self.logger.clone();
+        let maybe_media_transport_event_tx = self.media_transport_event_tx();
 
-        let (media_transport_event_tx, media_transport_event_rx) = mpsc::channel();
-        let media_transport_event_tx_clone = media_transport_event_tx.clone();
-        self.media_transport_event_tx = Some(media_transport_event_tx_clone);
+        let maybe_media_transport_event_tx_clone = maybe_media_transport_event_tx.clone();
+        self.media_transport_event_tx = maybe_media_transport_event_tx_clone;
 
         let (packetizer_order_tx, packetizer_order_rx) = mpsc::channel();
         let (packetizer_event_tx, packetizer_event_rx) = mpsc::channel();
 
-        self.media_agent
-            .start(self.event_tx.clone(), media_transport_event_tx);
+        if let Some(media_transport_event_tx) = maybe_media_transport_event_tx {
+            self.media_agent
+                .start(self.event_tx.clone(), media_transport_event_tx);
+        }
 
         // Start Depacketizer worker
         let mut payload_map_inner = HashMap::new();
@@ -125,8 +132,11 @@ impl MediaTransport {
             );
         }
 
+        let media_transport_event_rx = self.media_transport_event_rx.take().unwrap();
+
         if let Some(rtp_tx) = self.rtp_tx.clone()
             && let Some(allowed_pts) = self.allowed_pts.clone()
+            && let Some(media_agent_event_tx) = self.media_agent.media_agent_event_tx()
         {
             self.media_agent_event_loop.start(
                 media_transport_event_rx,
@@ -137,6 +147,7 @@ impl MediaTransport {
                 self.outbound_tracks.clone(),
                 self.event_tx.clone(),
                 allowed_pts.clone(),
+                media_agent_event_tx,
             );
         }
 
@@ -157,10 +168,6 @@ impl MediaTransport {
     #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_agent.snapshot_frames()
-    }
-
-    pub fn set_bitrate(&mut self, new_bitrate: u32) {
-        self.media_agent.set_bitrate(new_bitrate);
     }
 
     #[must_use]

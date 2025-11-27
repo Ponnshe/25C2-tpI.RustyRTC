@@ -7,4 +7,5 @@ pub mod log_sink;
 pub mod logger;
 pub mod logger_handle;
 pub mod rtc_app;
+pub mod gpu_yuv_renderer;
 mod utils;

@@ -4,7 +4,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
     },
     thread,
     time::Duration,
@@ -16,15 +16,10 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
-    core::events::EngineEvent,
-    logger_debug, logger_error,
-    rtcp::{
+    app::{log_level::LogLevel, log_sink::LogSink}, core::events::EngineEvent, logger_debug, logger_error, rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
-    },
-    rtp::rtp_packet::RtpPacket,
-    sink_log,
+    }, rtp::rtp_packet::RtpPacket, sink_debug, sink_error, sink_info, sink_log
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
@@ -51,7 +46,6 @@ pub struct RtpSession {
 }
 
 impl RtpSession {
-    // Opción A: fallible (puedes llamarla `try_new` si prefieres)
     pub fn new(
         sock: Arc<UdpSocket>,
         peer: SocketAddr,
@@ -76,7 +70,6 @@ impl RtpSession {
             rtcp_interval: Duration::from_millis(500),
         };
 
-        // Propaga errores de construcción de streams
         this.add_recv_streams(initial_recv)?;
         let _ = this.add_send_streams(initial_send)?;
 
@@ -180,24 +173,25 @@ impl RtpSession {
                         }
 
                         // Decode RTP (adapt if your API returns Result)
-                        let rtp = match RtpPacket::decode(&pkt) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
-                                continue;
-                            }
+                        let Ok(rtp) = RtpPacket::decode(&pkt) else {
+                            sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
+                            continue;
                         };
+
+                        sink_info!(
+                            logger,
+                            "[RTP Session] Received RTP packet"
+                        );
 
                         let ssrc = rtp.ssrc();
                         let pt = rtp.payload_type();
 
                         // 1) Known stream?
-                        if let Ok(mut guard) = recv_map.lock() {
-                            if let Some(st) = guard.get_mut(&ssrc) {
+                        if let Ok(mut guard) = recv_map.lock() 
+                            && let Some(st) = guard.get_mut(&ssrc) {
                                 st.receive_rtp_packet(rtp);
                                 continue;
                             }
-                        }
 
                         // 2) Bind a pending stream by PT, then move it to the map
                         if let Ok(mut pend) = pending_recv.lock() {
@@ -229,8 +223,19 @@ impl RtpSession {
                             ssrc,
                             pt
                         );
+                    },
+                    Err(RecvTimeoutError::Timeout) => {
+                        sink_debug!(
+                            logger,
+                            "[RTP Session] Received nothing in timeout"
+                        );
+                    },
+                    Err(RecvTimeoutError::Disconnected) => {
+                        sink_error!(
+                            logger,
+                            "[RTP Session] Disconnected"
+                        );
                     }
-                    Err(_) => { /* timeout */ }
                 }
             }
         });

@@ -17,6 +17,7 @@ pub enum MediaTransportEvent {
         timestamp_ms: u128,
         codec_spec: CodecSpec,
     },
+    UpdateBitrate(u32),
     Established,
     Closed,
     RtpIn(RtpIn),

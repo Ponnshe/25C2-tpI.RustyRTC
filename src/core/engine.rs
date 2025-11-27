@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rand::seq;
+
 use crate::{
     app::log_sink::LogSink,
     congestion_controller::congestion_controller::CongestionController,
@@ -16,8 +18,10 @@ use crate::{
         session::{Session, SessionConfig},
     },
     media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
-    media_transport::{media_transport::MediaTransport, media_transport_event::MediaTransportEvent},
-    sink_info,
+    media_transport::{
+        media_transport::MediaTransport, media_transport_event::MediaTransportEvent,
+    },
+    sink_debug, sink_info,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -28,13 +32,14 @@ pub struct Engine {
     cm: ConnectionManager,
     session: Arc<Mutex<Option<Session>>>,
     event_tx: Sender<EngineEvent>,
-    event_rx: Receiver<EngineEvent>,
+    ui_rx: Receiver<EngineEvent>,
     media_transport: MediaTransport,
     congestion_controller: CongestionController,
 }
 
 impl Engine {
     pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
+        let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let media_transport =
             MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
@@ -46,14 +51,38 @@ impl Engine {
             logger_sink.clone(),
             event_tx.clone(),
         );
+
+        let logger = logger_sink.clone();
+
+        let media_tx = media_transport.media_transport_event_tx();
+        std::thread::spawn(move || {
+            while let Ok(ev) = event_rx.recv() {
+                match &ev {
+                    EngineEvent::RtpIn(pkt) => {
+                        sink_info!(
+                            logger,
+                            "[Engine] Sending RTP Packet to MediaTransport::RtpIn"
+                        );
+                        sink_debug!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
+                        if let Some(tx) = &media_tx {
+                            let _ = tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
+                        }
+                    }
+                    _ => {
+                        let _ = ui_tx.send(ev.clone());
+                    }
+                }
+            }
+        });
+
         Self {
             cm: ConnectionManager::new(logger_sink.clone()),
             logger_sink,
             session: Arc::new(Mutex::new(None)),
             event_tx,
-            event_rx,
             media_transport,
             congestion_controller,
+            ui_rx,
         }
     }
 
@@ -157,32 +186,25 @@ impl Engine {
             if processed >= max_events || start.elapsed() >= max_time {
                 break;
             }
-            match self.event_rx.try_recv() {
-                Ok(ev) => {
-                    if let Some(media_transport_event_tx) =
-                        self.media_transport.media_transport_event_tx()
-                    {
-                        match &ev {
-                            EngineEvent::NetworkMetrics(metrics) => {
-                                self.congestion_controller
-                                    .on_network_metrics(metrics.clone());
-                            }
-                            EngineEvent::UpdateBitrate(new_bitrate) => {
-                                self.media_transport.set_bitrate(*new_bitrate);
-                            }
-                            EngineEvent::Closed | EngineEvent::Closing { .. } => {
-                                media_transport_event_tx.send(MediaTransportEvent::Closed);
-                            }
-                            EngineEvent::RtpIn(pkt) => {
-                                media_transport_event_tx
-                                    .send(MediaTransportEvent::RtpIn(pkt.clone()));
-                            }
-                            _ => {}
+            match self.ui_rx.try_recv() {
+                Ok(ev) => match &ev {
+                    EngineEvent::NetworkMetrics(m) => {
+                        self.congestion_controller.on_network_metrics(m.clone())
+                    }
+
+                    EngineEvent::UpdateBitrate(br) => {
+                        if let Some(media_transport_tx) =
+                            self.media_transport.media_transport_event_tx()
+                        {
+                            media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
                         }
                     }
-                    out.push(ev);
-                    processed += 1;
-                }
+
+                    _ => {
+                        processed += 1;
+                        out.push(ev);
+                    }
+                },
                 Err(_) => break,
             }
         }
@@ -190,6 +212,7 @@ impl Engine {
         out
     }
 
+    #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_transport.snapshot_frames()
     }
