@@ -16,7 +16,8 @@ pub struct RtpHeader {
 }
 
 impl RtpHeader {
-    pub fn new(payload_type: u8, sequence_number: u16, timestamp: u32, ssrc: u32) -> Self {
+    #[must_use]
+    pub const fn new(payload_type: u8, sequence_number: u16, timestamp: u32, ssrc: u32) -> Self {
         Self {
             version: RTP_VERSION,
             padding: false,
@@ -31,14 +32,19 @@ impl RtpHeader {
         }
     }
 
-    pub fn with_marker(mut self, marker: bool) -> Self {
+    #[must_use]
+    pub const fn with_marker(mut self, marker: bool) -> Self {
         self.marker = marker;
         self
     }
+
+    #[must_use]
     pub fn with_csrcs(mut self, csrcs: Vec<u32>) -> Self {
         self.csrcs = csrcs;
         self
     }
+
+    #[must_use]
     pub fn with_extension(mut self, ext: Option<RtpHeaderExtension>) -> Self {
         self.extension = ext.is_some();
         self.header_extension = ext;

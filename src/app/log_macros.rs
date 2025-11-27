@@ -6,7 +6,6 @@
 /// - `crate::core::events::EngineEvent::Log`
 ///
 /// Make sure `EngineEvent::Log` carries a `LogMsg`.
-
 /// Generic event macro (leveled) — sends `EngineEvent::Log(LogMsg)` via a `Sender<EngineEvent>`.
 #[macro_export]
 macro_rules! log_ev {
@@ -82,9 +81,11 @@ macro_rules! bg_error { ($self_:expr, $($arg:tt)*) => { $crate::bg_log!($self_, 
 #[macro_export]
 macro_rules! logger_log {
     ($logger:expr, $lvl:expr, $($arg:tt)*) => {{
-        let _ = $logger.try_log($lvl, format!($($arg)*), module_path!());
+        let __msg = format!($($arg)*);
+        $logger.log($lvl, &__msg, module_path!());
     }};
 }
+
 #[macro_export]
 macro_rules! logger_trace { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::app::log_level::LogLevel::Trace, $($arg)*); } }
 #[macro_export]

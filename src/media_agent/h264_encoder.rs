@@ -66,8 +66,17 @@ impl H264Encoder {
 
         let w = frame.width as usize;
         let h = frame.height as usize;
-        let rgb = RgbSliceU8::new(frame.bytes.as_slice(), (w, h));
-        let yuv = YUVBuffer::from_rgb_source(rgb);
+        let rgb_slice = match &frame.data {
+            crate::media_agent::video_frame::VideoFrameData::Rgb(buf) => {
+                RgbSliceU8::new(buf.as_slice(), (w, h))
+            }
+            crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
+                // This should be implemented if you want to avoid RGB conversion
+                panic!("Direct YUV encoding not implemented yet");
+            }
+        };
+
+        let yuv = YUVBuffer::from_rgb_source(rgb_slice);
 
         let bitstream = enc
             .encode(&yuv)
@@ -83,5 +92,50 @@ impl H264Encoder {
             // 0.9 uses `force_intra_frame`, not `request_keyframe`
             let _ = enc.force_intra_frame();
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn target_fps(&self) -> u32 {
+        self.target_fps
+    }
+
+    #[allow(dead_code)]
+    pub fn target_bps(&self) -> u32 {
+        self.target_bps
+    }
+
+    #[allow(dead_code)]
+    pub fn keyint(&self) -> u32 {
+        self.keyint
+    }
+
+    pub fn set_config(
+        &mut self,
+        new_fps: u32,
+        new_bitrate: u32,
+        new_keyint: u32,
+    ) -> Result<bool, MediaAgentError> {
+        if self.should_skip_update(new_fps, new_bitrate, new_keyint) {
+            return Ok(false);
+        }
+        self.target_fps = new_fps;
+        self.target_bps = new_bitrate;
+        self.keyint = new_keyint;
+
+        // Re-init returns the new encoder via Encoder::with_api_config, which can fail.
+        // We need to handle that result and potentially bubble it up.
+        self.init_encoder();
+
+        if self.enc.is_none() {
+            Err(MediaAgentError::Codec(
+                "Failed to re-initialize H264 encoder with new config".into(),
+            ))
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn should_skip_update(&self, new_fps: u32, new_bitrate: u32, new_keyint: u32) -> bool {
+        new_fps == self.target_fps && new_bitrate == self.target_bps && new_keyint == self.keyint
     }
 }

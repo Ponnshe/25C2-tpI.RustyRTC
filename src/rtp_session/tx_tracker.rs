@@ -56,7 +56,7 @@ impl TxTracker {
 
 /// Convert a 64-bit NTP timestamp to the 32-bit "compact" form used in RFC3550 A.3.
 /// compact = (MSW << 16) | (LSW >> 16)
-#[inline] 
+#[inline]
 #[must_use]
 pub const fn ntp_to_compact(msw: u32, lsw: u32) -> u32 {
     (msw << 16) | (lsw >> 16)

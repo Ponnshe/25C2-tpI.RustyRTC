@@ -80,10 +80,15 @@ impl Logger {
                 let mut out: BufWriter<Box<dyn Write + Send>> = BufWriter::new(writer);
 
                 let mut n: u32 = 0;
+                let mut lines_written: u32 = 0;
                 let mut dropped_to_ui: usize = 0;
 
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
+                    lines_written = lines_written.wrapping_add(1);
+                    if lines_written % 100 == 0 {
+                        let _ = out.flush();
+                    }
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);

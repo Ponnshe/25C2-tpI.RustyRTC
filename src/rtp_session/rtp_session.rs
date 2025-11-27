@@ -4,7 +4,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
     },
     thread,
     time::Duration,
@@ -16,18 +16,14 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
-    core::events::EngineEvent,
-    rtcp::{
+    app::{log_level::LogLevel, log_sink::LogSink}, core::events::EngineEvent, logger_debug, logger_error, rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
-    },
-    rtp::rtp_packet::RtpPacket,
-    sink_log,
+    }, rtp::rtp_packet::RtpPacket, sink_debug, sink_error, sink_info, sink_log
 };
 use crate::{
+    media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
     rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
-    rtp_session::payload::rtp_payload_chunk::RtpPayloadChunk,
 };
 use rand::{RngCore, rngs::OsRng};
 
@@ -50,7 +46,6 @@ pub struct RtpSession {
 }
 
 impl RtpSession {
-    // Opción A: fallible (puedes llamarla `try_new` si prefieres)
     pub fn new(
         sock: Arc<UdpSocket>,
         peer: SocketAddr,
@@ -75,7 +70,6 @@ impl RtpSession {
             rtcp_interval: Duration::from_millis(500),
         };
 
-        // Propaga errores de construcción de streams
         this.add_recv_streams(initial_recv)?;
         let _ = this.add_send_streams(initial_send)?;
 
@@ -179,24 +173,25 @@ impl RtpSession {
                         }
 
                         // Decode RTP (adapt if your API returns Result)
-                        let rtp = match RtpPacket::decode(&pkt) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
-                                continue;
-                            }
+                        let Ok(rtp) = RtpPacket::decode(&pkt) else {
+                            sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
+                            continue;
                         };
+
+                        sink_info!(
+                            logger,
+                            "[RTP Session] Received RTP packet"
+                        );
 
                         let ssrc = rtp.ssrc();
                         let pt = rtp.payload_type();
 
                         // 1) Known stream?
-                        if let Ok(mut guard) = recv_map.lock() {
-                            if let Some(st) = guard.get_mut(&ssrc) {
+                        if let Ok(mut guard) = recv_map.lock() 
+                            && let Some(st) = guard.get_mut(&ssrc) {
                                 st.receive_rtp_packet(rtp);
                                 continue;
                             }
-                        }
 
                         // 2) Bind a pending stream by PT, then move it to the map
                         if let Ok(mut pend) = pending_recv.lock() {
@@ -228,8 +223,19 @@ impl RtpSession {
                             ssrc,
                             pt
                         );
+                    },
+                    Err(RecvTimeoutError::Timeout) => {
+                        sink_debug!(
+                            logger,
+                            "[RTP Session] Received nothing in timeout"
+                        );
+                    },
+                    Err(RecvTimeoutError::Disconnected) => {
+                        sink_error!(
+                            logger,
+                            "[RTP Session] Disconnected"
+                        );
                     }
-                    Err(_) => { /* timeout */ }
                 }
             }
         });
@@ -258,20 +264,15 @@ impl RtpSession {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
                             if let Err(e) = sr.encode_into(&mut sr_bytes) {
-                                sink_log!(
-                                    &logger2,
-                                    LogLevel::Error,
-                                    "[RTCP] failed to encode SR: {e}"
-                                );
+                                logger_error!(logger2, "[RTCP] failed to encode SR: {e}");
                                 continue;
                             }
 
                             comp_pkt.extend_from_slice(&sr_bytes);
 
-                            sink_log!(
-                                &logger2,
-                                LogLevel::Error,
-                                "[RTCP] tx SR ssrc={:#010x}",
+                            logger_debug!(
+                                logger2,
+                                "[RTCP] tx built SR ssrc={:#010x}",
                                 st.local_ssrc
                             );
                         }
@@ -293,11 +294,10 @@ impl RtpSession {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
                     if let Err(e) = rr.encode_into(&mut rr_bytes) {
-                        sink_log!(&logger2, LogLevel::Error, "[RTCP] failed to encode RR: {e}");
+                        logger_error!(logger2, "[RTCP] failed to encode RR: {e}");
                     } else {
                         comp_pkt.extend_from_slice(&rr_bytes);
-
-                        sink_log!(&logger2, LogLevel::Debug, "[RTCP] tx RR",);
+                        logger_debug!(logger2, "[RTCP] tx built RR");
                     }
                 }
 
@@ -306,11 +306,7 @@ impl RtpSession {
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
-                    sink_log!(
-                        &logger2,
-                        LogLevel::Error,
-                        "[RTCP] failed to encode SDES: {e}"
-                    );
+                    logger_error!(logger2, "[RTCP] failed to encode SDES: {e}");
                 } else {
                     comp_pkt.extend_from_slice(&sdes_bytes);
                 }
@@ -335,11 +331,7 @@ impl RtpSession {
         let mut buf = Vec::new();
         let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
-        sink_log!(
-            &self.logger,
-            LogLevel::Debug,
-            "[RTCP] tx PLI media_ssrc={remote_ssrc}"
-        );
+        logger_debug!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
@@ -483,7 +475,9 @@ fn handle_rtcp(
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &sr.reports {
                         if let Some(st) = g.get_mut(&rb.ssrc) {
-                            st.on_report_block(rb, arrival_ntp_compact);
+                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
+                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
+                            }
                         }
                     }
                 }
@@ -494,7 +488,9 @@ fn handle_rtcp(
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &rr.reports {
                         if let Some(st) = g.get_mut(&rb.ssrc) {
-                            st.on_report_block(rb, arrival_ntp_compact);
+                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
+                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
+                            }
                         }
                     }
                 }

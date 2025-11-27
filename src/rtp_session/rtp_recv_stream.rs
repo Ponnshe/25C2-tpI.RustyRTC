@@ -1,14 +1,24 @@
 use crate::app::log_level::LogLevel;
 use crate::app::log_sink::LogSink;
-use crate::core::events::{EngineEvent, RtpIn};
+use crate::core::events::EngineEvent;
+use crate::media_transport::media_transport_event::RtpIn;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
-use crate::sink_log;
+use crate::{sink_debug, sink_info, sink_log};
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::{sync::mpsc::Sender, time::Instant};
+use std::{
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
+
+struct BufferedPacket {
+    packet: RtpPacket,
+    received_at: Instant,
+}
 
 pub struct RtpRecvStream {
     pub codec: RtpCodec,
@@ -19,6 +29,11 @@ pub struct RtpRecvStream {
 
     event_transmitter: Sender<EngineEvent>,
     logger: Arc<dyn LogSink>,
+
+    // Jitter buffer fields
+    jitter_buffer: BTreeMap<u16, BufferedPacket>,
+    next_seq: Option<u16>,
+    max_latency: Duration,
 }
 
 impl RtpRecvStream {
@@ -36,6 +51,9 @@ impl RtpRecvStream {
             last_activity: now,
             event_transmitter,
             logger,
+            jitter_buffer: BTreeMap::new(),
+            next_seq: None,
+            max_latency: Duration::from_millis(200),
         }
     }
 
@@ -50,6 +68,17 @@ impl RtpRecvStream {
     }
 
     pub fn receive_rtp_packet(&mut self, packet: RtpPacket) {
+        sink_info!(
+            self.logger,
+            "[Recv Stream] Receive packet"
+        );
+
+        sink_debug!(
+            self.logger,
+            "[Recv Stream] Receive packet - ssrc: {}, seq: {}",
+            packet.ssrc(),
+            packet.seq()
+        );
         let now = Instant::now();
         self.last_activity = now;
 
@@ -67,20 +96,108 @@ impl RtpRecvStream {
         // 2) Arrival time in RTP units (codec clock)
         let arrival_rtp = self.instant_to_rtp_units(now);
 
-        // 3) Update RX tracker
+        // 3) Update RX tracker immediately for stats
         self.rx
             .on_rtp(packet.seq(), packet.timestamp(), arrival_rtp);
 
-        // 4) Emit media event (prefer owned bytes over borrows; see note below)
-        let evt = EngineEvent::RtpIn(RtpIn {
-            pt: packet.payload_type(),
-            marker: packet.marker(),
-            timestamp_90khz: packet.timestamp(),
-            seq: packet.seq(),
-            ssrc: packet.ssrc(),
-            payload: packet.payload, // payload only, no header
-        });
-        let _ = self.event_transmitter.send(evt);
+        // 4) Buffer the packet for reordering and playout
+        let seq = packet.seq();
+        let buffered_packet = BufferedPacket {
+            packet,
+            received_at: now,
+        };
+
+        if self.jitter_buffer.insert(seq, buffered_packet).is_some() {
+            sink_log!(
+                &self.logger,
+                LogLevel::Warn,
+                "[RTP] duplicate packet seq={}",
+                seq
+            );
+            return; // Already buffered
+        }
+
+        if self.next_seq.is_none() {
+            self.next_seq = Some(seq);
+        }
+
+        // 5) Process buffer to drain any contiguous packets
+        self.process_buffer();
+    }
+
+    fn process_buffer(&mut self) {
+
+        let Some(s) = self.next_seq else {
+            return; // Nothing to do if not initialized
+        };
+
+        let mut next_seq = s;
+
+        loop {
+            // Try to get the next in-sequence packet
+            if let Some(buffered) = self.jitter_buffer.remove(&next_seq) {
+                let packet = buffered.packet;
+                // It's the one we were waiting for. Emit it.
+                if let Some(ssrc) = self.remote_ssrc{
+                    sink_info!(
+                        self.logger,
+                        "[Recv Stream {}] Sending RTP Packet to Engine::RtpIn",
+                        ssrc
+                    );
+
+                    sink_debug!(
+                        self.logger,
+                        "[Recv Stream {}] RTP Packet seq: {}",
+                        ssrc,
+                        s
+                    );
+                }
+
+                let evt = EngineEvent::RtpIn(RtpIn {
+                    pt: packet.payload_type(),
+                    marker: packet.marker(),
+                    timestamp_90khz: packet.timestamp(),
+                    seq: packet.seq(),
+                    ssrc: packet.ssrc(),
+                    payload: packet.payload,
+                });
+                let _ = self.event_transmitter.send(evt);
+
+                // Advance to the next sequence number
+                next_seq = next_seq.wrapping_add(1);
+                continue; // And try to process the next one
+            }
+
+            // If we're here, `next_seq` is missing.
+            // Check if we should declare it lost due to timeout.
+            // We look at the *next available* packet in the buffer.
+            if let Some((&buffered_seq, buffered_pkt)) = self.jitter_buffer.iter().next() {
+                // If the oldest packet in our buffer is already too old,
+                // then the gap before it is definitely lost.
+                if buffered_pkt.received_at.elapsed() > self.max_latency {
+                    sink_log!(
+                        &self.logger,
+                        LogLevel::Warn,
+                        "[RTP] Skipping packets from {} to {} (lost)",
+                        next_seq,
+                        buffered_seq.wrapping_sub(1)
+                    );
+                    // Jump over the gap.
+                    next_seq = buffered_seq;
+                    // Loop again to try processing `next_seq` (which is now `buffered_seq`).
+                    continue;
+                }
+            }
+
+            // If we reach here, it means either:
+            // a) the buffer is empty
+            // b) the missing packet `next_seq` is not present, but the next available packet
+            //    is not old enough to trigger a timeout.
+            // In both cases, we should wait.
+            break;
+        }
+
+        self.next_seq = Some(next_seq);
     }
 
     /// Called by the *session* when an SR for this remote SSRC arrives.
