@@ -38,15 +38,15 @@ impl RxTracker {
         let transit = arrival_rtp_units.wrapping_sub(rtp_ts);
         if let Some(prev) = self.last_transit {
             let d_abs = transit.abs_diff(prev);
-            self.jitter = self
-                .jitter
-                .wrapping_add(((u64::from(d_abs)).saturating_sub(u64::from(self.jitter)) / 16) as u32);
+            self.jitter = self.jitter.wrapping_add(
+                ((u64::from(d_abs)).saturating_sub(u64::from(self.jitter)) / 16) as u32,
+            );
         }
         self.last_transit = Some(transit);
     }
 
     /// Call when an SR is received (to later fill LSR/DLSR in our RR).
-    pub fn on_sr_received(&mut self, ntp_secs: u32, ntp_frac: u32, now_ntp: (u32, u32)) {
+    pub const fn on_sr_received(&mut self, ntp_secs: u32, ntp_frac: u32, now_ntp: (u32, u32)) {
         self.last_sr_compact = Some(ntp_compact(ntp_secs, ntp_frac));
         self.last_sr_arrival_compact = Some(ntp_compact(now_ntp.0, now_ntp.1));
     }

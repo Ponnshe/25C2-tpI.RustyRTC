@@ -5,19 +5,17 @@ edition = "2024"
 
 [dependencies]
 rand = "0.8"
+sha2 = "0.10"
 eframe = { version = "0.28", features = ["wgpu"] }
 egui = "0.28"
 openh264 = "0.9"
 opencv = "0.97"
-<<<<<<< Updated upstream
-=======
 rustls = { version = "0.23", features = ["std"]}
 rustls-pemfile = "2.2.0"
 webpki-roots = "0.26"
 bytemuck = "1.24.0"
 wgpu = "27.0.1"
 udp_dtls = "0.1.0"
->>>>>>> Stashed changes
 
 [features]
 default = []

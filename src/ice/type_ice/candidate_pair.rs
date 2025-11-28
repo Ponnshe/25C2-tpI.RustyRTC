@@ -49,7 +49,7 @@ pub struct CandidatePair {
 impl CandidatePair {
     #[must_use]
     pub const fn new(local: Candidate, remote: Candidate, priority: u64) -> Self {
-        Self{
+        Self {
             local,
             remote,
             priority,
@@ -62,7 +62,7 @@ impl CandidatePair {
     #[must_use]
     /// Lightweight clone: copies metadata but drops socket references.
     pub fn clone_light(&self) -> Self {
-        Self{
+        Self {
             local: self.local.clone_light(),
             remote: self.remote.clone_light(),
             priority: self.priority,

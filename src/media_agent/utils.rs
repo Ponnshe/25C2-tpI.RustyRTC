@@ -1,6 +1,7 @@
 use opencv::{
     core::{AlgorithmHint, Mat, MatTraitConstManual, prelude::*},
     imgproc,
+    videoio::{CAP_ANY, VideoCapture, VideoCaptureTraitConst},
 };
 use std::time::SystemTime;
 
@@ -72,4 +73,14 @@ pub fn i420_to_rgb(yuv_bytes: &[u8], width: u32, height: u32) -> Vec<u8> {
     }
 
     rgb
+}
+pub fn discover_camera_id() -> Option<i32> {
+    for idx in 0..16 {
+        if let Ok(cam) = VideoCapture::new(idx, CAP_ANY)
+            && cam.is_opened().unwrap_or(false)
+        {
+            return Some(idx);
+        }
+    }
+    None
 }

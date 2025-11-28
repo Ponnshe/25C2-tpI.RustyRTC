@@ -47,10 +47,8 @@ impl CameraManager {
     /// let camera = CameraManager::new(0)?;
     /// # Ok::<(), CameraError>(())
     /// ```
-    pub fn new(device_id: usize, logger: Arc<dyn LogSink>) -> Result<Self, CameraError> {
-        let device_id_i32 = i32::try_from(device_id)
-            .map_err(|_| CameraError::InvalidDeviceId(device_id))?;
-        let cam = videoio::VideoCapture::new(device_id_i32, videoio::CAP_ANY)
+    pub fn new(device_id: i32, logger: Arc<dyn LogSink>) -> Result<Self, CameraError> {
+        let cam = videoio::VideoCapture::new(device_id, videoio::CAP_ANY)
             .map_err(|e| CameraError::InitializationFailed(e.to_string()))?;
 
         if !cam.is_opened().unwrap_or(false) {

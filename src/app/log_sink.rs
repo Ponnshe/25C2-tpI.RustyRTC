@@ -1,4 +1,3 @@
-// src/app/log_sink.rs
 use crate::app::{log_level::LogLevel, logger_handle::LoggerHandle};
 
 pub trait LogSink: Send + Sync {

@@ -33,9 +33,10 @@ impl IceWorker {
         // Snapshot send targets per socket index
         let mut targets_per_sock: Vec<Vec<SocketAddr>> = vec![Vec::new(); sockets.len()];
         for pair in &agent.candidate_pairs {
-            if let Some(ls) = &pair.local.socket && 
-                let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
-                    targets_per_sock[idx].push(pair.remote.address);
+            if let Some(ls) = &pair.local.socket
+                && let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls))
+            {
+                targets_per_sock[idx].push(pair.remote.address);
             }
         }
 
