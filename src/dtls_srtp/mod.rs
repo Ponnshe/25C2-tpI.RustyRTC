@@ -19,6 +19,32 @@ use openssl::{
     x509::X509,
 };
 
+/// RAII guard para dejar el socket en blocking + timeout mientras exista,
+/// y restaurar non-blocking + sin timeout cuando se suelte.
+struct SocketBlockingGuard {
+    sock: Arc<UdpSocket>,
+}
+
+impl SocketBlockingGuard {
+    /// Pone el socket en blocking y setea read timeout.
+    fn new(sock: Arc<UdpSocket>, timeout: Option<Duration>) -> io::Result<Self> {
+        // Setear timeout primero (opcional)
+        sock.set_read_timeout(timeout)?;
+        // Forzar blocking (true -> blocking == set_nonblocking(false))
+        sock.set_nonblocking(false)?;
+        Ok(SocketBlockingGuard { sock })
+    }
+}
+
+impl Drop for SocketBlockingGuard {
+    fn drop(&mut self) {
+        // Restauramos non-blocking y limpiamos el timeout.
+        // Ignoramos errores en el Drop para no panicar.
+        let _ = self.sock.set_nonblocking(true);
+        let _ = self.sock.set_read_timeout(None);
+    }
+}
+
 #[derive(Debug)]
 pub enum DtlsError {
     Io(io::Error),
@@ -147,7 +173,6 @@ impl Write for BufferedUdpChannel {
 // -----------------------------------------------------------------------------
 
 /// Configuración común para Cliente y Servidor para evitar mismatches.
-
 pub fn run_dtls_handshake(
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
@@ -165,13 +190,8 @@ pub fn run_dtls_handshake(
         }
     }
 
-    // Forzamos blocking para handshake (puedes cambiar a nonblocking + handshake_with_timeout)
-    sock.set_nonblocking(false).map_err(|e| {
-        DtlsError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to set blocking mode: {}", e),
-        ))
-    })?;
+    // Guard: pone socket en blocking y configura read timeout; al salir restaurará el estado.
+    let _guard = SocketBlockingGuard::new(sock.clone(), Some(timeout)).map_err(DtlsError::from)?;
 
     sink_log!(
         &logger,
@@ -182,16 +202,25 @@ pub fn run_dtls_handshake(
 
     let channel = BufferedUdpChannel::new(sock.clone(), peer);
 
+    // Llamada al handshake (puede retornar error)
     let dtls_stream = match role {
-        DtlsRole::Client => dtls_connect_openssl(channel)?,
-        DtlsRole::Server => dtls_accept_openssl(channel)?,
-    };
+        DtlsRole::Client => dtls_connect_openssl(channel),
+        DtlsRole::Server => dtls_accept_openssl(channel),
+    }
+    .map_err(|e| {
+        sink_log!(
+            &logger,
+            LogLevel::Error,
+            "[DTLS] handshake error with {}: {}",
+            peer,
+            e
+        );
+        e
+    })?;
 
-    sock.set_nonblocking(true).ok();
-
-    let cfg = derive_srtp_keys(&dtls_stream, role).map_err(|e| DtlsError::from(e))?; // ver abajo
+    // al salir del scope, _guard.drop() se ejecuta y deja socket non-blocking y sin timeout
+    let cfg = derive_srtp_keys(&dtls_stream, role).map_err(|e| DtlsError::from(e))?;
     sink_log!(&logger, LogLevel::Info, "[DTLS] Handshake Success!");
-
     Ok(cfg)
 }
 
