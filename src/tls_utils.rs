@@ -9,6 +9,9 @@ use rustls::{
 };
 use rustls_pemfile::{Item, certs, read_one};
 
+use openssl::hash::MessageDigest;
+use openssl::x509::X509;
+
 // ----------------------------------------------------------------------
 // ROOT STORE AND CONSTANTS
 // ----------------------------------------------------------------------
@@ -97,4 +100,32 @@ pub fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
         io::ErrorKind::InvalidData,
         format!("no private key found in {path}"),
     ))
+}
+
+/// Calcula el fingerprint SHA-256 del certificado local para ponerlo en el SDP.
+/// Formato: "XX:YY:ZZ:..." (mayúsculas)
+pub fn get_local_fingerprint_sha256() -> std::io::Result<String> {
+    // Reusamos CN_PATH o la ruta hardcoded
+    let certs_der = load_certs(CN_PATH)?;
+
+    if certs_der.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "No certs found",
+        ));
+    }
+
+    // Parsear con OpenSSL
+    let x509 = X509::from_der(&certs_der[0].to_vec())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // Calcular Digest SHA256
+    let digest = x509
+        .digest(MessageDigest::sha256())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    // Formatear a Hex separado por colons
+    let hex: Vec<String> = digest.iter().map(|b| format!("{:02X}", b)).collect();
+
+    Ok(hex.join(":"))
 }
