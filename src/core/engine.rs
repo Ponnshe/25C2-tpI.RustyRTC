@@ -176,6 +176,7 @@ impl Engine {
                         peer,
                         dtls_role,
                         self.logger_sink.clone(),
+                        Duration::from_secs_f32(5.0),
                     ) {
                         Ok(cfg) => Some(cfg),
                         Err(e) => {
