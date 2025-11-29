@@ -9,7 +9,6 @@ use std::{
 
 use crate::dtls_srtp::{self, DtlsRole, SrtpSessionConfig};
 use crate::ice::type_ice::ice_agent::IceRole;
-use rand::seq;
 
 use crate::{
     app::log_sink::LogSink,
@@ -161,13 +160,13 @@ impl Engine {
                         remote: peer,
                     });
 
-                    // --- NUEVO: decidir rol DTLS en base al rol ICE ---
+                    // --- decidir rol DTLS en base al rol ICE ---
                     let dtls_role = match self.cm.ice_agent.role {
-                        IceRole::Controlling => DtlsRole::Client,
-                        IceRole::Controlled => DtlsRole::Server,
+                        IceRole::Controlling => DtlsRole::Server,
+                        IceRole::Controlled => DtlsRole::Client,
                     };
 
-                    // --- NUEVO: correr DTLS handshake bloqueante ---
+                    // --- correr DTLS handshake bloqueante ---
                     let srtp_cfg = match dtls_srtp::run_dtls_handshake(
                         Arc::clone(&sock),
                         peer,

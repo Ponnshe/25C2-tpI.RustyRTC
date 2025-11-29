@@ -1,18 +1,21 @@
 use std::{
     net::{SocketAddr, UdpSocket},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
 use super::rtp_send_error::RtpSendError;
 use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
-use crate::congestion_controller::congestion_controller::NetworkMetrics;
 use crate::rtcp::{
     report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
 };
 use crate::rtp::rtp_packet::RtpPacket;
 use crate::rtp_session::time;
+use crate::{
+    congestion_controller::congestion_controller::NetworkMetrics,
+    dtls_srtp::srtp_context::SrtpContext,
+};
 
 pub struct RtpSendStream {
     pub codec: RtpCodec,
@@ -29,10 +32,16 @@ pub struct RtpSendStream {
     last_pkt_sent: Instant,
 
     pub tx: TxTracker,
+    srtp_context: Option<Arc<Mutex<SrtpContext>>>,
 }
 
 impl RtpSendStream {
-    pub fn new(cfg: RtpSendConfig, sock: Arc<UdpSocket>, peer: SocketAddr) -> Self {
+    pub fn new(
+        cfg: RtpSendConfig,
+        sock: Arc<UdpSocket>,
+        peer: SocketAddr,
+        srtp_context: Option<Arc<Mutex<SrtpContext>>>,
+    ) -> Self {
         use rand::{RngCore, rngs::OsRng};
         Self {
             codec: cfg.codec,
@@ -46,6 +55,7 @@ impl RtpSendStream {
             last_sr_built: Instant::now(),
             last_pkt_sent: Instant::now(),
             tx: TxTracker::default(),
+            srtp_context,
         }
     }
 
@@ -168,20 +178,6 @@ impl RtpSendStream {
 
         // Track last timestamp used so SRs reflect the current media clock
         self.timestamp = timestamp;
-        Ok(())
-    }
-
-    /// Optional convenience for video: send many payloads for a single frame timestamp.
-    pub fn send_rtp_payloads_for_frame(
-        &mut self,
-        chunks: &[(&[u8], bool)], // (payload, marker)
-        timestamp: u32,
-    ) -> Result<(), RtpSendError> {
-        for (i, (bytes, marker)) in chunks.iter().enumerate() {
-            // enforce marker only on the last one if you want:
-            let m = if i + 1 == chunks.len() { true } else { *marker };
-            self.send_rtp_payload(bytes, timestamp, m)?;
-        }
         Ok(())
     }
 }

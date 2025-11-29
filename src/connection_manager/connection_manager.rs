@@ -20,6 +20,7 @@ use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
 use crate::sink_error;
+use crate::tls_utils::get_local_fingerprint_sha256;
 
 use std::collections::HashSet;
 use std::{
@@ -28,6 +29,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+pub const DEFAULT_FINGERPRINT: &str =
+    "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00";
 
 /// Manages ICE, SDP negotiation, and RTP codec configuration for a single peer connection.
 ///
@@ -54,6 +57,8 @@ pub struct ConnectionManager {
     remote_codecs: Vec<RtpCodec>,
     /// Background ICE worker handling connectivity asynchronously
     ice_worker: Option<IceWorker>,
+    /// The SHA-256 fingerprint of our DTLS certificate
+    local_fingerprint: String,
 }
 
 impl ConnectionManager {
@@ -63,6 +68,10 @@ impl ConnectionManager {
     #[must_use]
     pub fn new(logger_handle: Arc<dyn LogSink>) -> Self {
         let ice_agent = IceAgent::with_logger(IceRole::Controlling, logger_handle.clone());
+        let local_fingerprint = get_local_fingerprint_sha256().unwrap_or_else(|e| {
+            eprintln!("Failed to get local fingerprint: {}", e);
+            DEFAULT_FINGERPRINT.to_string()
+        });
         Self {
             logger_handle,
             ice_agent,
@@ -73,6 +82,7 @@ impl ConnectionManager {
             local_codecs: Vec::new(),
             remote_codecs: vec![],
             ice_worker: None,
+            local_fingerprint,
         }
     }
 
@@ -463,6 +473,19 @@ impl ConnectionManager {
         let (ufrag, pwd) = self.ice_agent.local_credentials();
         attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
         attrs.push(SDPAttribute::new("ice-pwd", pwd));
+
+        // a=fingerprint:sha-256 XX:YY:ZZ...
+        attrs.push(SDPAttribute::new(
+            "fingerprint",
+            Some(format!("sha-256 {}", self.local_fingerprint)),
+        ));
+        // --- Indicar setup role para DTLS ---
+        if matches!(self.signaling, SignalingState::Stable) {
+            attrs.push(SDPAttribute::new("setup", Some("actpass".into())));
+        } else {
+            // Si estamos respondiendo (Answer), generalmente tomamos el rol opuesto.
+            attrs.push(SDPAttribute::new("setup", Some("active".into())));
+        }
 
         if self.local_codecs.is_empty() {
             attrs.push(SDPAttribute::new(

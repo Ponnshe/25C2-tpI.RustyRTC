@@ -314,27 +314,6 @@ impl Session {
         });
     }
 
-    /// Sends a raw payload over the UDP socket if the session is established.
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - The payload to send.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating the number of bytes sent or an `io::Error`.
-    ///
-    /// # Errors
-    /// Returns an `Err(io::Error)` if the underlying UDP socket fails to send the data.
-    /// In the non-established case the function returns `Ok(0)` (no send attempted).
-    pub fn send_payload(&self, bytes: &[u8]) -> io::Result<usize> {
-        if self.established.load(Ordering::SeqCst) {
-            self.sock.send(bytes)
-        } else {
-            Ok(0)
-        }
-    }
-
     /// Initiates the session closing process.
     pub fn request_close(&mut self) {
         self.we_initiated_close.store(true, Ordering::SeqCst);
@@ -401,66 +380,6 @@ impl Session {
             .ok_or_else(|| "rtp session not running".to_string())?;
         rtp_sesh
             .register_outbound_track(codec)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Method for legacy. Should not be used preferably anymore.
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_media_frame(
-        &self,
-        handle: &OutboundTrackHandle,
-        payload: &[u8],
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let session = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        session
-            .send_frame(handle.local_ssrc, payload)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Method for legacy. Should not be used preferably anymore.
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_rtp_payload(
-        &self,
-        handle: &OutboundTrackHandle,
-        payload: &[u8],
-        timestamp: u32,
-        marker: bool,
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let rtp = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        rtp.send_rtp_payload(handle.local_ssrc, payload, timestamp, marker)
-            .map_err(|e| e.to_string())
-    }
-
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_rtp_payloads_for_frame(
-        &self,
-        handle: &OutboundTrackHandle,
-        chunks: &[(&[u8], bool)],
-        timestamp: u32,
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let rtp = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        rtp.send_rtp_payloads_for_frame(handle.local_ssrc, chunks, timestamp)
             .map_err(|e| e.to_string())
     }
 

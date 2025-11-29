@@ -1,4 +1,5 @@
 use crate::dtls_srtp::SrtpSessionConfig;
+use crate::dtls_srtp::srtp_context::SrtpContext;
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
@@ -51,6 +52,9 @@ pub struct RtpSession {
     rtcp_interval: Duration,
     //Srtp config
     srtp_cfg: Option<SrtpSessionConfig>,
+    // Contextos SRTP protegidos por Mutex para acceso compartido
+    srtp_inbound: Option<Arc<Mutex<SrtpContext>>>,
+    srtp_outbound: Option<Arc<Mutex<SrtpContext>>>,
 }
 
 impl RtpSession {
@@ -64,6 +68,15 @@ impl RtpSession {
         initial_send: Vec<RtpSendConfig>,
         srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Result<Self, RtpSessionError> {
+        // Inicializar contextos SRTP si hay configuración
+        let (srtp_inbound, srtp_outbound) = if let Some(cfg) = &srtp_cfg {
+            (
+                Some(Arc::new(Mutex::new(SrtpContext::new(cfg.inbound.clone())))),
+                Some(Arc::new(Mutex::new(SrtpContext::new(cfg.outbound.clone())))),
+            )
+        } else {
+            (None, None)
+        };
         let this = Self {
             sock,
             peer,
@@ -78,6 +91,8 @@ impl RtpSession {
             cname: "roomrtc@local".into(),
             rtcp_interval: Duration::from_millis(500),
             srtp_cfg,
+            srtp_inbound,
+            srtp_outbound,
         };
 
         this.add_recv_streams(initial_recv)?;
@@ -106,11 +121,16 @@ impl RtpSession {
 
     pub fn add_send_stream(
         &self,
-        cfg: RtpSendConfig,
+        rtp_send_config: RtpSendConfig,
     ) -> Result<OutboundTrackHandle, RtpSessionError> {
-        let ssrc = cfg.local_ssrc;
-        let codec = cfg.codec.clone();
-        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer);
+        let ssrc = rtp_send_config.local_ssrc;
+        let codec = rtp_send_config.codec.clone();
+        let st = RtpSendStream::new(
+            rtp_send_config,
+            Arc::clone(&self.sock),
+            self.peer,
+            self.srtp_outbound.clone(),
+        );
         self.send_streams.lock()?.insert(ssrc, st);
         Ok(OutboundTrackHandle {
             local_ssrc: ssrc,
@@ -151,11 +171,25 @@ impl RtpSession {
         let pending_recv = Arc::clone(&self.pending_recv);
         let tx_evt = self.tx_evt.clone();
         let logger = self.logger.clone();
+        let srtp_inbound = self.srtp_inbound.clone();
 
         thread::spawn(move || {
             while run.load(Ordering::SeqCst) {
                 match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(pkt) => {
+                    Ok(mut pkt) => {
+                        // 1. SRTP Unprotect (antes de cualquier parseo RTP)
+                        if let Some(ctx) = &srtp_inbound {
+                            // Intentamos desencriptar. Si falla, dropeamos el paquete.
+                            if let Err(e) = ctx.lock().unwrap().unprotect(&mut pkt) {
+                                sink_log!(
+                                    &logger,
+                                    LogLevel::Warn,
+                                    "[SRTP] Unprotect failed: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
                         if pkt.len() < 2 {
                             sink_log!(&logger, LogLevel::Error, "[RTP] packet too short");
                             continue;
@@ -378,28 +412,6 @@ impl RtpSession {
             })
     }
 
-    /// Batch convenience: send all fragments for one frame timestamp.
-    pub fn send_rtp_payloads_for_frame(
-        &self,
-        local_ssrc: u32,
-        chunks: &[(&[u8], bool)],
-        timestamp: u32,
-    ) -> Result<(), RtpSessionError> {
-        let mut g = self.send_streams.lock()?;
-        let st = g
-            .get_mut(&local_ssrc)
-            .ok_or(RtpSessionError::SendStreamMissing { ssrc: local_ssrc })?;
-        for (i, (bytes, marker)) in chunks.iter().enumerate() {
-            let m = if i + 1 == chunks.len() { true } else { *marker };
-            st.send_rtp_payload(bytes, timestamp, m).map_err(|source| {
-                RtpSessionError::SendStream {
-                    source,
-                    ssrc: local_ssrc,
-                }
-            })?;
-        }
-        Ok(())
-    }
     pub fn send_rtp_chunks_for_frame(
         &self,
         local_ssrc: u32,
