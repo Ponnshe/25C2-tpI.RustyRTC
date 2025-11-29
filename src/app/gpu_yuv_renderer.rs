@@ -1,19 +1,4 @@
-// src/gpu_yuv_renderer.rs
-//! GPU YUV420 -> RGB renderer using wgpu + egui_wgpu_backend.
-//!
-//! Usage (resumen):
-//!  - crea GpuYuvRenderer en la inicialización con device/queue/target_format.
-//!  - por cada frame YUV: call update_frame(queue, &video_frame).
-//!  - obtener egui::TextureId con `egui_texture_id(&mut render_pass, device, queue)`
-//!  - dibujar en UI con `ui.image(texture_id, size)`
-//!
-//! Nota: requiere las crates:
-//!  - wgpu
-//!  - egui_wgpu_backend (o egui_wgpu)
-//!  - egui
-//! Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
-
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu::{self, PipelineCompilationOptions, util::DeviceExt};
 use std::sync::Arc;
 use crate::{
     app::log_sink::LogSink,
@@ -189,7 +174,7 @@ impl GpuYuvRenderer {
                         ],
                     }
                 ],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
@@ -199,7 +184,7 @@ impl GpuYuvRenderer {
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -244,7 +229,6 @@ impl GpuYuvRenderer {
     /// Update with a new YUV frame. This uploads Y/U/V planes to GPU, re-create textures if sizes changed,
     /// runs a render pass to the output texture, but DOES NOT register the texture with egui.
     /// After calling this, call `egui_texture_id(...)` to register the output texture for egui.
-
     pub fn update_frame(
         &mut self,
         device: &wgpu::Device,
@@ -263,10 +247,9 @@ impl GpuYuvRenderer {
         // UV planes: size = ceil(width/2), ceil(height/2)
         let y_w = width;
         let y_h = height;
-        let uv_w = (width as usize + 1) / 2;
-        let uv_h = (height as usize + 1) / 2;
+        let uv_w = width.div_ceil(2);
+        let uv_h = height.div_ceil(2);
 
-        // Re-create texturas si cambian tamaños
         if self.y_size != (y_w, y_h) || self.tex_y.is_none() {
             self.tex_y = Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("y-plane"),
@@ -281,10 +264,10 @@ impl GpuYuvRenderer {
             self.y_size = (y_w, y_h);
         }
 
-        if self.uv_size != (uv_w as u32, uv_h as u32) || self.tex_u.is_none() || self.tex_v.is_none() {
+        if self.uv_size != (uv_w, uv_h) || self.tex_u.is_none() || self.tex_v.is_none() {
             let create_uv = |label: &str| device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: uv_w as u32, height: uv_h as u32, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d { width: uv_w, height: uv_h, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -294,10 +277,10 @@ impl GpuYuvRenderer {
             });
             self.tex_u = Some(create_uv("u-plane"));
             self.tex_v = Some(create_uv("v-plane"));
-            self.uv_size = (uv_w as u32, uv_h as u32);
+            self.uv_size = (uv_w, uv_h);
         }
 
-        // Output texture (RGBA) igual tamaño que Y
+        // Output texture (RGBA) Same size as Y
         if self.output_texture.is_none() || self.output_view.is_none() || self.y_size.0 != y_w {
             let out = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("yuv-rgb-output"),
@@ -313,35 +296,33 @@ impl GpuYuvRenderer {
             self.output_texture = Some(out);
         }
 
-        // Subida de texturas respetando stride
-        let upload_plane = |tex: &wgpu::Texture, data: &[u8], w: usize, h: usize, stride: usize| {
-            let bytes_per_row = aligned_bytes_per_row(stride);
-
-            let expected_bytes = bytes_per_row as usize * h;
-            if data.len() < expected_bytes {
-                sink_error!(logger, "Data length {} < expected {} bytes. Adjusting rows!", data.len(), expected_bytes);
-            }
-
-            queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    texture: tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                data,
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(h as u32),
-                },
-                wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        upload_plane(
+            logger.clone(),
+            self.tex_y.as_ref().unwrap(), 
+            &y_plane, 
+            y_w, 
+            y_h, 
+            y_stride,
+            queue
             );
-        };
-
-        upload_plane(self.tex_y.as_ref().unwrap(), &y_plane, y_w as usize, y_h as usize, y_stride);
-        upload_plane(self.tex_u.as_ref().unwrap(), &u_plane, uv_w, uv_h, u_stride);
-        upload_plane(self.tex_v.as_ref().unwrap(), &v_plane, uv_w, uv_h, v_stride);
+        upload_plane(
+            logger.clone(),
+            self.tex_u.as_ref().unwrap(), 
+            &u_plane, 
+            uv_w, 
+            uv_h, 
+            u_stride,
+            queue
+            );
+        upload_plane(
+            logger.clone(),
+            self.tex_v.as_ref().unwrap(), 
+            &v_plane, 
+            uv_w, 
+            uv_h, 
+            v_stride,
+            queue
+            );
 
         // Bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -385,6 +366,102 @@ impl GpuYuvRenderer {
     }
 }
 
-fn aligned_bytes_per_row(stride: usize) -> u32 {
-    ((stride as u32 + 255) / 256) * 256
+fn upload_plane(
+    logger: Arc<dyn LogSink>,
+    tex: &wgpu::Texture, 
+    data: &[u8], 
+    width: u32, 
+    height: u32, 
+    stride: usize,
+    queue: &wgpu::Queue
+) {
+    let unpadded_bytes_per_row = width as usize;
+    let aligned_bytes_per_row = ((unpadded_bytes_per_row as u32 + 255) / 256) * 256;
+    
+    sink_debug!(
+        logger, 
+        "Upload plane - Width: {}, Height: {}, Stride: {}, Unpadded: {}, Aligned: {}, Data len: {}",
+        width, height, stride, unpadded_bytes_per_row, aligned_bytes_per_row, data.len()
+    );
+
+    // No padding
+    if stride == unpadded_bytes_per_row {
+        let expected_size = (aligned_bytes_per_row * height) as usize;
+        if data.len() < expected_size {
+            sink_error!(logger, "Insufficient data: have {}, need {}", data.len(), expected_size);
+            return;
+        }
+        
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(aligned_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { 
+                width, 
+                height, 
+                depth_or_array_layers: 1 
+            },
+        );
+    } else {
+        let total_size = (aligned_bytes_per_row * height) as usize;
+        let mut aligned_data = Vec::with_capacity(total_size);
+        
+        for row in 0..height as usize {
+            let start = row * stride;
+            let end = start + unpadded_bytes_per_row.min(data.len().saturating_sub(start));
+            
+            // Copiar datos válidos de esta fila
+            if start < data.len() {
+                let row_data = &data[start..end.min(data.len())];
+                aligned_data.extend_from_slice(row_data);
+            } else {
+                // Si no hay datos, llenar con negro
+                aligned_data.extend(std::iter::repeat(0).take(unpadded_bytes_per_row));
+            }
+            
+            // Añadir padding de alineación para esta fila
+            let bytes_in_current_row = aligned_data.len() % aligned_bytes_per_row as usize;
+            if bytes_in_current_row > 0 {
+                let padding_needed = aligned_bytes_per_row as usize - bytes_in_current_row;
+                aligned_data.extend(std::iter::repeat(0).take(padding_needed));
+            }
+        }
+        
+        // Asegurar que el tamaño final es exactamente el esperado
+        if aligned_data.len() != total_size {
+            sink_debug!(logger, "Resizing aligned data from {} to {}", aligned_data.len(), total_size);
+            aligned_data.resize(total_size, 0);
+        }
+        
+        sink_debug!(logger, "Final aligned data size: {}", aligned_data.len());
+        
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &aligned_data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(aligned_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { 
+                width, 
+                height, 
+                depth_or_array_layers: 1 
+            },
+        );
+    }
 }
