@@ -1,3 +1,4 @@
+use crate::dtls_srtp::SrtpSessionConfig;
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
@@ -16,10 +17,15 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink}, core::events::EngineEvent, logger_debug, logger_error, rtcp::{
+    app::{log_level::LogLevel, log_sink::LogSink},
+    core::events::EngineEvent,
+    logger_debug, logger_error,
+    rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
-    }, rtp::rtp_packet::RtpPacket, sink_debug, sink_error, sink_info, sink_log
+    },
+    rtp::rtp_packet::RtpPacket,
+    sink_debug, sink_error, sink_info, sink_log,
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
@@ -43,6 +49,8 @@ pub struct RtpSession {
     local_rtcp_ssrc: u32,
     cname: String,
     rtcp_interval: Duration,
+    //Srtp config
+    srtp_cfg: Option<SrtpSessionConfig>,
 }
 
 impl RtpSession {
@@ -54,6 +62,7 @@ impl RtpSession {
         rx_media: Receiver<Vec<u8>>,
         initial_recv: Vec<RtpRecvConfig>,
         initial_send: Vec<RtpSendConfig>,
+        srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Result<Self, RtpSessionError> {
         let this = Self {
             sock,
@@ -68,6 +77,7 @@ impl RtpSession {
             local_rtcp_ssrc: OsRng.next_u32(),
             cname: "roomrtc@local".into(),
             rtcp_interval: Duration::from_millis(500),
+            srtp_cfg,
         };
 
         this.add_recv_streams(initial_recv)?;
@@ -178,20 +188,18 @@ impl RtpSession {
                             continue;
                         };
 
-                        sink_info!(
-                            logger,
-                            "[RTP Session] Received RTP packet"
-                        );
+                        sink_info!(logger, "[RTP Session] Received RTP packet");
 
                         let ssrc = rtp.ssrc();
                         let pt = rtp.payload_type();
 
                         // 1) Known stream?
-                        if let Ok(mut guard) = recv_map.lock() 
-                            && let Some(st) = guard.get_mut(&ssrc) {
-                                st.receive_rtp_packet(rtp);
-                                continue;
-                            }
+                        if let Ok(mut guard) = recv_map.lock()
+                            && let Some(st) = guard.get_mut(&ssrc)
+                        {
+                            st.receive_rtp_packet(rtp);
+                            continue;
+                        }
 
                         // 2) Bind a pending stream by PT, then move it to the map
                         if let Ok(mut pend) = pending_recv.lock() {
@@ -223,18 +231,12 @@ impl RtpSession {
                             ssrc,
                             pt
                         );
-                    },
+                    }
                     Err(RecvTimeoutError::Timeout) => {
-                        sink_debug!(
-                            logger,
-                            "[RTP Session] Received nothing in timeout"
-                        );
-                    },
+                        sink_debug!(logger, "[RTP Session] Received nothing in timeout");
+                    }
                     Err(RecvTimeoutError::Disconnected) => {
-                        sink_error!(
-                            logger,
-                            "[RTP Session] Disconnected"
-                        );
+                        sink_error!(logger, "[RTP Session] Disconnected");
                     }
                 }
             }

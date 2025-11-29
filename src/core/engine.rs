@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::dtls_srtp::{self, DtlsRole, SrtpSessionConfig};
+use crate::ice::type_ice::ice_agent::IceRole;
 use rand::seq;
 
 use crate::{
@@ -158,6 +160,29 @@ impl Engine {
                         local,
                         remote: peer,
                     });
+
+                    // --- NUEVO: decidir rol DTLS en base al rol ICE ---
+                    let dtls_role = match self.cm.ice_agent.role {
+                        IceRole::Controlling => DtlsRole::Client,
+                        IceRole::Controlled => DtlsRole::Server,
+                    };
+
+                    // --- NUEVO: correr DTLS handshake bloqueante ---
+                    let srtp_cfg = match dtls_srtp::run_dtls_handshake(
+                        Arc::clone(&sock),
+                        peer,
+                        dtls_role,
+                        self.logger_sink.clone(),
+                    ) {
+                        Ok(cfg) => Some(cfg),
+                        Err(e) => {
+                            let _ = self
+                                .event_tx
+                                .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
+                            None // podrías también hacer `continue` para no crear sesión
+                        }
+                    };
+
                     let sess = Session::new(
                         Arc::clone(&sock),
                         peer,
@@ -170,6 +195,7 @@ impl Engine {
                             close_timeout: Duration::from_secs(5),
                             close_resend_every: Duration::from_millis(250),
                         },
+                        srtp_cfg,
                     );
                     *self.session.lock().unwrap() = Some(sess);
                 }

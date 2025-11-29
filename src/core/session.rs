@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::dtls_srtp::SrtpSessionConfig;
 use rand::{RngCore, rngs::OsRng};
 
 use crate::rtp_session::{
@@ -81,6 +82,9 @@ pub struct Session {
 
     hs_got_syn: Arc<AtomicBool>,
     hs_sent_synack: Arc<AtomicBool>,
+
+    //SRTP config
+    srtp_cfg: Option<SrtpSessionConfig>,
 }
 
 impl Session {
@@ -105,6 +109,7 @@ impl Session {
         event_tx: Sender<EngineEvent>,
         logger: Arc<dyn LogSink>,
         cfg: SessionConfig,
+        srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Self {
         Self {
             sock,
@@ -124,6 +129,7 @@ impl Session {
             rtp_media_tx: Arc::new(Mutex::new(None)),
             hs_got_syn: Arc::new(AtomicBool::new(false)),
             hs_sent_synack: Arc::new(AtomicBool::new(false)),
+            srtp_cfg,
         }
     }
 
@@ -166,6 +172,7 @@ impl Session {
             rx_media,
             initial_recv,
             Vec::new(),
+            self.srtp_cfg.clone(),
         )
         .and_then(|mut rtp| {
             if let Err(e) = rtp.start() {

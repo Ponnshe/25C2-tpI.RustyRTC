@@ -10,8 +10,9 @@ use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::tls::build_signaling_server_config;
-use crate::signaling::transport::{spawn_connection_threads, spawn_tls_connection_thread};
+use crate::signaling::transport::spawn_tls_connection_thread;
 use crate::signaling::types::ClientId;
+use crate::tls_utils::{CN_KEY_PATH, CN_PATH};
 use crate::{sink_info, sink_warn};
 use rustls::{ServerConnection, StreamOwned};
 
@@ -80,10 +81,10 @@ impl SignalingServer {
 
         // --- TLS config (mkcert server cert + key) ---
         // You can later move these to env vars or config.
-        let cert_path = std::env::var("RUSTYRTC_SIGNALING_CERT")
-            .unwrap_or_else(|_| "certs/signal.internal.pem".to_string());
-        let key_path = std::env::var("RUSTYRTC_SIGNALING_KEY")
-            .unwrap_or_else(|_| "certs/signal.internal-key.pem".to_string());
+        let cert_path =
+            std::env::var("RUSTYRTC_SIGNALING_CERT").unwrap_or_else(|_| CN_PATH.to_string());
+        let key_path =
+            std::env::var("RUSTYRTC_SIGNALING_KEY").unwrap_or_else(|_| CN_KEY_PATH.to_string());
 
         let tls_config = build_signaling_server_config(&cert_path, &key_path)?;
 

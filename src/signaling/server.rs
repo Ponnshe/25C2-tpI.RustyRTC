@@ -137,9 +137,7 @@ impl Server {
             | Msg::JoinOk { .. }
             | Msg::JoinErr { .. }
             | Msg::PeerJoined { .. }
-            | Msg::PeerLeft { .. }
-            | Msg::Ping { .. }
-            | Msg::Pong { .. } => {
+            | Msg::PeerLeft { .. } => {
                 sink_warn!(
                     self.log,
                     "ignoring server-only msg from client {}: {:?}",
@@ -548,17 +546,21 @@ impl Server {
                 }
             }),
             Msg::Ack { txn_id, to, .. } => {
-                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| Msg::Ack {
-                    from: username,
-                    to,
-                    txn_id,
+                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                    Msg::Ack {
+                        from: username,
+                        to,
+                        txn_id,
+                    }
                 })
             }
             Msg::Bye { to, reason, .. } => {
-                self.forward(from, &from_username, 0, to, |username, _txn_id, to| Msg::Bye {
-                    from: username,
-                    to,
-                    reason,
+                self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+                    Msg::Bye {
+                        from: username,
+                        to,
+                        reason,
+                    }
                 })
             }
             other => {

@@ -15,7 +15,8 @@ rustls-pemfile = "2.2.0"
 webpki-roots = "0.26"
 bytemuck = "1.24.0"
 wgpu = "27.0.1"
-udp_dtls = "0.1.0"
+udp-dtls = "0.1.0"
+openssl = { version = "0.10", features = ["v110"] }
 
 [features]
 default = []
