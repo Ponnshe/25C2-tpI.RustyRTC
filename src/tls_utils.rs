@@ -15,18 +15,23 @@ use openssl::x509::X509;
 // ----------------------------------------------------------------------
 // ROOT STORE AND CONSTANTS
 // ----------------------------------------------------------------------
+// --- CONSTANTES SIGNALING (Rustls / mkcert) ---
+pub const SIGNALING_CA_PEM: &[u8] = include_bytes!("../certs/signaling/rootCA.pem");
+pub const SIGNALING_CERT_PATH: &str = "certs/signaling/cert.pem";
+pub const SIGNALING_KEY_PATH: &str = "certs/signaling/key.pem";
+pub const SIGNALING_DOMAIN: &str = "signal.internal";
 
-/// Pinned CA used to authenticate internal services (Signaling & Media).
-/// Incluimos los bytes en el binario para portabilidad.
-pub const MKCERT_CA_PEM: &[u8] = include_bytes!("../certs/rootCA.pem");
-pub const CN_SERVER: &str = "signal.internal";
-pub const CN_PATH: &str = "certs/signal.internal.pem";
-pub const CN_KEY_PATH: &str = "certs/signal.internal-key.pem";
+// --- CONSTANTES DTLS (OpenSSL / Self-signed) ---
+pub const DTLS_CERT_PATH: &str = "certs/dtls/cert.pem";
+pub const DTLS_KEY_PATH: &str = "certs/dtls/key.pem";
+// Para DTLS pinning, usamos el certificado del peer como si fuera la CA
+pub const DTLS_CA_PATH: &str = "certs/dtls/cert.pem";
+pub const DTLS_DOMAIN: &str = "dtls.internal";
 
 /// Construye un RootCertStore que confía ÚNICAMENTE en la CA interna.
 pub fn build_pinned_root_store() -> io::Result<RootCertStore> {
     let mut root_store = RootCertStore::empty();
-    let mut cursor = Cursor::new(MKCERT_CA_PEM);
+    let mut cursor = Cursor::new(SIGNALING_CA_PEM);
 
     let ca_certs: Vec<CertificateDer<'static>> = certs(&mut cursor)
         .collect::<Result<_, _>>()
@@ -106,7 +111,7 @@ pub fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
 /// Formato: "XX:YY:ZZ:..." (mayúsculas)
 pub fn get_local_fingerprint_sha256() -> std::io::Result<String> {
     // Reusamos CN_PATH o la ruta hardcoded
-    let certs_der = load_certs(CN_PATH)?;
+    let certs_der = load_certs(DTLS_CERT_PATH)?;
 
     if certs_der.is_empty() {
         return Err(std::io::Error::new(

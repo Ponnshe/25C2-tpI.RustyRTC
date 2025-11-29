@@ -1,6 +1,19 @@
 use crate::dtls_srtp::SrtpEndpointKeys;
 use std::collections::HashMap;
 
+// [  RTP HEADER (12 bytes)  ]  <-- TEXTO PLANO (Visible)
+// |  V=2 | P | X | CSRC...  |
+// |      Marker | PT        |
+// |   Sequence Number (16b) |  <-- Sequence Number (visible)
+// |       Timestamp         |
+// |         SSRC            |
+// ---------------------------
+// [      RTP PAYLOAD        ]  <-- CIFRADO (Ilegible)
+// |   (H.264 / Opus / VP8)  |
+// |   ... datos basura ...  |
+// ---------------------------
+// [   SRTP AUTH TAG (10b)   ]  <-- TEXTO PLANO (Firma)
+//
 /// Mantiene el estado criptográfico de envío o recepción.
 pub struct SrtpContext {
     keys: SrtpEndpointKeys,

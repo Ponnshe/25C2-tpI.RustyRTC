@@ -1,20 +1,20 @@
 pub mod srtp_context;
 use std::{
-    io::{self, Read, Write},
+    io::{self, Cursor, Read, Write},
     net::{SocketAddr, UdpSocket},
     sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
 
-use crate::app::{log_level::LogLevel, log_sink::LogSink};
-use crate::sink_log;
-use crate::tls_utils::{CN_KEY_PATH, CN_PATH, CN_SERVER, load_certs, load_private_key};
+use crate::{
+    app::{log_level::LogLevel, log_sink::LogSink},
+    sink_log,
+    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH, load_certs},
+};
 
-use openssl::pkcs12::Pkcs12;
-use openssl::pkey::PKey;
-use openssl::x509::X509;
-
-use udp_dtls::{
-    Certificate, DtlsAcceptor, DtlsConnector, DtlsStream, HandshakeError, Identity, SrtpProfile,
+use openssl::ssl::{
+    Ssl, SslContext, SslContextBuilder, SslFiletype, SslMethod, SslStream, SslVerifyMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,38 +29,96 @@ pub struct SrtpEndpointKeys {
     pub master_salt: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum SrtpProfile {
+    Aes128CmHmacSha1_80,
+}
+
 #[derive(Debug, Clone)]
 pub struct SrtpSessionConfig {
     pub profile: SrtpProfile,
     pub outbound: SrtpEndpointKeys,
     pub inbound: SrtpEndpointKeys,
 }
-
-struct UdpChannel {
+#[derive(Debug, Clone)]
+struct BufferedUdpChannel {
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
+    reader: Cursor<Vec<u8>>,
 }
 
-impl Read for UdpChannel {
+impl BufferedUdpChannel {
+    fn new(sock: Arc<UdpSocket>, peer: SocketAddr) -> Self {
+        Self {
+            sock,
+            peer,
+            reader: Cursor::new(Vec::new()),
+        }
+    }
+}
+
+impl Read for BufferedUdpChannel {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // 1. Si hay datos pendientes en el buffer interno, entrégalos.
+        let pos = self.reader.position();
+        let len = self.reader.get_ref().len() as u64;
+
+        if pos < len {
+            return self.reader.read(buf);
+        }
+
+        // 2. Si el buffer está vacío, intentamos leer un nuevo paquete de la red.
+        let mut recv_buf = [0u8; 4096]; // Buffer generoso para evitar truncamiento
+
         loop {
-            let (n, from) = self.sock.recv_from(buf)?;
-            if from == self.peer {
-                return Ok(n);
+            match self.sock.recv_from(&mut recv_buf) {
+                Ok((n, from)) => {
+                    if from == self.peer {
+                        // Paquete válido del peer: rellenar buffer interno
+                        self.reader = Cursor::new(recv_buf[..n].to_vec());
+                        // Satisfacer la lectura actual inmediatamente
+                        return self.reader.read(buf);
+                    }
+                    // Si es de otro peer, ignorar y seguir en el loop (drenaje)
+                    continue;
+                }
+                Err(e) => {
+                    // CRÍTICO: Propagar el error (especialmente WouldBlock)
+                    // No devolver Ok(0) aquí, porque eso cierra la conexión SSL.
+                    return Err(e);
+                }
             }
         }
     }
 }
 
-impl Write for UdpChannel {
+impl Write for BufferedUdpChannel {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.sock.send_to(buf, self.peer)?;
-        Ok(n)
+        self.sock.send_to(buf, self.peer)
     }
-
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+// -----------------------------------------------------------------------------
+// LÓGICA DE HANDSHAKE
+// -----------------------------------------------------------------------------
+
+/// Configuración común para Cliente y Servidor para evitar mismatches.
+fn create_base_context() -> SslContextBuilder {
+    let mut builder = SslContextBuilder::new(SslMethod::dtls()).unwrap();
+    builder.set_security_level(0);
+
+    builder
+        .set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80")
+        .unwrap();
+
+    // Ciphers permisivos
+    builder.set_cipher_list("DEFAULT:@SECLEVEL=0").unwrap();
+    builder.set_verify(SslVerifyMode::NONE);
+
+    builder
 }
 
 pub fn run_dtls_handshake(
@@ -69,7 +127,18 @@ pub fn run_dtls_handshake(
     role: DtlsRole,
     logger: Arc<dyn LogSink>,
 ) -> io::Result<SrtpSessionConfig> {
-    let channel = UdpChannel { sock, peer };
+    // Drenaje inicial defensivo
+    sock.set_nonblocking(true).ok();
+    let mut drain_buf = [0u8; 4096];
+    loop {
+        match sock.recv_from(&mut drain_buf) {
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    // Ahora FORZAMOS blocking durante el handshake
+    sock.set_nonblocking(false)
+        .expect("Failed to set blocking mode for DTLS handshake");
 
     sink_log!(
         &logger,
@@ -78,172 +147,109 @@ pub fn run_dtls_handshake(
         role
     );
 
-    // dtls_connect y dtls_accept devuelven io::Result directamente
+    // Intento único: crear el channel y dejar que OpenSSL bloquee hasta completar el handshake
+    let channel = BufferedUdpChannel::new(sock.clone(), peer);
+
     let dtls_stream = match role {
-        DtlsRole::Client => dtls_connect(channel, &logger)?,
-        DtlsRole::Server => dtls_accept(channel, &logger)?,
-    };
+        DtlsRole::Client => dtls_connect_openssl(channel),
+        DtlsRole::Server => dtls_accept_openssl(channel),
+    }
+    .map_err(|e| {
+        sink_log!(&logger, LogLevel::Error, "OpenSSL Handshake error: {:?}", e);
+        io::Error::new(io::ErrorKind::Other, format!("Handshake failed: {:?}", e))
+    })?;
 
-    let cfg = derive_srtp_from_dtls(dtls_stream, role, &logger)?;
-
-    sink_log!(
-        &logger,
-        LogLevel::Info,
-        "[DTLS] handshake done. Selected SRTP profile: {:?}",
-        cfg.profile
-    );
-
+    sock.set_nonblocking(true).ok();
+    let cfg = derive_srtp_keys(&dtls_stream, role)?;
+    sink_log!(&logger, LogLevel::Info, "[DTLS] Handshake Success!");
     Ok(cfg)
 }
+fn dtls_connect_openssl(
+    stream: BufferedUdpChannel,
+) -> Result<SslStream<BufferedUdpChannel>, openssl::ssl::HandshakeError<BufferedUdpChannel>> {
+    let mut builder = create_base_context();
 
-fn dtls_connect(
-    channel: UdpChannel,
-    logger: &Arc<dyn LogSink>,
-) -> io::Result<DtlsStream<UdpChannel>> {
-    let mut builder = DtlsConnector::builder();
-    builder.add_srtp_profile(SrtpProfile::Aes128CmSha180);
+    // 1. Cargar certificados
+    let server_cert_der =
+        load_certs(DTLS_CERT_PATH).expect("Failed to load server cert for pinning");
 
-    // 1. Cargar Root CA (io::Error se propaga solo con ?)
-    let ca_certs_der = load_certs("certs/rootCA.pem")?;
-
-    for cert_der in ca_certs_der {
-        // 2. Convertir DER a OpenSSL X509. Mapeamos error de OpenSSL a io::Error
-        let x509 = X509::from_der(&cert_der.to_vec())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        builder.add_root_certificate(Certificate(x509));
+    for cert_der in server_cert_der {
+        let x509 = openssl::x509::X509::from_der(&cert_der.to_vec()).unwrap();
+        builder.cert_store_mut().add_cert(x509).unwrap();
     }
 
-    let connector = builder.build().map_err(|e| {
-        io::Error::new(io::ErrorKind::Other, format!("DTLS Builder error: {:?}", e))
-    })?;
-
-    sink_log!(logger, LogLevel::Debug, "[DTLS] client: calling connect()");
-
-    // 3. Conectar y manejar HandshakeError
-    match connector.connect(CN_SERVER, channel) {
-        Ok(stream) => Ok(stream),
-        Err(HandshakeError::Failure(e)) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("DTLS Handshake Failure: {:?}", e),
-        )),
-        Err(HandshakeError::WouldBlock(_)) => Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "DTLS Handshake WouldBlock",
-        )),
-    }
+    let ssl = Ssl::new(&builder.build()).unwrap();
+    ssl.connect(stream)
 }
 
-fn dtls_accept(
-    channel: UdpChannel,
-    logger: &Arc<dyn LogSink>,
-) -> io::Result<DtlsStream<UdpChannel>> {
-    // 1. Cargar archivos
-    let certs_der = load_certs(CN_PATH)?;
-    let key_der = load_private_key(CN_KEY_PATH)?;
+fn dtls_accept_openssl(
+    stream: BufferedUdpChannel,
+) -> Result<SslStream<BufferedUdpChannel>, openssl::ssl::HandshakeError<BufferedUdpChannel>> {
+    let mut builder = create_base_context();
 
-    // 2. Convertir a objetos OpenSSL (Mapeamos errores a io::Error)
-    let x509 = X509::from_der(&certs_der[0].to_vec())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // Cargar identidad del servidor
+    builder.set_certificate_chain_file(DTLS_CERT_PATH).unwrap();
+    builder
+        .set_private_key_file(DTLS_KEY_PATH, SslFiletype::PEM)
+        .unwrap();
+    builder
+        .check_private_key()
+        .expect("Private key does not match certificate");
 
-    let pkey = PKey::private_key_from_der(key_der.secret_der())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    // 3. Crear PKCS#12 usando la API nueva (build2) para evitar deprecation
-    let pkcs12 = Pkcs12::builder()
-        .name("main")
-        .pkey(&pkey)
-        .cert(&x509)
-        .build2("password")
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("PKCS12 build error: {}", e)))?;
-
-    let pkcs12_der = pkcs12
-        .to_der()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    // 4. Crear Identity para udp_dtls
-    // udp_dtls::Error no tiene 'new', pero implementa From<ErrorStack> implícitamente
-    // Sin embargo, map_err aquí debe devolver un io::Error para ser consistente
-    let identity = Identity::from_pkcs12(&pkcs12_der, "password").map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Identity creation error: {:?}", e),
-        )
-    })?;
-
-    let mut builder = DtlsAcceptor::builder(identity);
-    builder.add_srtp_profile(SrtpProfile::Aes128CmSha180);
-
-    let acceptor = builder.build().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("DTLS Acceptor error: {:?}", e),
-        )
-    })?;
-
-    sink_log!(logger, LogLevel::Debug, "[DTLS] server: calling accept()");
-
-    // 5. Aceptar y manejar HandshakeError
-    match acceptor.accept(channel) {
-        Ok(stream) => Ok(stream),
-        Err(HandshakeError::Failure(e)) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("DTLS Handshake Failure: {:?}", e),
-        )),
-        Err(HandshakeError::WouldBlock(_)) => Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "DTLS Handshake WouldBlock",
-        )),
-    }
+    let ssl = Ssl::new(&builder.build()).unwrap();
+    ssl.accept(stream)
 }
 
-fn derive_srtp_from_dtls<S: Read + Write>(
-    dtls: DtlsStream<S>,
+fn derive_srtp_keys(
+    stream: &SslStream<BufferedUdpChannel>,
     role: DtlsRole,
-    logger: &Arc<dyn LogSink>,
 ) -> io::Result<SrtpSessionConfig> {
-    let profile = dtls
-        .selected_srtp_profile()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no SRTP profile negotiated"))?;
+    let selected_profile = stream.ssl().selected_srtp_profile().ok_or(io::Error::new(
+        io::ErrorKind::Other,
+        "No SRTP profile negotiated",
+    ))?;
 
-    let (key_len, salt_len) = srtp_key_salt_lens(profile)?;
-    let total = 2 * (key_len + salt_len);
+    // 3. CORRECCIÓN: name() devuelve &str directo
+    let profile_name = selected_profile.name();
 
-    let km = dtls
-        .keying_material(total)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    let profile = match profile_name {
+        "SRTP_AES128_CM_SHA1_80" => SrtpProfile::Aes128CmHmacSha1_80,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Unsupported SRTP profile: {}", profile_name),
+            ));
+        }
+    };
 
-    let mut offset = 0;
-    let client_mk = km[offset..offset + key_len].to_vec();
-    offset += key_len;
-    let server_mk = km[offset..offset + key_len].to_vec();
-    offset += key_len;
-    let client_ms = km[offset..offset + salt_len].to_vec();
-    offset += salt_len;
-    let server_ms = km[offset..offset + salt_len].to_vec();
+    let label = "EXTRACTOR-dtls_srtp";
+    let key_len = 16;
+    let salt_len = 14;
+    let total_len = 2 * (key_len + salt_len);
+
+    let mut key_mat = vec![0u8; total_len];
+    stream
+        .ssl()
+        .export_keying_material(&mut key_mat, label, None)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Key export failed: {}", e)))?;
+
+    let (client_key, rest) = key_mat.split_at(key_len);
+    let (server_key, rest) = rest.split_at(key_len);
+    let (client_salt, rest) = rest.split_at(salt_len);
+    let (server_salt, _) = rest.split_at(salt_len);
+
+    let client_keys = SrtpEndpointKeys {
+        master_key: client_key.to_vec(),
+        master_salt: client_salt.to_vec(),
+    };
+    let server_keys = SrtpEndpointKeys {
+        master_key: server_key.to_vec(),
+        master_salt: server_salt.to_vec(),
+    };
 
     let (outbound, inbound) = match role {
-        DtlsRole::Client => (
-            SrtpEndpointKeys {
-                master_key: client_mk,
-                master_salt: client_ms,
-            },
-            SrtpEndpointKeys {
-                master_key: server_mk,
-                master_salt: server_ms,
-            },
-        ),
-        DtlsRole::Server => (
-            SrtpEndpointKeys {
-                master_key: server_mk,
-                master_salt: server_ms,
-            },
-            SrtpEndpointKeys {
-                master_key: client_mk,
-                master_salt: client_ms,
-            },
-        ),
+        DtlsRole::Client => (client_keys, server_keys),
+        DtlsRole::Server => (server_keys, client_keys),
     };
 
     Ok(SrtpSessionConfig {
@@ -251,14 +257,4 @@ fn derive_srtp_from_dtls<S: Read + Write>(
         outbound,
         inbound,
     })
-}
-
-fn srtp_key_salt_lens(profile: SrtpProfile) -> io::Result<(usize, usize)> {
-    match profile {
-        SrtpProfile::Aes128CmSha180 => Ok((16, 14)),
-        other => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("unsupported profile: {:?}", other),
-        )),
-    }
 }

@@ -6,13 +6,13 @@ use std::{
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer};
 use rustls_pemfile::certs;
 
-use crate::tls_utils::{MKCERT_CA_PEM, load_certs, load_private_key};
+use crate::tls_utils::{SIGNALING_CA_PEM, load_certs, load_private_key};
 
 /// Build a RootCertStore that trusts ONLY the pinned mkcert CA.
 fn build_pinned_root_store() -> io::Result<RootCertStore> {
     let mut root_store = RootCertStore::empty();
 
-    let mut cursor = Cursor::new(MKCERT_CA_PEM);
+    let mut cursor = Cursor::new(SIGNALING_CA_PEM);
 
     let ca_certs: Vec<CertificateDer<'static>> = certs(&mut cursor)
         .collect::<Result<_, _>>()

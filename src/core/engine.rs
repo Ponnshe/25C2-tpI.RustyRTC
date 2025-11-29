@@ -160,6 +160,10 @@ impl Engine {
                         remote: peer,
                     });
 
+                    // Matar al worker de ICE antes de DTLS ---
+                    // Esto asegura que nadie más esté leyendo del socket.
+                    self.cm.stop_ice_worker();
+
                     // --- decidir rol DTLS en base al rol ICE ---
                     let dtls_role = match self.cm.ice_agent.role {
                         IceRole::Controlling => DtlsRole::Server,
@@ -221,7 +225,8 @@ impl Engine {
                         if let Some(media_transport_tx) =
                             self.media_transport.media_transport_event_tx()
                         {
-                            media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
+                            let _ =
+                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
                         }
                     }
 

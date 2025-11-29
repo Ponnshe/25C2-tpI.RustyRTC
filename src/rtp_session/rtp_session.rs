@@ -375,25 +375,6 @@ impl RtpSession {
         self.recv_streams.lock().unwrap().contains_key(&remote_ssrc)
     }
 
-    pub fn send_frame(&self, local_ssrc: u32, payload: &[u8]) -> Result<(), RtpSessionError> {
-        let mut guard = self.send_streams.lock()?;
-        match guard.get_mut(&local_ssrc) {
-            Some(st) => st
-                .send_frame(payload)
-                .map_err(|source| RtpSessionError::SendStream {
-                    source,
-                    ssrc: local_ssrc,
-                }),
-            None => Err(RtpSessionError::SendStreamMissing { ssrc: local_ssrc }),
-        }
-    }
-
-    /// Convenience: get a mutable handle to a send stream by local SSRC (e.g., to call send_frame).
-    pub fn with_send_stream<F: FnOnce(&mut RtpSendStream)>(&self, local_ssrc: u32, f: F) {
-        if let Some(st) = self.send_streams.lock().unwrap().get_mut(&local_ssrc) {
-            f(st);
-        }
-    }
     pub fn send_rtp_payload(
         &self,
         local_ssrc: u32,

@@ -59,33 +59,6 @@ impl RtpSendStream {
         }
     }
 
-    /// Send one RTP packet carrying `payload`.
-    /// Note: This does NOT advance the RTP timestamp; call `advance_timestamp(samples)` as appropriate for your codec pacing.
-    pub fn send_frame(&mut self, payload: &[u8]) -> Result<(), RtpSendError> {
-        let pt = &self.codec.payload_type;
-        println!("Recibido payload, PT: {pt}");
-        let rtp_packet = RtpPacket::simple(
-            self.codec.payload_type,
-            false,
-            self.seq,
-            self.timestamp,
-            self.local_ssrc,
-            payload.into(),
-        );
-
-        let encoded = rtp_packet.encode()?;
-
-        self.sock.send_to(&encoded, self.peer)?;
-        self.last_pkt_sent = Instant::now();
-
-        // ——— accounting ———
-        self.seq = self.seq.wrapping_add(1);
-        self.packet_count = self.packet_count.wrapping_add(1);
-        self.octet_count = self.octet_count.wrapping_add(payload.len() as u32);
-
-        Ok(())
-    }
-
     /// Advance RTP timestamp by `samples` in codec clock units.
     /// Call this according to your pacing (e.g., for audio: samples per packet; for video: frame-based tick).
     pub const fn advance_timestamp(&mut self, samples: u32) {
@@ -167,7 +140,18 @@ impl RtpSendStream {
             self.local_ssrc,
             payload.to_vec(),
         );
-        let encoded = pkt.encode()?;
+        let mut encoded = pkt.encode()?;
+
+        // SRTP Protect
+        if let Some(ctx) = &self.srtp_context {
+            // ssrc se necesita para el ROC
+            ctx.lock()
+                .unwrap()
+                .protect(self.local_ssrc, &mut encoded)
+                .map_err(|e| {
+                    RtpSendError::SRTP(format!("[SRTP] could not protect packet: {e}").to_owned())
+                })?;
+        }
         self.sock.send_to(&encoded, self.peer)?;
         self.last_pkt_sent = Instant::now();
 

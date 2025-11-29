@@ -1,5 +1,4 @@
 use std::{
-    io,
     net::{self, UdpSocket},
     sync::{
         Arc, Mutex,

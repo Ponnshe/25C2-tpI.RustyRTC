@@ -420,7 +420,7 @@ impl ConnectionManager {
     }
 
     /// Stops the ICE worker and clears it.
-    fn stop_ice_worker(&mut self) {
+    pub fn stop_ice_worker(&mut self) {
         if let Some(w) = &mut self.ice_worker {
             w.stop();
         }
