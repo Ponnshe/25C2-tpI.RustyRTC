@@ -249,6 +249,7 @@ mod tests {
     use super::super::rtp_header_extension::RtpHeaderExtension;
     use super::RtpPacket;
 
+    #[allow(clippy::too_many_arguments)]
     fn mk_header_bytes(
         version: u8,
         padding: bool,
