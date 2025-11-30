@@ -39,7 +39,7 @@ impl RtcpPacketType for App {
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let mut name = [0u8; 4];
         name.copy_from_slice(&payload[4..8]);
         let data = payload[8..].to_vec();
