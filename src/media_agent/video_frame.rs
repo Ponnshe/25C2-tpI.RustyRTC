@@ -53,8 +53,8 @@ impl VideoFrame {
         let w = width as usize;
         let h = height as usize;
         let y_stride = w;
-        let uv_w = (w + 1) / 2;
-        let uv_h = (h + 1) / 2;
+        let uv_w = w.div_ceil(2);
+        let uv_h = h.div_ceil(2);
         let uv_stride = uv_w;
 
         let mut y = vec![0u8; y_stride * h];
@@ -64,7 +64,7 @@ impl VideoFrame {
         for yy in 0..h {
             for xx in 0..w {
                 // simple luminance pattern
-                y[yy * y_stride + xx] = (((xx ^ yy) as u8).wrapping_add(tick)) ;
+                y[yy * y_stride + xx] = (((xx ^ yy) as u8).wrapping_add(tick));
             }
         }
 
@@ -101,9 +101,21 @@ impl VideoFrame {
 
     pub fn as_yuv_planes(&self) -> Option<(&[u8], &[u8], &[u8], usize, usize, usize)> {
         match &self.data {
-            VideoFrameData::Yuv420 { y, u, v, y_stride, u_stride, v_stride } => {
-                Some((y.as_ref(), u.as_ref(), v.as_ref(), *y_stride, *u_stride, *v_stride))
-            }
+            VideoFrameData::Yuv420 {
+                y,
+                u,
+                v,
+                y_stride,
+                u_stride,
+                v_stride,
+            } => Some((
+                y.as_ref(),
+                u.as_ref(),
+                v.as_ref(),
+                *y_stride,
+                *u_stride,
+                *v_stride,
+            )),
             _ => None,
         }
     }
