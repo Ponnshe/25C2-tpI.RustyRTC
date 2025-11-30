@@ -20,6 +20,7 @@ use crate::{
 
 const FRAME_FORMAT: FrameFormat = FrameFormat::Yuv420;
 
+#[allow(clippy::expect_used)]
 pub fn spawn_decoder_worker(
     logger: Arc<dyn LogSink>,
     ma_decoder_event_rx: Receiver<DecoderEvent>,
