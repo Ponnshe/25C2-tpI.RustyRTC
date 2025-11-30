@@ -70,7 +70,7 @@ impl SdesChunk {
         out.push(0); // END
         let rem = (out.len() - start) % 4;
         if rem != 0 {
-            out.extend(std::iter::repeat(0u8).take(4 - rem));
+            out.extend(std::iter::repeat_n(0u8, 4 - rem));
         }
         Ok(())
     }
@@ -79,7 +79,7 @@ impl SdesChunk {
         if buf.len() < 4 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(buf[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let mut idx = 4usize;
         let mut items = Vec::new();
 
@@ -153,7 +153,7 @@ impl RtcpPacketType for Sdes {
 
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
