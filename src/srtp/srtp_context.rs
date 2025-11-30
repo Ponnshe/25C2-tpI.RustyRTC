@@ -18,7 +18,7 @@ pub struct SrtpContext {
     pub session_keys: SessionKeys,
     pub rocs: HashMap<u32, u32>,
     pub last_seqs: HashMap<u32, u16>,
-    pub replay_windows: HashMap<u32, ReplayWindow>,
+    pub(crate) replay_windows: HashMap<u32, ReplayWindow>,
 }
 
 impl SrtpContext {
