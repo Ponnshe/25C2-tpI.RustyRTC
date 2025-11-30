@@ -1,5 +1,6 @@
+use crate::{sink_debug, sink_error, sink_info, srtp::SrtpSessionConfig};
+use rand::{RngCore, rngs::OsRng};
 use std::{
-    io,
     net::{self, UdpSocket},
     sync::{
         Arc, Mutex,
@@ -10,20 +11,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::{RngCore, rngs::OsRng};
-
 use crate::rtp_session::{
     outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
     rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
     core::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
+    log::log_sink::LogSink,
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
-    sink_log,
 };
 
 #[derive(Clone, Copy)]
@@ -81,6 +79,9 @@ pub struct Session {
 
     hs_got_syn: Arc<AtomicBool>,
     hs_sent_synack: Arc<AtomicBool>,
+
+    //SRTP config
+    srtp_cfg: Option<SrtpSessionConfig>,
 }
 
 impl Session {
@@ -105,6 +106,7 @@ impl Session {
         event_tx: Sender<EngineEvent>,
         logger: Arc<dyn LogSink>,
         cfg: SessionConfig,
+        srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Self {
         Self {
             sock,
@@ -124,6 +126,7 @@ impl Session {
             rtp_media_tx: Arc::new(Mutex::new(None)),
             hs_got_syn: Arc::new(AtomicBool::new(false)),
             hs_sent_synack: Arc::new(AtomicBool::new(false)),
+            srtp_cfg,
         }
     }
 
@@ -166,6 +169,7 @@ impl Session {
             rx_media,
             initial_recv,
             Vec::new(),
+            self.srtp_cfg.clone(),
         )
         .and_then(|mut rtp| {
             if let Err(e) = rtp.start() {
@@ -183,14 +187,10 @@ impl Session {
                 if let Ok(mut guard) = self.rtp_media_tx.lock() {
                     *guard = Some(tx_media.clone());
                 }
-                sink_log!(&self.logger, LogLevel::Debug, "[RTP] session started");
+                sink_debug!(&self.logger, "[RTP] session started");
             }
             Err(e) => {
-                sink_log!(
-                    &self.logger,
-                    LogLevel::Error,
-                    "Failed to start RTP session: {e}"
-                );
+                sink_error!(&self.logger, "Failed to start RTP session: {e}");
                 let _ = self.tx_evt.send(EngineEvent::Error(format!(
                     "Failed to start RTP session: {e}"
                 )));
@@ -244,7 +244,7 @@ impl Session {
                         if e.kind() == std::io::ErrorKind::WouldBlock
                             || e.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(e) => {
-                        sink_log!(&logger, LogLevel::Error, "recv error: {e}");
+                        sink_error!(&logger, "recv error: {e}");
                         let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
                         break;
                     }
@@ -267,11 +267,7 @@ impl Session {
         let hs_sent_synack = Arc::clone(&self.hs_sent_synack);
 
         thread::spawn(move || {
-            sink_log!(
-                &logger2,
-                LogLevel::Debug,
-                " [HS] start (local={local_token2:016x})"
-            );
+            sink_debug!(&logger2, " [HS] start (local={local_token2:016x})");
             let started_at = Instant::now();
             let mut last_tx = Instant::now()
                 .checked_sub(cfg.resend_every)
@@ -286,7 +282,7 @@ impl Session {
                 if last_tx.elapsed() >= cfg.resend_every {
                     let syn = protocol::encode_syn(local_token2);
                     let _ = hs_sock.send(syn.as_bytes());
-                    sink_log!(&logger2, LogLevel::Debug, "[HS] send SYN (retransmit)");
+                    sink_debug!(&logger2, "[HS] send SYN (retransmit)");
 
                     if hs_got_syn.load(Ordering::SeqCst) && hs_sent_synack.load(Ordering::SeqCst) {
                         let their = hs_peer_tok.load(Ordering::SeqCst);
@@ -296,36 +292,15 @@ impl Session {
                             let _ = hs_sock.send(synack.as_bytes());
                             let _ = hs_sock.send(ack.as_bytes());
 
-                            sink_log!(&logger2, LogLevel::Debug, "[HS] send SYN-ACK + ACK");
+                            sink_debug!(&logger2, "[HS] send SYN-ACK + ACK");
                         }
                     }
                     last_tx = Instant::now();
                 }
                 thread::sleep(Duration::from_millis(40));
             }
-            sink_log!(&logger2, LogLevel::Debug, "[HS] driver done");
+            sink_debug!(&logger2, "[HS] driver done");
         });
-    }
-
-    /// Sends a raw payload over the UDP socket if the session is established.
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - The payload to send.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating the number of bytes sent or an `io::Error`.
-    ///
-    /// # Errors
-    /// Returns an `Err(io::Error)` if the underlying UDP socket fails to send the data.
-    /// In the non-established case the function returns `Ok(0)` (no send attempted).
-    pub fn send_payload(&self, bytes: &[u8]) -> io::Result<usize> {
-        if self.established.load(Ordering::SeqCst) {
-            self.sock.send(bytes)
-        } else {
-            Ok(0)
-        }
     }
 
     /// Initiates the session closing process.
@@ -345,11 +320,7 @@ impl Session {
         stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
 
         thread::spawn(move || {
-            sink_log!(
-                &logger,
-                LogLevel::Debug,
-                "[CLOSE] driver start (local={local_tok:016x})"
-            );
+            sink_debug!(&logger, "[CLOSE] driver start (local={local_tok:016x})");
             let started_at = Instant::now();
             let mut last_tx = Instant::now()
                 .checked_sub(cfg.close_resend_every)
@@ -357,19 +328,19 @@ impl Session {
 
             while io_flag.load(Ordering::SeqCst) && !close_done.load(Ordering::SeqCst) {
                 if started_at.elapsed() >= cfg.close_timeout {
-                    sink_log!(&logger, LogLevel::Debug, "[CLOSE] timeout → forcing stop");
+                    sink_debug!(&logger, "[CLOSE] timeout → forcing stop");
                     break;
                 }
                 if last_tx.elapsed() >= cfg.close_resend_every {
                     let fin = protocol::encode_fin(local_tok);
                     let _ = sock.send(fin.as_bytes());
 
-                    sink_log!(&logger, LogLevel::Debug, "[CLOSE] send FIN");
+                    sink_debug!(&logger, "[CLOSE] send FIN");
                     let their = peer_tok.load(Ordering::SeqCst);
                     if their != 0 {
                         let finack = protocol::encode_finack(their, local_tok);
                         let _ = sock.send(finack.as_bytes());
-                        sink_log!(&logger, LogLevel::Debug, "[CLOSE] send FIN-ACK");
+                        sink_debug!(&logger, "[CLOSE] send FIN-ACK");
                     }
                     last_tx = Instant::now();
                 }
@@ -377,7 +348,7 @@ impl Session {
             }
             // stop all
             io_flag.store(false, Ordering::SeqCst);
-            sink_log!(&logger, LogLevel::Debug, "[CLOSE] driver done");
+            sink_debug!(&logger, "[CLOSE] driver done");
             let _ = tx.send(EngineEvent::Closed);
         });
     }
@@ -394,66 +365,6 @@ impl Session {
             .ok_or_else(|| "rtp session not running".to_string())?;
         rtp_sesh
             .register_outbound_track(codec)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Method for legacy. Should not be used preferably anymore.
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_media_frame(
-        &self,
-        handle: &OutboundTrackHandle,
-        payload: &[u8],
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let session = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        session
-            .send_frame(handle.local_ssrc, payload)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Method for legacy. Should not be used preferably anymore.
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_rtp_payload(
-        &self,
-        handle: &OutboundTrackHandle,
-        payload: &[u8],
-        timestamp: u32,
-        marker: bool,
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let rtp = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        rtp.send_rtp_payload(handle.local_ssrc, payload, timestamp, marker)
-            .map_err(|e| e.to_string())
-    }
-
-    /// # Errors
-    /// Returns an error if the rtp session is not running or the lock is poisoned.
-    pub fn send_rtp_payloads_for_frame(
-        &self,
-        handle: &OutboundTrackHandle,
-        chunks: &[(&[u8], bool)],
-        timestamp: u32,
-    ) -> Result<(), String> {
-        let guard = self
-            .rtp_session
-            .lock()
-            .map_err(|_| "rtp session lock poisoned".to_string())?;
-        let rtp = guard
-            .as_ref()
-            .ok_or_else(|| "rtp session not running".to_string())?;
-        rtp.send_rtp_payloads_for_frame(handle.local_ssrc, chunks, timestamp)
             .map_err(|e| e.to_string())
     }
 
@@ -505,15 +416,11 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
         AppMsg::Syn { token: their } => {
             // If already established, ignore handshake messages.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv SYN after established -> ignored"
-                );
+                sink_debug!(args.logger, "[HS] recv SYN after established -> ignored");
                 return;
             }
 
-            sink_log!(args.logger, LogLevel::Debug, "[HS] recv SYN({their:016x})");
+            sink_debug!(args.logger, "[HS] recv SYN({their:016x})");
 
             // store the peer token always
             args.rx_tok_peer.store(their, Ordering::SeqCst);
@@ -526,9 +433,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 // mark that we received a SYN and that we sent a SYN-ACK
                 args.hs_got_syn.store(true, Ordering::SeqCst);
                 args.hs_sent_synack.store(true, Ordering::SeqCst);
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[HS] peer token higher -> sent SYN-ACK({their:016x},{local_token:016x})",
                     local_token = args.local_token
                 );
@@ -536,9 +442,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 // we "win" the glare: do not reply with SYN-ACK (we keep sending SYN)
                 // but remember we saw their token (for later).
                 args.hs_got_syn.store(true, Ordering::SeqCst);
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[HS] recv SYN({their:016x}) but local token higher -> continue SYN sending",
                 );
             } else {
@@ -548,9 +453,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 let _ = args.rx_sock.send(synack.as_bytes());
                 args.hs_got_syn.store(true, Ordering::SeqCst);
                 args.hs_sent_synack.store(true, Ordering::SeqCst);
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[HS] recv SYN with equal token -> sent SYN-ACK (tie-breaker)",
                 );
             }
@@ -559,9 +463,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
         AppMsg::SynAck { your, mine } => {
             // If already established, ignore handshake messages.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[HS] recv SYN-ACK after established -> ignored"
                 );
                 return;
@@ -574,46 +477,30 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
 
                 let ack = protocol::encode_ack(mine);
                 let _ = args.rx_sock.send(ack.as_bytes());
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv SYN-ACK ok -> send ACK({mine:016x})"
-                );
+                sink_debug!(args.logger, "[HS] recv SYN-ACK ok -> send ACK({mine:016x})");
 
                 // We sent the ACK that completes the 3-way handshake from our side.
                 // Mark established and notify the engine only once.
                 if !args.rx_est.swap(true, Ordering::SeqCst) {
                     // rx_est was false, now true: emit event
                     let _ = args.tx.send(EngineEvent::Established);
-                    sink_log!(
-                        args.logger,
-                        LogLevel::Debug,
-                        "[HS] ESTABLISHED (via SYN-ACK -> ACK)"
-                    );
+                    sink_debug!(args.logger, "[HS] ESTABLISHED (via SYN-ACK -> ACK)");
                 } else {
-                    sink_log!(args.logger, LogLevel::Debug, "[HS] ESTABLISHED already set");
+                    sink_debug!(args.logger, "[HS] ESTABLISHED already set");
                 }
 
                 // Clear handshake retransmit flags now that we're established.
                 args.hs_sent_synack.store(false, Ordering::SeqCst);
                 args.hs_got_syn.store(false, Ordering::SeqCst);
             } else {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv SYN-ACK not for us -> ignored"
-                );
+                sink_debug!(args.logger, "[HS] recv SYN-ACK not for us -> ignored");
             }
         }
 
         AppMsg::Ack { your } => {
             // If already established, ignore duplicate ACKs.
             if args.rx_est.load(Ordering::SeqCst) {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv ACK after established -> ignored"
-                );
+                sink_debug!(args.logger, "[HS] recv ACK after established -> ignored");
                 return;
             }
 
@@ -622,20 +509,16 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 // Mark established and notify the engine only once.
                 if !args.rx_est.swap(true, Ordering::SeqCst) {
                     let _ = args.tx.send(EngineEvent::Established);
-                    sink_log!(args.logger, LogLevel::Debug, "[HS] ESTABLISHED (via ACK)");
+                    sink_debug!(args.logger, "[HS] ESTABLISHED (via ACK)");
                 } else {
-                    sink_log!(args.logger, LogLevel::Debug, "[HS] ESTABLISHED already set");
+                    sink_debug!(args.logger, "[HS] ESTABLISHED already set");
                 }
 
                 // Clear handshake flags
                 args.hs_sent_synack.store(false, Ordering::SeqCst);
                 args.hs_got_syn.store(false, Ordering::SeqCst);
             } else {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv ACK not for us -> ignored"
-                );
+                sink_debug!(args.logger, "[HS] recv ACK not for us -> ignored");
             }
         }
 
@@ -647,9 +530,8 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
             let finack = protocol::encode_finack(their, args.local_token);
             let _ = args.rx_sock.send(finack.as_bytes());
             stop_rtp_session(args.rtp_session_handle, args.rtp_media_tx);
-            sink_log!(
+            sink_debug!(
                 args.logger,
-                LogLevel::Debug,
                 "[CLOSE] recv FIN({their:016x}) → send FIN-ACK({their:016x},{local_token:016x})",
                 local_token = args.local_token
             );
@@ -661,24 +543,18 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 // they echoed our FIN → finish their side
                 let finack2 = protocol::encode_finack2(mine);
                 let _ = args.rx_sock.send(finack2.as_bytes());
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[CLOSE] recv FIN-ACK ok → send FIN-ACK2({mine:016x})"
                 );
             } else if peer_tok_now != 0 && your == peer_tok_now {
                 // idempotent echo related to their-initiated close; ignore quietly
-                sink_log!(
+                sink_debug!(
                     args.logger,
-                    LogLevel::Debug,
                     "[CLOSE] recv FIN-ACK for peer-initiated close -> ignored"
                 );
             } else {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[CLOSE] recv FIN-ACK not for us -> ignored"
-                );
+                sink_debug!(args.logger, "[CLOSE] recv FIN-ACK not for us -> ignored");
             }
         }
 
@@ -690,17 +566,9 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 let _ = args.tx.send(EngineEvent::Closing { graceful: true });
                 let _ = args.tx.send(EngineEvent::Closed);
                 stop_rtp_session(args.rtp_session_handle, args.rtp_media_tx);
-                sink_log!(
-                    args.logger,
-                    LogLevel::Info,
-                    "[CLOSE] graceful close complete",
-                );
+                sink_info!(args.logger, "[CLOSE] graceful close complete",);
             } else {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[CLOSE] recv FIN-ACK2 not for us -> ignored"
-                );
+                sink_debug!(args.logger, "[CLOSE] recv FIN-ACK2 not for us -> ignored");
             }
         }
 
@@ -716,11 +584,7 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                     let _ = tx_media.send(pkt);
                 }
             } else {
-                sink_log!(
-                    args.logger,
-                    LogLevel::Debug,
-                    "[HS] recv media before established -> ignored"
-                );
+                sink_debug!(args.logger, "[HS] recv media before established -> ignored");
             }
         }
     }

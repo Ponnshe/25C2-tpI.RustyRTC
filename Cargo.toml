@@ -15,10 +15,20 @@ rustls-pemfile = "2.2.0"
 webpki-roots = "0.26"
 bytemuck = "1.24.0"
 wgpu = "27.0.1"
+openssl = "0.10"
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+sha1 = "0.10"
+byteorder = "1.5"
 
 [features]
-default = []
-test-support = []
+default = ["log-info"] # Default to Info, Warn, Error
+log-trace = ["log-debug"]       # Trace implies Debug
+log-debug = ["log-info"]        # Debug implies Info
+log-info  = ["log-warn"]        # Info implies Warn
+log-warn  = ["log-error"]       # Warn implies Error
+log-error = []
 
 
 [lints.clippy]

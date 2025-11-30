@@ -7,16 +7,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::seq;
+use crate::{dtls, ice::type_ice::ice_agent::IceRole};
+use crate::{dtls::DtlsRole, sink_trace};
 
 use crate::{
-    app::log_sink::LogSink,
     congestion_controller::congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
+    log::log_sink::LogSink,
     media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
     media_transport::{
         media_transport::MediaTransport, media_transport_event::MediaTransportEvent,
@@ -59,11 +60,11 @@ impl Engine {
             while let Ok(ev) = event_rx.recv() {
                 match &ev {
                     EngineEvent::RtpIn(pkt) => {
-                        sink_info!(
+                        sink_trace!(
                             logger,
                             "[Engine] Sending RTP Packet to MediaTransport::RtpIn"
                         );
-                        sink_debug!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
+                        sink_trace!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
                         if let Some(tx) = &media_tx {
                             let _ = tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
                         }
@@ -140,6 +141,18 @@ impl Engine {
         self.media_transport.stop();
     }
 
+    pub fn close_session(&mut self) {
+        let mut guard = self.session.lock().unwrap();
+        *guard = None;
+        // This ensures cm.ice_agent.get_data_channel_socket() returns Err/None
+        // in the next poll() loop, preventing the zombie DTLS handshake.
+        self.cm.reset();
+        sink_debug!(
+            self.logger_sink,
+            "[Engine] Session closed and ConnectionManager reset."
+        );
+    }
+
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
         self.cm.drain_ice_events();
@@ -158,6 +171,38 @@ impl Engine {
                         local,
                         remote: peer,
                     });
+
+                    // Matar al worker de ICE antes de DTLS ---
+                    // Esto asegura que nadie más esté leyendo del socket.
+                    self.cm.stop_ice_worker();
+
+                    // --- IceRole -> DtlsRole ---
+                    let dtls_role = match self.cm.ice_agent.role {
+                        IceRole::Controlling => DtlsRole::Server,
+                        IceRole::Controlled => DtlsRole::Client,
+                    };
+
+                    // Retrieve the remote fingerprint stored in CM
+                    let remote_fp = self.cm.remote_fingerprint.clone();
+
+                    // --- blocking DTLS handshake ---
+                    let srtp_cfg = match dtls::run_dtls_handshake(
+                        Arc::clone(&sock),
+                        peer,
+                        dtls_role,
+                        self.logger_sink.clone(),
+                        Duration::from_secs_f32(5.0),
+                        remote_fp,
+                    ) {
+                        Ok(cfg) => Some(cfg),
+                        Err(e) => {
+                            let _ = self
+                                .event_tx
+                                .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
+                            None // podrías también hacer `continue` para no crear sesión
+                        }
+                    };
+
                     let sess = Session::new(
                         Arc::clone(&sock),
                         peer,
@@ -170,6 +215,7 @@ impl Engine {
                             close_timeout: Duration::from_secs(5),
                             close_resend_every: Duration::from_millis(250),
                         },
+                        srtp_cfg,
                     );
                     *self.session.lock().unwrap() = Some(sess);
                 }
@@ -196,7 +242,8 @@ impl Engine {
                         if let Some(media_transport_tx) =
                             self.media_transport.media_transport_event_tx()
                         {
-                            media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
+                            let _ =
+                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
                         }
                     }
 
@@ -215,11 +262,6 @@ impl Engine {
     #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_transport.snapshot_frames()
-    }
-
-    pub fn close_session(&mut self) {
-        let mut guard = self.session.lock().unwrap();
-        *guard = None;
     }
 
     pub fn start_media_transport(&mut self) {

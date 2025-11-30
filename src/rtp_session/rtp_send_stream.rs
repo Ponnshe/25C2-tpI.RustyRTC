@@ -1,20 +1,24 @@
 use std::{
     net::{SocketAddr, UdpSocket},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
 use super::rtp_send_error::RtpSendError;
 use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
-use crate::congestion_controller::congestion_controller::NetworkMetrics;
-use crate::rtcp::{
-    report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
-};
-use crate::rtp::rtp_packet::RtpPacket;
 use crate::rtp_session::time;
+use crate::{
+    congestion_controller::congestion_controller::NetworkMetrics, srtp::srtp_context::SrtpContext,
+};
+use crate::{log::log_sink::LogSink, rtp::rtp_packet::RtpPacket};
+use crate::{
+    rtcp::{report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport},
+    sink_warn,
+};
 
 pub struct RtpSendStream {
+    logger: Arc<dyn LogSink>,
     pub codec: RtpCodec,
     pub local_ssrc: u32,
     seq: u16,
@@ -29,12 +33,20 @@ pub struct RtpSendStream {
     last_pkt_sent: Instant,
 
     pub tx: TxTracker,
+    srtp_context: Option<Arc<Mutex<SrtpContext>>>,
 }
 
 impl RtpSendStream {
-    pub fn new(cfg: RtpSendConfig, sock: Arc<UdpSocket>, peer: SocketAddr) -> Self {
+    pub fn new(
+        logger: Arc<dyn LogSink>,
+        cfg: RtpSendConfig,
+        sock: Arc<UdpSocket>,
+        peer: SocketAddr,
+        srtp_context: Option<Arc<Mutex<SrtpContext>>>,
+    ) -> Self {
         use rand::{RngCore, rngs::OsRng};
         Self {
+            logger,
             codec: cfg.codec,
             local_ssrc: cfg.local_ssrc,
             seq: (OsRng.next_u32() as u16),
@@ -46,34 +58,8 @@ impl RtpSendStream {
             last_sr_built: Instant::now(),
             last_pkt_sent: Instant::now(),
             tx: TxTracker::default(),
+            srtp_context,
         }
-    }
-
-    /// Send one RTP packet carrying `payload`.
-    /// Note: This does NOT advance the RTP timestamp; call `advance_timestamp(samples)` as appropriate for your codec pacing.
-    pub fn send_frame(&mut self, payload: &[u8]) -> Result<(), RtpSendError> {
-        let pt = &self.codec.payload_type;
-        println!("Recibido payload, PT: {pt}");
-        let rtp_packet = RtpPacket::simple(
-            self.codec.payload_type,
-            false,
-            self.seq,
-            self.timestamp,
-            self.local_ssrc,
-            payload.into(),
-        );
-
-        let encoded = rtp_packet.encode()?;
-
-        self.sock.send_to(&encoded, self.peer)?;
-        self.last_pkt_sent = Instant::now();
-
-        // ——— accounting ———
-        self.seq = self.seq.wrapping_add(1);
-        self.packet_count = self.packet_count.wrapping_add(1);
-        self.octet_count = self.octet_count.wrapping_add(payload.len() as u32);
-
-        Ok(())
     }
 
     /// Advance RTP timestamp by `samples` in codec clock units.
@@ -157,7 +143,20 @@ impl RtpSendStream {
             self.local_ssrc,
             payload.to_vec(),
         );
-        let encoded = pkt.encode()?;
+        let mut encoded = pkt.encode()?;
+
+        // SRTP Protect
+        if let Some(ctx) = &self.srtp_context {
+            // ssrc se necesita para el ROC
+            ctx.lock()
+                .unwrap()
+                .protect(self.local_ssrc, &mut encoded)
+                .map_err(|e| {
+                    RtpSendError::SRTP(format!("[SRTP] could not protect packet: {e}").to_owned())
+                })?;
+        } else {
+            sink_warn!(self.logger, "Sending UNENCRYPTED packet");
+        }
         self.sock.send_to(&encoded, self.peer)?;
         self.last_pkt_sent = Instant::now();
 
@@ -168,20 +167,6 @@ impl RtpSendStream {
 
         // Track last timestamp used so SRs reflect the current media clock
         self.timestamp = timestamp;
-        Ok(())
-    }
-
-    /// Optional convenience for video: send many payloads for a single frame timestamp.
-    pub fn send_rtp_payloads_for_frame(
-        &mut self,
-        chunks: &[(&[u8], bool)], // (payload, marker)
-        timestamp: u32,
-    ) -> Result<(), RtpSendError> {
-        for (i, (bytes, marker)) in chunks.iter().enumerate() {
-            // enforce marker only on the last one if you want:
-            let m = if i + 1 == chunks.len() { true } else { *marker };
-            self.send_rtp_payload(bytes, timestamp, m)?;
-        }
         Ok(())
     }
 }

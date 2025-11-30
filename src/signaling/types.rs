@@ -1,4 +1,4 @@
-use crate::signaling::protocol::Msg;
+use crate::signaling::protocol::SignalingMsg;
 
 /// Internal identifier for a connected client (TCP/TLS connection).
 pub type ClientId = u64;
@@ -7,5 +7,5 @@ pub type ClientId = u64;
 #[derive(Debug)]
 pub struct OutgoingMsg {
     pub client_id_target: ClientId,
-    pub msg: Msg,
+    pub msg: SignalingMsg,
 }

@@ -10,13 +10,13 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
     core::{events::EngineEvent, session::Session},
+    log::log_sink::LogSink,
     media_transport::{
         codec::CodecDescriptor, event_loops::constants::RECV_TIMEOUT, events::PacketizerEvent,
     },
     rtp_session::outbound_track_handle::OutboundTrackHandle,
-    sink_debug, sink_error, sink_info,
+    sink_debug, sink_error, sink_info, sink_trace,
 };
 
 pub struct PacketizerEventLoop {
@@ -57,7 +57,7 @@ impl PacketizerEventLoop {
                 match packetizer_event_rx.recv_timeout(TIMEOUT) {
                     Ok(event) => match event {
                         PacketizerEvent::FramePacketized(frame) => {
-                            sink_info!(
+                            sink_trace!(
                                 logger,
                                 "[Packetizer Event Loop (MT)] Received FramePacketized from Packetizer"
                             );
@@ -73,7 +73,7 @@ impl PacketizerEventLoop {
                                 );
                                 continue;
                             };
-                            sink_debug!(
+                            sink_trace!(
                                 logger,
                                 "[Packetizer] outbound_tracks keys: {:?}",
                                 guard.keys().collect::<Vec<_>>()
@@ -88,7 +88,7 @@ impl PacketizerEventLoop {
                                 continue;
                             };
                             let mut sess_guard = session.lock().unwrap();
-                            sink_info!(
+                            sink_debug!(
                                 logger,
                                 "[Packetizer Event Loop (MT)] Using Session to send frame"
                             );

@@ -1,10 +1,10 @@
-use super::{Msg, MsgType, ProtoError};
+use super::{MsgType, ProtoError, SignalingMsg};
 use std::str;
 
 // ---- Encode to body bytes -------------------------------------------------
 
-pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
-    use Msg::*;
+pub fn encode_msg(msg: &SignalingMsg) -> Result<(MsgType, Vec<u8>), ProtoError> {
+    use SignalingMsg::*;
     let mut body = Vec::new();
 
     let msg_type = match msg {
@@ -162,8 +162,8 @@ pub fn encode_msg(msg: &Msg) -> Result<(MsgType, Vec<u8>), ProtoError> {
 
 // ---- Decode from body bytes ----------------------------------------------
 
-pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<Msg, ProtoError> {
-    use Msg::*;
+pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<SignalingMsg, ProtoError> {
+    use SignalingMsg::*;
     let mut cursor = Cursor::new(body);
 
     let msg = match msg_type {

@@ -1,8 +1,8 @@
 use crate::{
-    app::log_sink::LogSink,
     camera_manager::{
         camera_error::CameraError, camera_manager_c::CameraManager, utils::tight_rgb_bytes,
     },
+    log::log_sink::LogSink,
     logger_error, logger_warn,
     media_agent::{
         frame_format::FrameFormat,

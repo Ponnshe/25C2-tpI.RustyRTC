@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 
 use crate::{
-    app::{log_level::LogLevel, log_msg::LogMsg},
+    log::{log_level::LogLevel, log_msg::LogMsg, log_sink::LogSink},
     media_agent,
 };
 
@@ -21,6 +21,14 @@ use crate::{
 #[derive(Clone)]
 pub struct LoggerHandle {
     pub(super) tx: mpsc::SyncSender<LogMsg>,
+}
+
+impl LogSink for LoggerHandle {
+    #[inline]
+    fn log(&self, level: LogLevel, msg: &str, target: &'static str) {
+        // `try_log` takes Into<String>; &str works (it will allocate).
+        let _ = self.try_log(level, msg, target);
+    }
 }
 
 impl LoggerHandle {

@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::AuthBackend;
-use crate::signaling::protocol::Msg;
+use crate::signaling::protocol::SignalingMsg;
 use crate::signaling::server::Server;
 use crate::signaling::types::{ClientId, OutgoingMsg};
 
 /// Router glues the Server state machine to per-client "sinks".
 pub struct Router {
     server: Server,
-    outboxes: HashMap<ClientId, Vec<Msg>>,
+    outboxes: HashMap<ClientId, Vec<SignalingMsg>>,
 }
 
 impl Router {
@@ -55,7 +56,7 @@ impl Router {
     ///
     /// This calls into the Server and enqueues any resulting messages into the
     /// appropriate client outboxes.
-    pub fn handle_from_client(&mut self, from_cid: ClientId, msg: Msg) {
+    pub fn handle_from_client(&mut self, from_cid: ClientId, msg: SignalingMsg) {
         let out_msgs = self.server.handle(from_cid, msg);
         for out_msg in out_msgs {
             self.enqueue(out_msg);
@@ -65,13 +66,13 @@ impl Router {
     /// Drain and return all outgoing messages for a given client.
     ///
     /// Useful for tests, and later for polling connections in a simple loop.
-    pub fn take_outgoing_for(&mut self, client_id: ClientId) -> Vec<Msg> {
+    pub fn take_outgoing_for(&mut self, client_id: ClientId) -> Vec<SignalingMsg> {
         self.outboxes.remove(&client_id).unwrap_or_default()
     }
 
     /// Peek (non-destructive) at outgoing messages for a client.
     /// Mostly helpful in tests.
-    pub fn outgoing_for(&self, client_id: ClientId) -> &[Msg] {
+    pub fn outgoing_for(&self, client_id: ClientId) -> &[SignalingMsg] {
         self.outboxes
             .get(&client_id)
             .map(|v| v.as_slice())
@@ -81,7 +82,7 @@ impl Router {
     /// Drain all pending outgoing messages for all clients.
     ///
     /// Each entry is (client_id_target, msg).
-    pub fn drain_all_outgoing(&mut self) -> Vec<(ClientId, Msg)> {
+    pub fn drain_all_outgoing(&mut self) -> Vec<(ClientId, SignalingMsg)> {
         let mut result = Vec::new();
 
         // Collect keys first to avoid borrowing issues.
@@ -118,7 +119,7 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signaling::protocol::Msg;
+    use crate::signaling::protocol::SignalingMsg;
     #[test]
     fn login_create_session_join_and_offer_are_routed() {
         let mut router = Router::new();
@@ -131,14 +132,14 @@ mod tests {
         // 1) Both clients log in
         router.handle_from_client(
             c1,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "alice".into(),
                 password: "pw1".into(),
             },
         );
         router.handle_from_client(
             c2,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "bob".into(),
                 password: "pw2".into(),
             },
@@ -151,22 +152,22 @@ mod tests {
         assert_eq!(outs2.len(), 1);
 
         match &outs1[0] {
-            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
             other => panic!("expected LoginOk for c1, got {:?}", other),
         }
         match &outs2[0] {
-            Msg::LoginOk { username } => assert_eq!(username, "bob"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "bob"),
             other => panic!("expected LoginOk for c2, got {:?}", other),
         }
 
         // 2) Client 1 creates a session
-        router.handle_from_client(c1, Msg::CreateSession { capacity: 2 });
+        router.handle_from_client(c1, SignalingMsg::CreateSession { capacity: 2 });
 
         let outs1 = router.take_outgoing_for(c1);
         assert_eq!(outs1.len(), 1);
 
         let (session_id, session_code) = match &outs1[0] {
-            Msg::Created {
+            SignalingMsg::Created {
                 session_id,
                 session_code,
             } => (session_id.clone(), session_code.clone()),
@@ -179,7 +180,7 @@ mod tests {
         // 3) Client 2 joins using session_code
         router.handle_from_client(
             c2,
-            Msg::Join {
+            SignalingMsg::Join {
                 session_code: session_code.clone(),
             },
         );
@@ -192,13 +193,13 @@ mod tests {
 
         assert_eq!(outs2.len(), 1);
         match &outs2[0] {
-            Msg::JoinOk { session_id: sid } => assert_eq!(sid, &session_id),
+            SignalingMsg::JoinOk { session_id: sid } => assert_eq!(sid, &session_id),
             other => panic!("expected JoinOk for c2, got {:?}", other),
         }
 
         assert_eq!(outs1_after_join.len(), 1);
         match &outs1_after_join[0] {
-            Msg::PeerJoined {
+            SignalingMsg::PeerJoined {
                 session_id: sid,
                 username,
             } => {
@@ -212,7 +213,7 @@ mod tests {
         let fake_sdp = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n".to_vec();
         router.handle_from_client(
             c1,
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id: 42,
                 from: "alice".into(),
                 to: "bob".into(),
@@ -232,7 +233,7 @@ mod tests {
         let outs2_after_offer = router.take_outgoing_for(c2);
         assert_eq!(outs2_after_offer.len(), 1);
         match &outs2_after_offer[0] {
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id,
                 from,
                 to,
@@ -259,14 +260,14 @@ mod tests {
         // Both clients log in
         router.handle_from_client(
             c1,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "alice".into(),
                 password: "pw1".into(),
             },
         );
         router.handle_from_client(
             c2,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "bob".into(),
                 password: "pw2".into(),
             },
@@ -284,13 +285,13 @@ mod tests {
 
         assert_eq!(*cid1, c1);
         match msg1 {
-            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
             other => panic!("expected LoginOk for c1, got {:?}", other),
         }
 
         assert_eq!(*cid2, c2);
         match msg2 {
-            Msg::LoginOk { username } => assert_eq!(username, "bob"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "bob"),
             other => panic!("expected LoginOk for c2, got {:?}", other),
         }
 

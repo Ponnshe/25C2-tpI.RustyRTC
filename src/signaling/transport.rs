@@ -5,8 +5,8 @@ use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use crate::app::log_sink::LogSink;
-use crate::signaling::protocol::{FrameError, Msg};
+use crate::log::log_sink::LogSink;
+use crate::signaling::protocol::{FrameError, SignalingMsg};
 use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_write_msg};
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
@@ -30,11 +30,11 @@ where
         }
     }
 
-    pub fn recv(&mut self) -> Result<Msg, FrameError> {
+    pub fn recv(&mut self) -> Result<SignalingMsg, FrameError> {
         proto_read_msg(&mut self.stream)
     }
 
-    pub fn send(&mut self, msg: &Msg) -> Result<(), FrameError> {
+    pub fn send(&mut self, msg: &SignalingMsg) -> Result<(), FrameError> {
         proto_write_msg(&mut self.stream, msg)
     }
 }
@@ -48,7 +48,7 @@ pub(crate) fn spawn_tls_connection_thread(
     server_tx: Sender<ServerEvent>,
     log: Arc<dyn LogSink>,
 ) -> io::Result<()> {
-    let (to_client_tx, to_client_rx) = mpsc::channel::<Msg>();
+    let (to_client_tx, to_client_rx) = mpsc::channel::<SignalingMsg>();
 
     // Register client with the central server loop.
     server_tx
@@ -148,7 +148,7 @@ pub(crate) fn spawn_connection_threads(
     server_tx: Sender<ServerEvent>,
     log: Arc<dyn LogSink>,
 ) -> std::io::Result<()> {
-    let (to_client_tx, to_client_rx) = mpsc::channel::<Msg>();
+    let (to_client_tx, to_client_rx) = mpsc::channel::<SignalingMsg>();
 
     // Register client with server
     server_tx

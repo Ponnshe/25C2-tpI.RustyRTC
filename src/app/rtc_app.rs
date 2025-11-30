@@ -3,17 +3,12 @@ use super::{
     utils::show_camera_in_ui,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger, debug_yuv_to_rgb::debug_yuv_to_rgb},
-    core::{
+    app::utils::{update_rgb_texture, update_yuv_texture}, config::{self, Config}, core::{
         engine::Engine,
         events::EngineEvent::{
             self, Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
         },
-    },
-    media_agent::video_frame::{VideoFrame, VideoFrameData},
-    signaling::protocol::Msg,
-    signaling_client::{SignalingClient, SignalingEvent},
-    sink_debug,
+    }, log::{log_level::LogLevel, log_sink::LogSink, logger::Logger}, media_agent::video_frame::{VideoFrame, VideoFrameData}, signaling::protocol::SignalingMsg, signaling_client::{SignalingClient, SignalingEvent}, sink_debug, sink_error
 };
 use eframe::{App, Frame, egui, egui_wgpu::RenderState};
 use std::{
@@ -94,6 +89,8 @@ pub struct RtcApp {
 
     local_yuv_renderer: Option<GpuYuvRenderer>,
     remote_yuv_renderer: Option<GpuYuvRenderer>,
+
+    config: Arc<Config>,
 }
 
 impl RtcApp {
@@ -104,27 +101,40 @@ impl RtcApp {
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
 
     const SIGNALING_SERVER_ADDR: &str = "127.0.0.1:5005";
+
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
         let logger_handle = Arc::new(logger.handle());
+        let config = match config::Config::load("app.conf") {
+            Ok(cfg) => Arc::new(cfg),
+            Err(e) => {
+                sink_error!(
+                    logger_handle,
+                    "Error loading config: {e}. Using default config"
+                );
+                Arc::new(Config::empty())
+            }
+        };
 
         let (local_yuv_renderer, remote_yuv_renderer) =
-            if let Some(render_state) = cc.wgpu_render_state.as_ref() {
-                let local = GpuYuvRenderer::new(
-                    &render_state.device,
-                    render_state.target_format,
-                    logger_handle.clone(),
-                );
-                let remote = GpuYuvRenderer::new(
-                    &render_state.device,
-                    render_state.target_format,
-                    logger_handle.clone(),
-                );
-                (Some(local), Some(remote))
-            } else {
-                (None, None)
-            };
+            cc.wgpu_render_state.as_ref().map_or_else(
+                || (None, None), 
+                |render_state| {
+                    let local = GpuYuvRenderer::new(
+                        &render_state.device,
+                        render_state.target_format,
+                        logger_handle.clone(),
+                    );
+                    let remote = GpuYuvRenderer::new(
+                        &render_state.device,
+                        render_state.target_format,
+                        logger_handle.clone(),
+                    );
+                    (Some(local), Some(remote))
+                },
+            );
+
 
         Self {
             remote_sdp_text: String::new(),
@@ -158,6 +168,7 @@ impl RtcApp {
             next_txn_id: 1,
             local_yuv_renderer,
             remote_yuv_renderer,
+            config
         }
     }
 
@@ -191,36 +202,23 @@ impl RtcApp {
         }
     }
     fn summarize_frame(frame: Option<&VideoFrame>) -> String {
-        match frame {
-            Some(f) => {
+        frame.map_or_else(
+            || "no frame".into(),
+            |f| {
                 let (w, h) = (f.width, f.height);
                 let format = f.format;
                 let bytes = match &f.data {
                     VideoFrameData::Rgb(d) => d.len(),
                     VideoFrameData::Yuv420 { y, u, v, .. } => y.len() + u.len() + v.len(),
                 };
+
                 if w > 0 && h > 0 {
                     format!("{w}x{h} ({format:?}) • {bytes} bytes")
                 } else {
                     format!("{bytes} bytes (pending decode)")
                 }
-            }
-            None => "no frame".into(),
-        }
-    }
-
-    fn push_kbps_log_from_rtp_packets(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.rtp_last_report).as_millis() >= 500 {
-            let kbps = (self.rtp_bytes as f64 * 8.0) / 1000.0 * 2.0; // rough since 0.5s window
-            self.push_ui_log(format!(
-                "RTP: {} pkts, {:.1} kbps (last 0.5s)",
-                self.rtp_pkts, kbps
-            ));
-            self.rtp_pkts = 0;
-            self.rtp_bytes = 0;
-            self.rtp_last_report = now;
-        }
+            },
+        )
     }
 
     fn connect_to_signaling(&mut self) {
@@ -252,7 +250,7 @@ impl RtcApp {
                 self.signaling_client = Some(client);
                 self.signaling_screen = SignalingScreen::Login;
                 self.signaling_error = None;
-                self.status_line = format!("Connecting to {}…", addr);
+                self.status_line = format!("Connecting to {addr}…");
             }
             Err(e) => {
                 let msg = format!("Failed to connect to signaling server: {e}");
@@ -306,37 +304,38 @@ impl RtcApp {
                 self.signaling_error = Some(err.clone());
                 self.push_ui_log(format!("Signaling error: {err}"));
             }
-            SignalingEvent::ServerMsg(msg) => self.handle_server_msg(msg),
+            SignalingEvent::ServerMsg(msg) => self.handle_signaling_server_msg(msg),
         }
     }
 
-    fn handle_server_msg(&mut self, msg: Msg) {
+    #[allow(clippy::assigning_clones)]
+    fn handle_signaling_server_msg(&mut self, msg: SignalingMsg) {
         match msg {
-            Msg::LoginOk { username } => {
+            SignalingMsg::LoginOk { username } => {
                 self.current_username = Some(username.clone());
                 self.signaling_screen = SignalingScreen::Home;
                 self.status_line = format!("Logged in as {username}");
                 self.login_password.clear();
                 self.request_peer_list();
             }
-            Msg::LoginErr { code } => {
-                let msg = format!("Login failed with code {}", code);
+            SignalingMsg::LoginErr { code } => {
+                let msg = format!("Login failed with code {code}");
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::RegisterOk { username } => {
+            SignalingMsg::RegisterOk { username } => {
                 self.status_line = format!("Registered {username}. You can now log in.");
                 self.login_username = username;
             }
-            Msg::RegisterErr { code } => {
-                let msg = format!("Registration failed with code {}", code);
+            SignalingMsg::RegisterErr { code } => {
+                let msg = format!("Registration failed with code {code}");
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::PeersOnline { peers } => {
+            SignalingMsg::PeersOnline { peers } => {
                 self.peers_online = peers;
             }
-            Msg::Offer {
+            SignalingMsg::Offer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -347,9 +346,9 @@ impl RtcApp {
                         sdp: body,
                     };
                     self.status_line = format!("Incoming call from {from}");
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
-                        to: from.clone(),
+                        to: from,
                         txn_id,
                     });
                 }
@@ -357,7 +356,7 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
                 }
             },
-            Msg::Answer {
+            SignalingMsg::Answer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -366,7 +365,7 @@ impl RtcApp {
                     self.call_flow = CallFlow::Active { peer: from.clone() };
                     self.status_line = format!("Received answer from {from}");
                     // Acknowledge receipt so the sender can stop retries if they add reliability.
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from.clone(),
                         txn_id,
@@ -374,7 +373,7 @@ impl RtcApp {
                 }
                 Err(e) => self.push_ui_log(format!("Invalid answer from {from}: {e}")),
             },
-            Msg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
+            SignalingMsg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
                 Ok(line) => match self.engine.apply_remote_candidate(&line) {
                     Ok(()) => {
                         self.push_ui_log(format!("Applied ICE candidate from {from}"));
@@ -389,28 +388,31 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid ICE candidate from {from}: {e}"));
                 }
             },
-            Msg::Ping { nonce } => {
-                let _ = self.send_signaling(Msg::Pong { nonce });
+            SignalingMsg::Ping { nonce } => {
+                let _ = self.send_signaling(SignalingMsg::Pong { nonce });
             }
-            Msg::Bye { from, reason, .. } => {
-                self.push_ui_log(format!("Peer {from} ended call: {:?}", reason));
+            SignalingMsg::Bye { from, reason, .. } => {
+                self.push_ui_log(format!("Peer {from} ended call: {reason:?}"));
                 // Remote already sent BYE; don't echo it back.
                 self.teardown_call(reason, false);
             }
-            Msg::Ack { txn_id, from, .. } => {
+            SignalingMsg::Ack { txn_id, from, .. } => {
                 self.push_ui_log(format!("Received ACK from {from} for txn_id={txn_id}"));
             }
             other => {
-                self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
+                self.background_log(
+                    LogLevel::Debug,
+                    format!("Unhandled signaling message: {other:?}"),
+                );
             }
         }
     }
 
     fn request_peer_list(&mut self) {
-        let _ = self.send_signaling(Msg::ListPeers);
+        let _ = self.send_signaling(SignalingMsg::ListPeers);
     }
 
-    fn send_signaling(&mut self, msg: Msg) -> Result<(), ()> {
+    fn send_signaling(&mut self, msg: SignalingMsg) -> Result<(), ()> {
         if let Some(client) = self.signaling_client.as_ref() {
             if let Err(e) = client.send(msg) {
                 let err = format!("Failed to send signaling message: {e}");
@@ -437,7 +439,7 @@ impl RtcApp {
             return;
         }
         for cand_line in candidates {
-            let msg = Msg::Candidate {
+            let msg = SignalingMsg::Candidate {
                 from: user.clone(),
                 to: peer.to_string(),
                 mid: "0".into(),
@@ -452,7 +454,7 @@ impl RtcApp {
         let Some(user) = self.current_username.clone() else {
             return;
         };
-        let msg = Msg::Bye {
+        let msg = SignalingMsg::Bye {
             from: user,
             to: peer.to_string(),
             reason,
@@ -480,7 +482,7 @@ impl RtcApp {
         let txn_id = self.next_txn_id;
         self.next_txn_id += 1;
         let from = self.current_username.clone().unwrap_or_default();
-        let msg = Msg::Offer {
+        let msg = SignalingMsg::Offer {
             txn_id,
             from: from.clone(),
             to: peer.to_string(),
@@ -506,7 +508,7 @@ impl RtcApp {
                     self.status_line = "Answer not generated.".into();
                     return;
                 }
-                let msg = Msg::Answer {
+                let msg = SignalingMsg::Answer {
                     txn_id,
                     from: self.current_username.clone().unwrap_or_default(),
                     to: from.clone(),
@@ -649,10 +651,6 @@ impl RtcApp {
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
         if matches!(self.conn_state, ConnState::Running) || have_any_texture {
-            if matches!(self.conn_state, ConnState::Running) {
-                self.push_kbps_log_from_rtp_packets();
-            }
-
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
@@ -756,7 +754,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
         });
         if ui.button("Login").clicked() {
-            let _ = self.send_signaling(Msg::Login {
+            let _ = self.send_signaling(SignalingMsg::Login {
                 username: self.login_username.clone(),
                 password: self.login_password.clone(),
             });
@@ -772,7 +770,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.register_password).password(true));
         });
         if ui.button("Register").clicked() {
-            let _ = self.send_signaling(Msg::Register {
+            let _ = self.send_signaling(SignalingMsg::Register {
                 username: self.register_username.clone(),
                 password: self.register_password.clone(),
             });
@@ -952,7 +950,7 @@ impl RtcApp {
                 if !l_buf.is_empty() && lp == rp {
                     self.background_log(
                         LogLevel::Error,
-                        "⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x}).",
+                        format!("⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x})."),
                     );
                 }
 
@@ -972,25 +970,25 @@ impl RtcApp {
                     );
                 }
             } else {
-                self.background_log(LogLevel::Warn, "Skipping debug checks for non-RGB frames");
+                self.background_log(LogLevel::Debug, "Skipping debug checks for non-RGB frames");
             }
         }
     }
+
     fn current_peer(&self) -> Option<String> {
         match &self.call_flow {
-            CallFlow::Dialing { peer, .. } => Some(peer.clone()),
+            CallFlow::Dialing { peer, .. } 
+            | CallFlow::Active { peer } => Some(peer.clone()),
             CallFlow::Incoming { from, .. } => Some(from.clone()),
-            CallFlow::Active { peer } => Some(peer.clone()),
             CallFlow::Idle => None,
         }
     }
 
     fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
-        // 1) Optionally send BYE
-        if send_bye {
-            if let Some(peer) = self.current_peer() {
+        // 1) Conditionally send Bye Singaling Message
+        if send_bye &&
+            let Some(peer) = self.current_peer() {
                 self.send_bye(&peer, reason.clone());
-            }
         }
 
         // 2) Tear down media (safe to call even if session never started)
@@ -1001,6 +999,10 @@ impl RtcApp {
         self.pending_remote_sdp = None;
         self.has_local_description = false;
         self.has_remote_description = false;
+
+        // This ensures 'have_any_texture' becomes false, closing the window.
+        self.local_camera_texture = None;
+        self.remote_camera_texture = None;
 
         if let Some(r) = reason {
             self.status_line = format!("Call ended: {r}");
@@ -1029,7 +1031,15 @@ impl App for RtcApp {
         self.poll_signaling_events();
         self.drain_ui_log_tap();
 
-        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+        // If we hung up (CallFlow::Idle), force frames to None.
+        // This prevents the "last frame" from resurrecting the textures
+        // while the Engine is busy closing gracefully in the background.
+        let (local_frame, remote_frame) = if matches!(self.call_flow, CallFlow::Idle) {
+            (None, None)
+        } else {
+            self.engine.snapshot_frames()
+        };
+
         self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
 
         let logger_handle = Arc::new(self.logger.handle());
@@ -1055,7 +1065,7 @@ impl App for RtcApp {
                     &mut self.remote_yuv_renderer,
                     Some(render_state),
                     "camera/remote",
-                    logger_handle.clone(),
+                    logger_handle,
                 );
             }
         }
@@ -1091,9 +1101,9 @@ fn update_texture_from_frame(
     unique_name: &str,
     logger: Arc<dyn LogSink>,
 ) {
-    let w = frame.width;
-    let h = frame.height;
-    if w == 0 || h == 0 {
+    let width = frame.width;
+    let height = frame.height;
+    if width == 0 || height == 0 {
         return;
     }
 
@@ -1101,8 +1111,8 @@ fn update_texture_from_frame(
         logger,
         "[VIDEO] {:?}: {}x{}, kind={:?}",
         unique_name,
-        w,
-        h,
+        width,
+        height,
         match &frame.data {
             VideoFrameData::Rgb(_) => "RGB",
             VideoFrameData::Yuv420 { .. } => "YUV420",
@@ -1110,181 +1120,16 @@ fn update_texture_from_frame(
     );
     match &frame.data {
         crate::media_agent::video_frame::VideoFrameData::Rgb(rgb) => {
-            // ejemplo: central pixel
-            let x = w as usize / 2;
-            let y = h as usize / 2;
-            let idx = (y * w as usize + x) * 3;
-
-            let r = rgb[idx];
-            let g = rgb[idx+1];
-            let b = rgb[idx+2];
-
-            sink_debug!(logger, "RGB LOCAL: R={} G={} B={}", r, g, b);
-            let image = egui::ColorImage::from_rgb([w as usize, h as usize], rgb);
-            let options = egui::TextureOptions {
-                magnification: egui::TextureFilter::Linear,
-                minification: egui::TextureFilter::Linear,
-                ..Default::default()
-            };
-            let mut tex_mngr = ctx.tex_manager();
-
-            if let Some((id, (prev_w, prev_h))) = texture {
-                if *prev_w != w || *prev_h != h {
-                    tex_mngr.write().free(*id);
-                    let new_id =
-                        tex_mngr
-                            .write()
-                            .alloc(unique_name.to_owned(), image.into(), options);
-                    *texture = Some((new_id, (w, h)));
-                } else {
-                    let delta = egui::epaint::ImageDelta {
-                        image: egui::epaint::ImageData::Color(image.into()),
-                        options,
-                        pos: None,
-                    };
-                    tex_mngr.write().set(*id, delta);
-                }
-            } else {
-                let new_id = tex_mngr
-                    .write()
-                    .alloc(unique_name.to_owned(), image.into(), options);
-                *texture = Some((new_id, (w, h)));
-            }
+            update_rgb_texture(ctx, texture, width, height, rgb, unique_name);
         }
-        crate::media_agent::video_frame::VideoFrameData::Yuv420 {
-            y,
-            u,
-            v,
-            y_stride,
-            u_stride,
-            v_stride,
-        } => {
-
-            let cx = (frame.width / 2) as usize;
-            let cy = (frame.height / 2) as usize;
-
-            let (r, g, b) = yuv420_to_rgb_at(
-                cx, cy,
-                frame.width as usize,
-                frame.height as usize,
-                y, u, v,
-                *y_stride, *u_stride, *v_stride,
+        crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
+            update_yuv_texture(
+                frame,
+                texture,
+                yuv_renderer,
+                render_state,
+                logger,
             );
-
-            // Coordenada central
-            let cx = (frame.width / 2) as usize;
-            let cy = (frame.height / 2) as usize;
-
-            // Índice Y
-            let y_idx = cy * *y_stride + cx;
-
-            // Índice UV (submuestreo 4:2:0)
-            let uv_x = cx / 2;
-            let uv_y = cy / 2;
-            let uv_idx = uv_y * *u_stride + uv_x;
-
-            let y_sample = y[y_idx];
-            let u_sample = u[uv_idx];
-            let v_sample = v[uv_idx];
-
-            sink_debug!(logger, "YUV REMOTO: Y={} U={} V={}", y_sample, u_sample, v_sample);
-
-            // Imprimir todas las conversiones RGB posibles
-            debug_yuv_to_rgb(y_sample, u_sample, v_sample);
-
-            // Además, tu conversión actual para ver qué está devolviendo
-            let (r, g, b) = yuv420_to_rgb_at(
-                cx, cy,
-                frame.width as usize,
-                frame.height as usize,
-                y, u, v,
-                *y_stride, *u_stride, *v_stride,
-            );
-
-            sink_debug!(logger, "RGB REMOTO (TU FUNCIÓN): R={} G={} B={}", r, g, b);
-
-
-            if let (Some(renderer), Some(render_state)) = (yuv_renderer, render_state) {
-                sink_debug!(&logger, "[YUV] Using renderer for {}", unique_name,);
-                renderer.update_frame(
-                    &render_state.device,
-                    &render_state.queue,
-                    frame,
-                    logger.clone(),
-                );
-
-                if let Some(output_texture) = renderer.output_texture() {
-                    let view =
-                        output_texture.create_view(&eframe::wgpu::TextureViewDescriptor::default());
-                    let filter = eframe::wgpu::FilterMode::Nearest;
-                    let mut wgpu_renderer = render_state.renderer.write();
-
-                    if let Some((id, (prev_w, prev_h))) = texture {
-                        if *prev_w != w || *prev_h != h {
-                            wgpu_renderer.free_texture(id);
-                            let new_id = wgpu_renderer.register_native_texture(
-                                &render_state.device,
-                                &view,
-                                filter,
-                            );
-                            *texture = Some((new_id, (w, h)));
-                        } else {
-                            wgpu_renderer.update_egui_texture_from_wgpu_texture(
-                                &render_state.device,
-                                &view,
-                                filter,
-                                *id,
-                            );
-                        }
-                    } else {
-                        let new_id = wgpu_renderer.register_native_texture(
-                            &render_state.device,
-                            &view,
-                            filter,
-                        );
-                        *texture = Some((new_id, (w, h)));
-                    }
-                }
-            }
         }
     }
-}
-
-fn yuv420_to_rgb_at(
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    y_plane: &[u8],
-    u_plane: &[u8],
-    v_plane: &[u8],
-    y_stride: usize,
-    u_stride: usize,
-    v_stride: usize,
-) -> (u8, u8, u8) {
-    // ---- Leer Y ----
-    let y_idx = y * y_stride + x;
-    let Y = y_plane[y_idx] as f32;
-
-    // ---- Leer U y V (resolución /2) ----
-    let uv_x = x / 2;
-    let uv_y = y / 2;
-
-    let u_idx = uv_y * u_stride + uv_x;
-    let v_idx = uv_y * v_stride + uv_x;
-
-    let U = u_plane[u_idx] as f32 - 128.0;
-    let V = v_plane[v_idx] as f32 - 128.0;
-
-    // ---- MISMA FÓRMULA QUE TU SHADER WGSL ----
-    let r = (Y + 1.402 * V) / 255.0;
-    let g = (Y - 0.344136 * U - 0.714136 * V) / 255.0;
-    let b = (Y + 1.772 * U) / 255.0;
-
-    // ---- Clamp y convertir ----
-    let rc = (r.clamp(0.0, 1.0) * 255.0) as u8;
-    let gc = (g.clamp(0.0, 1.0) * 255.0) as u8;
-    let bc = (b.clamp(0.0, 1.0) * 255.0) as u8;
-
-    (rc, gc, bc)
 }

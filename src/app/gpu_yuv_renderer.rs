@@ -1,9 +1,25 @@
+// src/gpu_yuv_renderer.rs
+//! GPU YUV420 -> RGB renderer using wgpu + egui_wgpu_backend.
+//!
+//! Usage (resumen):
+//!  - crea GpuYuvRenderer en la inicialización con device/queue/target_format.
+//!  - por cada frame YUV: call update_frame(queue, &video_frame).
+//!  - obtener egui::TextureId con `egui_texture_id(&mut render_pass, device, queue)`
+//!  - dibujar en UI con `ui.image(texture_id, size)`
+//!
+//! Nota: requiere las crates:
+//!  - wgpu
+//!  - egui_wgpu_backend (o egui_wgpu)
+//!  - egui
+//! Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
+
+use crate::{
+    log::log_sink::LogSink,
+    media_agent::video_frame::{VideoFrame, VideoFrameData},
+    sink_debug, sink_error,
+};
 use eframe::wgpu::{self, PipelineCompilationOptions, util::DeviceExt};
 use std::sync::Arc;
-use crate::{
-    app::log_sink::LogSink,
-    media_agent::video_frame::{VideoFrame, VideoFrameData}, sink_debug, sink_error
-};
 
 pub struct GpuYuvRenderer {
     // pipeline / layout
@@ -43,7 +59,11 @@ pub struct GpuYuvRenderer {
 impl GpuYuvRenderer {
     /// Create a new renderer.
     /// `output_format` should be the swapchain/target format for egui backend; Rgba8UnormSrgb is fine.
-    pub fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat, logger: Arc<dyn LogSink>) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        output_format: wgpu::TextureFormat,
+        logger: Arc<dyn LogSink>,
+    ) -> Self {
         // simple full-screen triangle vertices (pos, uv)
         // we'll use two triangles as a quad (pos.xy, uv.xy)
         #[repr(C)]
@@ -54,9 +74,18 @@ impl GpuYuvRenderer {
         }
         let vertices: &[Vertex] = &[
             // triangle 1
-            Vertex { pos: [-1.0, -1.0], uv: [0.0, 1.0] },
-            Vertex { pos: [ 3.0, -1.0], uv: [2.0, 1.0] }, // trick: full-screen triangle variant
-            Vertex { pos: [-1.0,  3.0], uv: [0.0, -1.0] },
+            Vertex {
+                pos: [-1.0, -1.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                pos: [3.0, -1.0],
+                uv: [2.0, 1.0],
+            }, // trick: full-screen triangle variant
+            Vertex {
+                pos: [-1.0, 3.0],
+                uv: [0.0, -1.0],
+            },
         ];
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -119,7 +148,6 @@ impl GpuYuvRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -129,7 +157,7 @@ impl GpuYuvRenderer {
                         min_binding_size: None,
                     },
                     count: None,
-                }
+                },
             ],
         });
 
@@ -238,9 +266,23 @@ impl GpuYuvRenderer {
     ) {
         let (width, height, y_plane, u_plane, v_plane, y_stride, u_stride, v_stride) =
             match &frame.data {
-                VideoFrameData::Yuv420 { y, u, v, y_stride, u_stride, v_stride } => {
-                    (frame.width, frame.height, y.clone(), u.clone(), v.clone(), *y_stride, *u_stride, *v_stride)
-                }
+                VideoFrameData::Yuv420 {
+                    y,
+                    u,
+                    v,
+                    y_stride,
+                    u_stride,
+                    v_stride,
+                } => (
+                    frame.width,
+                    frame.height,
+                    y.clone(),
+                    u.clone(),
+                    v.clone(),
+                    *y_stride,
+                    *u_stride,
+                    *v_stride,
+                ),
                 _ => return,
             };
 
@@ -253,28 +295,43 @@ impl GpuYuvRenderer {
         if self.y_size != (y_w, y_h) || self.tex_y.is_none() {
             self.tex_y = Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("y-plane"),
-                size: wgpu::Extent3d { width: y_w, height: y_h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: y_w,
+                    height: y_h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             }));
             self.y_size = (y_w, y_h);
         }
 
-        if self.uv_size != (uv_w, uv_h) || self.tex_u.is_none() || self.tex_v.is_none() {
-            let create_uv = |label: &str| device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d { width: uv_w, height: uv_h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
+        if self.uv_size != (uv_w as u32, uv_h as u32)
+            || self.tex_u.is_none()
+            || self.tex_v.is_none()
+        {
+            let create_uv = |label: &str| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: uv_w as u32,
+                        height: uv_h as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            };
             self.tex_u = Some(create_uv("u-plane"));
             self.tex_v = Some(create_uv("v-plane"));
             self.uv_size = (uv_w, uv_h);
@@ -284,12 +341,17 @@ impl GpuYuvRenderer {
         if self.output_texture.is_none() || self.output_view.is_none() || self.y_size.0 != y_w {
             let out = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("yuv-rgb-output"),
-                size: wgpu::Extent3d { width: y_w, height: y_h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: y_w,
+                    height: y_h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: self.output_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             self.output_view = Some(out.create_view(&wgpu::TextureViewDescriptor::default()));
@@ -329,24 +391,62 @@ impl GpuYuvRenderer {
             label: Some("yuv-bind-group"),
             layout: &self.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.tex_y.as_ref().unwrap().create_view(&Default::default())) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.tex_u.as_ref().unwrap().create_view(&Default::default())) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.tex_v.as_ref().unwrap().create_view(&Default::default())) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: self.u_info_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .tex_y
+                            .as_ref()
+                            .unwrap()
+                            .create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .tex_u
+                            .as_ref()
+                            .unwrap()
+                            .create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .tex_v
+                            .as_ref()
+                            .unwrap()
+                            .create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.u_info_buffer.as_entire_binding(),
+                },
             ],
         });
         self.bind_group = Some(bind_group);
 
         // Render pass
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("yuv-render-encoder") });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("yuv-render-encoder"),
+        });
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("yuv-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: self.output_view.as_ref().unwrap(),
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,

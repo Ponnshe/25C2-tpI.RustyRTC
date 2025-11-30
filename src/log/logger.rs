@@ -1,4 +1,4 @@
-use crate::app::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
+use crate::log::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
 
 use std::{
     fs::{self, OpenOptions},
@@ -8,6 +8,20 @@ use std::{
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+// -----------------------------------------------------------------------------
+// COMPILE-TIME CONFIGURATION
+// -----------------------------------------------------------------------------
+
+/// Flush to disk every 100 lines if debugging/tracing (to see crashes near real-time).
+#[cfg(feature = "log-debug")]
+const FLUSH_BATCH_SIZE: u32 = 100;
+
+/// Flush to disk every 1000 lines in production/default (to save I/O & CPU).
+#[cfg(not(feature = "log-debug"))]
+const FLUSH_BATCH_SIZE: u32 = 1_000;
+
+// -----------------------------------------------------------------------------
 
 /// Bounded, non-blocking logger that writes to a per-process log file,
 /// and provides a sampled "UI tap" channel for lightweight UI display.
@@ -86,7 +100,7 @@ impl Logger {
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
                     lines_written = lines_written.wrapping_add(1);
-                    if lines_written % 100 == 0 {
+                    if lines_written % FLUSH_BATCH_SIZE == 0 {
                         let _ = out.flush();
                     }
 

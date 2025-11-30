@@ -2,7 +2,6 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
-use crate::app::log_sink::LogSink;
 use crate::connection_manager::config::{
     DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_MEDIA_KIND, DEFAULT_NET_TYPE,
     DEFAULT_PORT, DEFAULT_PROTO,
@@ -10,6 +9,7 @@ use crate::connection_manager::config::{
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use crate::log::log_sink::LogSink;
 use crate::media_transport::codec::CodecDescriptor;
 use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::attribute::Attribute as SDPAttribute;
@@ -20,6 +20,7 @@ use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
 use crate::sink_error;
+use crate::tls_utils::get_local_fingerprint_sha256;
 
 use std::collections::HashSet;
 use std::{
@@ -28,6 +29,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+pub const DEFAULT_FINGERPRINT: &str =
+    "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00";
 
 /// Manages ICE, SDP negotiation, and RTP codec configuration for a single peer connection.
 ///
@@ -54,6 +57,9 @@ pub struct ConnectionManager {
     remote_codecs: Vec<RtpCodec>,
     /// Background ICE worker handling connectivity asynchronously
     ice_worker: Option<IceWorker>,
+    /// The SHA-256 fingerprint of our DTLS certificate
+    local_fingerprint: String,
+    pub remote_fingerprint: Option<String>,
 }
 
 impl ConnectionManager {
@@ -63,6 +69,10 @@ impl ConnectionManager {
     #[must_use]
     pub fn new(logger_handle: Arc<dyn LogSink>) -> Self {
         let ice_agent = IceAgent::with_logger(IceRole::Controlling, logger_handle.clone());
+        let local_fingerprint = get_local_fingerprint_sha256().unwrap_or_else(|e| {
+            eprintln!("Failed to get local fingerprint: {}", e);
+            DEFAULT_FINGERPRINT.to_string()
+        });
         Self {
             logger_handle,
             ice_agent,
@@ -73,6 +83,8 @@ impl ConnectionManager {
             local_codecs: Vec::new(),
             remote_codecs: vec![],
             ice_worker: None,
+            local_fingerprint,
+            remote_fingerprint: None,
         }
     }
 
@@ -119,6 +131,7 @@ impl ConnectionManager {
                 let (remote_is_ice_lite, _ufrag, _pwd) =
                     self.extract_and_store_remote_ice_meta(&sdp)?;
                 self.extract_and_store_rtp_meta(&sdp)?;
+                self.extract_and_store_fingerprint(&sdp)?;
                 self.remote_description = Some(sdp);
                 self.signaling = SignalingState::HaveRemoteOffer;
 
@@ -137,6 +150,7 @@ impl ConnectionManager {
                 let (_remote_is_ice_lite, _ufrag, _pwd) =
                     self.extract_and_store_remote_ice_meta(&sdp)?;
                 self.extract_and_store_rtp_meta(&sdp)?;
+                self.extract_and_store_fingerprint(&sdp)?;
                 self.remote_description = Some(sdp);
                 self.signaling = SignalingState::Stable;
                 Ok(OutboundSdp::None)
@@ -410,7 +424,7 @@ impl ConnectionManager {
     }
 
     /// Stops the ICE worker and clears it.
-    fn stop_ice_worker(&mut self) {
+    pub fn stop_ice_worker(&mut self) {
         if let Some(w) = &mut self.ice_worker {
             w.stop();
         }
@@ -464,6 +478,19 @@ impl ConnectionManager {
         attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
         attrs.push(SDPAttribute::new("ice-pwd", pwd));
 
+        // a=fingerprint:sha-256 XX:YY:ZZ...
+        attrs.push(SDPAttribute::new(
+            "fingerprint",
+            Some(format!("sha-256 {}", self.local_fingerprint)),
+        ));
+        // --- Indicar setup role para DTLS ---
+        if matches!(self.signaling, SignalingState::Stable) {
+            attrs.push(SDPAttribute::new("setup", Some("actpass".into())));
+        } else {
+            // Si estamos respondiendo (Answer), generalmente tomamos el rol opuesto.
+            attrs.push(SDPAttribute::new("setup", Some("active".into())));
+        }
+
         if self.local_codecs.is_empty() {
             attrs.push(SDPAttribute::new(
                 "rtpmap",
@@ -491,6 +518,48 @@ impl ConnectionManager {
         attrs.push(SDPAttribute::new("rtcp-mux", None));
         media_desc.set_attrs(attrs);
         media_desc
+    }
+
+    fn extract_and_store_fingerprint(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
+        for m in remote.media() {
+            for a in m.attrs() {
+                if a.key() == "fingerprint" {
+                    if let Some(val) = a.value() {
+                        let parts: Vec<&str> = val.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            // parts[0] is "sha-256", parts[1] is the hash
+                            self.remote_fingerprint = Some(parts[1].to_string());
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        // It is valid to not find one immediately if the SDP is partial,
+        // but for a full connection, it's eventually required.
+        Ok(())
+    }
+    /// Resets the manager to a clean state, ready for a new call.
+    /// This clears ICE state, signaling state, and stops the worker.
+    pub fn reset(&mut self) {
+        // Stop the background worker immediately
+        self.stop_ice_worker();
+
+        // Re-initialize the ICE agent (clears candidates, nominated pairs, etc.)
+        self.ice_agent = IceAgent::with_logger(IceRole::Controlling, self.logger_handle.clone());
+
+        // Reset state flags
+        self.signaling = SignalingState::Stable;
+        self.ice_phase = IcePhase::Idle;
+
+        // Clear SDPs
+        self.local_description = None;
+        self.remote_description = None;
+        self.remote_codecs.clear();
+        self.remote_fingerprint = None;
+
+        // We keep local_codecs, local_fingerprint, and logger_handle
+        // as they are consistent across calls.
     }
 }
 

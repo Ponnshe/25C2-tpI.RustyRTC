@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::app::log_sink::LogSink;
-use crate::signaling::protocol::Msg;
+use crate::log::log_sink::LogSink;
+use crate::signaling::protocol::SignalingMsg;
 use crate::signaling::router::Router;
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
@@ -12,7 +12,7 @@ use crate::{sink_debug, sink_info, sink_warn};
 pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<ServerEvent>) {
     use ServerEvent::*;
 
-    let mut clients: HashMap<ClientId, Sender<Msg>> = HashMap::new();
+    let mut clients: HashMap<ClientId, Sender<SignalingMsg>> = HashMap::new();
 
     while let Ok(ev) = rx.recv() {
         match ev {
@@ -72,8 +72,8 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
 }
 /// Helper: short variant name for logging.
 /// We avoid logging full SDP/candidates here.
-fn msg_name(msg: &Msg) -> &'static str {
-    use Msg::*;
+fn msg_name(msg: &SignalingMsg) -> &'static str {
+    use SignalingMsg::*;
     match msg {
         Hello { .. } => "Hello",
         Login { .. } => "Login",
@@ -107,8 +107,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::app::log_sink::NoopLogSink;
-    use crate::signaling::protocol::Msg;
+    use crate::log::NoopLogSink;
+    use crate::signaling::protocol::SignalingMsg;
     use crate::signaling::router::Router;
     use crate::signaling::types::ClientId;
 
@@ -124,7 +124,7 @@ mod tests {
         });
 
         // Channel for server -> client 1
-        let (to_client_tx, to_client_rx) = mpsc::channel::<Msg>();
+        let (to_client_tx, to_client_rx) = mpsc::channel::<SignalingMsg>();
         let client_id: ClientId = 1;
 
         // 1) Register client 1 with the server loop
@@ -139,7 +139,7 @@ mod tests {
         ev_tx
             .send(ServerEvent::MsgFromClient {
                 client_id,
-                msg: Msg::Login {
+                msg: SignalingMsg::Login {
                     username: "alice".into(),
                     password: "secret".into(),
                 },
@@ -152,7 +152,7 @@ mod tests {
             .expect("expected a message from server");
 
         match msg {
-            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
             other => panic!("expected LoginOk, got {:?}", other),
         }
 

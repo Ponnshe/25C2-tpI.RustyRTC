@@ -2,12 +2,13 @@ use rand::Rng;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::AuthError;
 use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};
 use crate::signaling::presence::Presence;
-use crate::signaling::protocol::{Msg, SessionCode, SessionId, UserName};
+use crate::signaling::protocol::{SessionCode, SessionId, SignalingMsg, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
 use crate::{sink_debug, sink_info, sink_trace, sink_warn};
@@ -92,9 +93,9 @@ impl Server {
     /// Main entrypoint: handle a message from a client.
     ///
     /// Returns a list of (target_client, Msg) to send.
-    pub fn handle(&mut self, from_cid: ClientId, msg: Msg) -> Vec<OutgoingMsg> {
+    pub fn handle(&mut self, from_cid: ClientId, msg: SignalingMsg) -> Vec<OutgoingMsg> {
         match msg {
-            Msg::Hello { client_version } => {
+            SignalingMsg::Hello { client_version } => {
                 // For now: ignore and maybe log. No reply required.
                 sink_trace!(
                     self.log,
@@ -105,41 +106,43 @@ impl Server {
                 Vec::new()
             }
 
-            Msg::Login { username, password } => self.handle_login(from_cid, username, password),
+            SignalingMsg::Login { username, password } => {
+                self.handle_login(from_cid, username, password)
+            }
 
-            Msg::Register { username, password } => {
+            SignalingMsg::Register { username, password } => {
                 self.handle_register(from_cid, username, password)
             }
 
-            Msg::ListPeers => self.handle_list_peers(from_cid),
+            SignalingMsg::ListPeers => self.handle_list_peers(from_cid),
 
-            Msg::CreateSession { capacity } => self.handle_create_session(from_cid, capacity),
+            SignalingMsg::CreateSession { capacity } => {
+                self.handle_create_session(from_cid, capacity)
+            }
 
-            Msg::Join { session_code } => self.handle_join(from_cid, session_code),
+            SignalingMsg::Join { session_code } => self.handle_join(from_cid, session_code),
 
-            Msg::Offer { .. }
-            | Msg::Answer { .. }
-            | Msg::Candidate { .. }
-            | Msg::Ack { .. }
-            | Msg::Bye { .. } => self.forward_signaling(from_cid, msg),
+            SignalingMsg::Offer { .. }
+            | SignalingMsg::Answer { .. }
+            | SignalingMsg::Candidate { .. }
+            | SignalingMsg::Ack { .. }
+            | SignalingMsg::Bye { .. } => self.forward_signaling(from_cid, msg),
 
-            Msg::Ping { nonce } => vec![OutgoingMsg {
+            SignalingMsg::Ping { nonce } => vec![OutgoingMsg {
                 client_id_target: from_cid,
-                msg: Msg::Pong { nonce },
+                msg: SignalingMsg::Pong { nonce },
             }],
-            Msg::Pong { .. } => Vec::new(),
-            Msg::LoginOk { .. }
-            | Msg::LoginErr { .. }
-            | Msg::RegisterOk { .. }
-            | Msg::RegisterErr { .. }
-            | Msg::PeersOnline { .. }
-            | Msg::Created { .. }
-            | Msg::JoinOk { .. }
-            | Msg::JoinErr { .. }
-            | Msg::PeerJoined { .. }
-            | Msg::PeerLeft { .. }
-            | Msg::Ping { .. }
-            | Msg::Pong { .. } => {
+            SignalingMsg::Pong { .. } => Vec::new(),
+            SignalingMsg::LoginOk { .. }
+            | SignalingMsg::LoginErr { .. }
+            | SignalingMsg::RegisterOk { .. }
+            | SignalingMsg::RegisterErr { .. }
+            | SignalingMsg::PeersOnline { .. }
+            | SignalingMsg::Created { .. }
+            | SignalingMsg::JoinOk { .. }
+            | SignalingMsg::JoinErr { .. }
+            | SignalingMsg::PeerJoined { .. }
+            | SignalingMsg::PeerLeft { .. } => {
                 sink_warn!(
                     self.log,
                     "ignoring server-only msg from client {}: {:?}",
@@ -149,6 +152,30 @@ impl Server {
                 Vec::new()
             }
         }
+    }
+
+    fn broadcast_peer_list_update(&self) -> Vec<OutgoingMsg> {
+        let mut out_msgs = Vec::new();
+        let all_usernames = self.presence.online_usernames();
+        let all_clients = self.presence.all_client_ids();
+
+        for client_id in all_clients {
+            // Get the username for this specific client so we can filter it out of their list
+            if let Some(my_username) = self.presence.username_for(client_id) {
+                // Filter: everyone except me
+                let peers: Vec<String> = all_usernames
+                    .iter()
+                    .filter(|u| *u != my_username)
+                    .cloned()
+                    .collect();
+
+                out_msgs.push(OutgoingMsg {
+                    client_id_target: client_id,
+                    msg: SignalingMsg::PeersOnline { peers },
+                });
+            }
+        }
+        out_msgs
     }
 
     /// Called when a TCP connection closes, to clean up state.
@@ -175,13 +202,16 @@ impl Server {
                 for member in remaining_members {
                     out_msgs.push(OutgoingMsg {
                         client_id_target: member,
-                        msg: Msg::PeerLeft {
+                        msg: SignalingMsg::PeerLeft {
                             session_id: session_id.clone(),
                             username: username.clone(),
                         },
                     });
                 }
             }
+
+            // 2. Broadcast updated peer list to everyone else
+            out_msgs.extend(self.broadcast_peer_list_update());
         } else {
             sink_info!(
                 self.log,
@@ -226,7 +256,7 @@ impl Server {
 
             out.push(OutgoingMsg {
                 client_id_target: client,
-                msg: Msg::LoginErr { code },
+                msg: SignalingMsg::LoginErr { code },
             });
             return out;
         }
@@ -242,7 +272,7 @@ impl Server {
             let code = LoginErrorCode::AlreadyLoggedIn.as_u16();
             out.push(OutgoingMsg {
                 client_id_target: client,
-                msg: Msg::LoginErr { code },
+                msg: SignalingMsg::LoginErr { code },
             });
             return out;
         }
@@ -256,8 +286,10 @@ impl Server {
         let _ = self.presence.login(client, username.clone());
         out.push(OutgoingMsg {
             client_id_target: client,
-            msg: Msg::LoginOk { username },
+            msg: SignalingMsg::LoginOk { username },
         });
+        // 4) Broadcast updated peer list to everyone (including the new user)
+        out.extend(self.broadcast_peer_list_update());
         out
     }
 
@@ -281,7 +313,7 @@ impl Server {
                 );
                 out.push(OutgoingMsg {
                     client_id_target: client_id,
-                    msg: Msg::RegisterOk {
+                    msg: SignalingMsg::RegisterOk {
                         username: username.clone(),
                     },
                 });
@@ -298,7 +330,7 @@ impl Server {
                 );
                 out.push(OutgoingMsg {
                     client_id_target: client_id,
-                    msg: Msg::RegisterErr {
+                    msg: SignalingMsg::RegisterErr {
                         code: code.as_u16(),
                     },
                 });
@@ -320,7 +352,7 @@ impl Server {
             );
             out.push(OutgoingMsg {
                 client_id_target: client_id,
-                msg: Msg::PeersOnline { peers: Vec::new() },
+                msg: SignalingMsg::PeersOnline { peers: Vec::new() },
             });
             return out;
         } else if let Some(username) = requester.as_ref() {
@@ -342,7 +374,7 @@ impl Server {
 
         out.push(OutgoingMsg {
             client_id_target: client_id,
-            msg: Msg::PeersOnline { peers },
+            msg: SignalingMsg::PeersOnline { peers },
         });
         out
     }
@@ -352,7 +384,7 @@ impl Server {
 
         // Require login first
         let Some(username) = self.require_logged_in(client_id) else {
-            let msg = Msg::JoinErr {
+            let msg = SignalingMsg::JoinErr {
                 code: JoinErrorCode::NotLoggedIn.as_u16(),
             };
             sink_warn!(
@@ -392,7 +424,7 @@ impl Server {
             capacity
         );
 
-        let msg = Msg::Created {
+        let msg = SignalingMsg::Created {
             session_id: id,
             session_code: code,
         };
@@ -408,7 +440,7 @@ impl Server {
 
         // require login
         let Some(username) = self.require_logged_in(client_id) else {
-            let msg = Msg::JoinErr {
+            let msg = SignalingMsg::JoinErr {
                 code: JoinErrorCode::NotLoggedIn.as_u16(),
             };
             sink_warn!(
@@ -434,7 +466,7 @@ impl Server {
                     session_id
                 );
                 // 1) JoinOk to the joiner
-                let join_ok = Msg::JoinOk {
+                let join_ok = SignalingMsg::JoinOk {
                     session_id: session_id.clone(),
                 };
                 out_msgs.push(OutgoingMsg {
@@ -450,7 +482,7 @@ impl Server {
                         }
                         out_msgs.push(OutgoingMsg {
                             client_id_target: member,
-                            msg: Msg::PeerJoined {
+                            msg: SignalingMsg::PeerJoined {
                                 session_id: session_id.clone(),
                                 username: username.clone(),
                             },
@@ -466,7 +498,7 @@ impl Server {
                     username,
                     session_code
                 );
-                let msg = Msg::JoinErr {
+                let msg = SignalingMsg::JoinErr {
                     code: JoinErrorCode::NotFound.as_u16(),
                 };
                 out_msgs.push(OutgoingMsg {
@@ -482,7 +514,7 @@ impl Server {
                     username,
                     session_code
                 );
-                let msg = Msg::JoinErr {
+                let msg = SignalingMsg::JoinErr {
                     code: JoinErrorCode::Full.as_u16(),
                 };
                 out_msgs.push(OutgoingMsg {
@@ -500,7 +532,7 @@ impl Server {
     /// - target must be logged in
     ///
     /// On violation: log a warning and drop the message.
-    fn forward_signaling(&mut self, from: ClientId, msg: Msg) -> Vec<OutgoingMsg> {
+    fn forward_signaling(&mut self, from: ClientId, msg: SignalingMsg) -> Vec<OutgoingMsg> {
         // 1) sender must be logged in
         let Some(from_username) = self.require_logged_in(from) else {
             sink_warn!(
@@ -512,34 +544,34 @@ impl Server {
         };
 
         match msg {
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id, to, sdp, ..
             } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
-                Msg::Offer {
+                SignalingMsg::Offer {
                     txn_id,
                     from: username,
                     to,
                     sdp,
                 }
             }),
-            Msg::Answer {
+            SignalingMsg::Answer {
                 txn_id, to, sdp, ..
             } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
-                Msg::Answer {
+                SignalingMsg::Answer {
                     txn_id,
                     from: username,
                     to,
                     sdp,
                 }
             }),
-            Msg::Candidate {
+            SignalingMsg::Candidate {
                 to,
                 mid,
                 mline_index,
                 cand,
                 ..
             } => self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
-                Msg::Candidate {
+                SignalingMsg::Candidate {
                     from: username,
                     to,
                     mid,
@@ -547,18 +579,22 @@ impl Server {
                     cand,
                 }
             }),
-            Msg::Ack { txn_id, to, .. } => {
-                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| Msg::Ack {
-                    from: username,
-                    to,
-                    txn_id,
+            SignalingMsg::Ack { txn_id, to, .. } => {
+                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                    SignalingMsg::Ack {
+                        from: username,
+                        to,
+                        txn_id,
+                    }
                 })
             }
-            Msg::Bye { to, reason, .. } => {
-                self.forward(from, &from_username, 0, to, |username, _txn_id, to| Msg::Bye {
-                    from: username,
-                    to,
-                    reason,
+            SignalingMsg::Bye { to, reason, .. } => {
+                self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+                    SignalingMsg::Bye {
+                        from: username,
+                        to,
+                        reason,
+                    }
                 })
             }
             other => {
@@ -581,7 +617,7 @@ impl Server {
         builder: F,
     ) -> Vec<OutgoingMsg>
     where
-        F: FnOnce(UserName, u64, UserName) -> Msg,
+        F: FnOnce(UserName, u64, UserName) -> SignalingMsg,
     {
         // 2) resolve target client by username
         let Some(target_client) = self.presence.client_id_for(&to_username) else {
@@ -598,9 +634,9 @@ impl Server {
         let msg = builder(from_username.clone(), txn_id, to_username.clone());
 
         let kind = match &msg {
-            Msg::Offer { .. } => "Offer",
-            Msg::Answer { .. } => "Answer",
-            Msg::Candidate { .. } => "Candidate",
+            SignalingMsg::Offer { .. } => "Offer",
+            SignalingMsg::Answer { .. } => "Answer",
+            SignalingMsg::Candidate { .. } => "Candidate",
             _ => "Signaling",
         };
 
@@ -661,7 +697,7 @@ impl Server {
                 for member in remaining_members {
                     out_msgs.push(OutgoingMsg {
                         client_id_target: member,
-                        msg: Msg::PeerLeft {
+                        msg: SignalingMsg::PeerLeft {
                             session_id: session_id.clone(),
                             username: username.clone(),
                         },
@@ -677,7 +713,7 @@ impl Server {
 mod tests {
     use super::*;
     use crate::signaling::auth::InMemoryAuthBackend;
-    use crate::signaling::protocol::Msg;
+    use crate::signaling::protocol::SignalingMsg;
 
     fn new_server() -> Server {
         Server::with_log(Arc::new(NoopLogSink))
@@ -693,7 +729,7 @@ mod tests {
     fn login(server: &mut Server, client_id: ClientId, username: &str) {
         let out = server.handle(
             client_id,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: username.to_string(),
                 password: "pw".to_string(),
             },
@@ -703,7 +739,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].client_id_target, client_id);
         match &out[0].msg {
-            Msg::LoginOk { username: u } => assert_eq!(u, username),
+            SignalingMsg::LoginOk { username: u } => assert_eq!(u, username),
             other => panic!("expected LoginOk, got {:?}", other),
         }
     }
@@ -716,7 +752,7 @@ mod tests {
         // client logs in
         let outs = server.handle(
             client1,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "alice".into(),
                 password: "pw".into(),
             },
@@ -724,15 +760,15 @@ mod tests {
 
         assert_eq!(outs.len(), 1);
         match &outs[0].msg {
-            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
             other => panic!("expected LoginOk, got {:?}", other),
         }
 
         // client creates session
-        let outs2 = server.handle(client1, Msg::CreateSession { capacity: 2 });
+        let outs2 = server.handle(client1, SignalingMsg::CreateSession { capacity: 2 });
         assert_eq!(outs2.len(), 1);
         match &outs2[0].msg {
-            Msg::Created {
+            SignalingMsg::Created {
                 session_id,
                 session_code,
             } => {
@@ -749,7 +785,7 @@ mod tests {
 
         let res = server.handle(
             1,
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id: 1,
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -774,7 +810,7 @@ mod tests {
         // alice sends Offer to bob, who is not logged in
         let res = server.handle(
             1,
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id: 1,
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -799,7 +835,7 @@ mod tests {
 
         let res = server.handle(
             1,
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id: 1,
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -810,7 +846,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].client_id_target, 2);
         match &res[0].msg {
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id,
                 from,
                 to,
@@ -837,13 +873,13 @@ mod tests {
         login(&mut server, bob, "bob");
 
         // 2) alice creates a session
-        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+        let created = server.handle(alice, SignalingMsg::CreateSession { capacity: 2 });
 
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].client_id_target, alice);
 
         let (session_id, session_code) = match &created[0].msg {
-            Msg::Created {
+            SignalingMsg::Created {
                 session_id,
                 session_code,
             } => (session_id.clone(), session_code.clone()),
@@ -853,7 +889,7 @@ mod tests {
         // 3) bob joins that session
         let joined = server.handle(
             bob,
-            Msg::Join {
+            SignalingMsg::Join {
                 session_code: session_code.clone(),
             },
         );
@@ -870,12 +906,12 @@ mod tests {
         let mut saw_peer_joined = false;
         for m in &joined {
             match &m.msg {
-                Msg::JoinOk { session_id: sid } => {
+                SignalingMsg::JoinOk { session_id: sid } => {
                     assert_eq!(m.client_id_target, bob);
                     assert_eq!(sid, &session_id);
                     saw_join_ok = true;
                 }
-                Msg::PeerJoined {
+                SignalingMsg::PeerJoined {
                     session_id: sid,
                     username,
                 } => {
@@ -896,7 +932,7 @@ mod tests {
 
         let res = server.handle(
             alice,
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id,
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -915,7 +951,7 @@ mod tests {
         assert_eq!(out.client_id_target, bob);
 
         match &out.msg {
-            Msg::Offer {
+            SignalingMsg::Offer {
                 txn_id: t,
                 from,
                 to,
@@ -937,12 +973,12 @@ mod tests {
         login(&mut server, 2, "bob");
         login(&mut server, 3, "carol");
 
-        let res = server.handle(1, Msg::ListPeers);
+        let res = server.handle(1, SignalingMsg::ListPeers);
         assert_eq!(res.len(), 1);
         let out = &res[0];
         assert_eq!(out.client_id_target, 1);
         match &out.msg {
-            Msg::PeersOnline { peers } => {
+            SignalingMsg::PeersOnline { peers } => {
                 assert_eq!(peers.len(), 2);
                 assert!(peers.contains(&"bob".to_string()));
                 assert!(peers.contains(&"carol".to_string()));
@@ -957,10 +993,10 @@ mod tests {
         let mut server = new_server();
         login(&mut server, 2, "bob");
 
-        let res = server.handle(1, Msg::ListPeers);
+        let res = server.handle(1, SignalingMsg::ListPeers);
         assert_eq!(res.len(), 1);
         match &res[0].msg {
-            Msg::PeersOnline { peers } => assert!(peers.is_empty()),
+            SignalingMsg::PeersOnline { peers } => assert!(peers.is_empty()),
             other => panic!("expected PeersOnline, got {:?}", other),
         }
     }
@@ -970,7 +1006,7 @@ mod tests {
         let mut server = new_server();
         let res = server.handle(
             5,
-            Msg::Register {
+            SignalingMsg::Register {
                 username: "newuser".into(),
                 password: "pw".into(),
             },
@@ -978,7 +1014,7 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         match &res[0].msg {
-            Msg::RegisterOk { username } => assert_eq!(username, "newuser"),
+            SignalingMsg::RegisterOk { username } => assert_eq!(username, "newuser"),
             other => panic!("expected RegisterOk, got {:?}", other),
         }
     }
@@ -991,7 +1027,7 @@ mod tests {
 
         let res = server.handle(
             1,
-            Msg::Ack {
+            SignalingMsg::Ack {
                 from: "alice".into(),
                 to: "bob".into(),
                 txn_id: 123,
@@ -1014,7 +1050,7 @@ mod tests {
 
         let res = server.handle(
             1,
-            Msg::Ack {
+            SignalingMsg::Ack {
                 from: "alice".into(),
                 to: "bob".into(),
                 txn_id: 123,
@@ -1025,7 +1061,7 @@ mod tests {
         let out = &res[0];
         assert_eq!(out.client_id_target, 2);
         match &out.msg {
-            Msg::Ack { from, to, txn_id } => {
+            SignalingMsg::Ack { from, to, txn_id } => {
                 assert_eq!(from, "alice");
                 assert_eq!(to, "bob");
                 assert_eq!(*txn_id, 123);
@@ -1042,7 +1078,7 @@ mod tests {
 
         let res = server.handle(
             42,
-            Msg::Bye {
+            SignalingMsg::Bye {
                 from: "alice".into(),
                 to: "bob".into(),
                 reason: Some("bye".into()),
@@ -1064,7 +1100,7 @@ mod tests {
 
         let res = server.handle(
             1,
-            Msg::Bye {
+            SignalingMsg::Bye {
                 from: "alice".into(),
                 to: "bob".into(),
                 reason: Some("done".into()),
@@ -1075,7 +1111,7 @@ mod tests {
         let out = &res[0];
         assert_eq!(out.client_id_target, 2);
         match &out.msg {
-            Msg::Bye { from, to, reason } => {
+            SignalingMsg::Bye { from, to, reason } => {
                 assert_eq!(from, "alice");
                 assert_eq!(to, "bob");
                 assert_eq!(reason.as_deref(), Some("done"));
@@ -1089,11 +1125,11 @@ mod tests {
         let mut server = new_server();
         login(&mut server, 1, "alice");
 
-        let res = server.handle(1, Msg::Ping { nonce: 42 });
+        let res = server.handle(1, SignalingMsg::Ping { nonce: 42 });
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].client_id_target, 1);
         match &res[0].msg {
-            Msg::Pong { nonce } => assert_eq!(*nonce, 42),
+            SignalingMsg::Pong { nonce } => assert_eq!(*nonce, 42),
             other => panic!("expected Pong, got {:?}", other),
         }
     }
@@ -1108,11 +1144,11 @@ mod tests {
         login(&mut server, bob, "bob");
 
         // alice creates session
-        let created = server.handle(alice, Msg::CreateSession { capacity: 2 });
+        let created = server.handle(alice, SignalingMsg::CreateSession { capacity: 2 });
         assert_eq!(created.len(), 1);
 
         let (session_id, session_code) = match &created[0].msg {
-            Msg::Created {
+            SignalingMsg::Created {
                 session_id,
                 session_code,
             } => (session_id.clone(), session_code.clone()),
@@ -1120,7 +1156,7 @@ mod tests {
         };
 
         // bob joins
-        let out = server.handle(bob, Msg::Join { session_code });
+        let out = server.handle(bob, SignalingMsg::Join { session_code });
 
         // We expect:
         // - JoinOk to bob
@@ -1131,12 +1167,12 @@ mod tests {
 
         for m in &out {
             match &m.msg {
-                Msg::JoinOk { session_id: sid } => {
+                SignalingMsg::JoinOk { session_id: sid } => {
                     assert_eq!(m.client_id_target, bob);
                     assert_eq!(sid, &session_id);
                     saw_join_ok = true;
                 }
-                Msg::PeerJoined {
+                SignalingMsg::PeerJoined {
                     session_id: sid,
                     username,
                 } => {
@@ -1160,7 +1196,7 @@ mod tests {
 
         let out = server.handle(
             client,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "alice".into(),
                 password: "wrong".into(),
             },
@@ -1168,7 +1204,7 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         match &out[0].msg {
-            Msg::LoginErr { code } => {
+            SignalingMsg::LoginErr { code } => {
                 assert_eq!(
                     *code,
                     LoginErrorCode::InvalidCredentials.as_u16(),
@@ -1187,7 +1223,7 @@ mod tests {
 
         let out = server.handle(
             client,
-            Msg::Login {
+            SignalingMsg::Login {
                 username: "alice".into(),
                 password: "secret".into(),
             },
@@ -1195,7 +1231,7 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         match &out[0].msg {
-            Msg::LoginOk { username } => assert_eq!(username, "alice"),
+            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
             other => panic!("expected LoginOk, got {:?}", other),
         }
     }

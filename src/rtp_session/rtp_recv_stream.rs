@@ -1,11 +1,11 @@
-use crate::app::log_level::LogLevel;
-use crate::app::log_sink::LogSink;
 use crate::core::events::EngineEvent;
+use crate::log::log_level::LogLevel;
+use crate::log::log_sink::LogSink;
 use crate::media_transport::media_transport_event::RtpIn;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
 use crate::rtp::rtp_packet::RtpPacket;
-use crate::{sink_debug, sink_info, sink_log};
+use crate::{sink_debug, sink_trace, sink_warn};
 
 use super::{rtp_codec::RtpCodec, rtp_recv_config::RtpRecvConfig, rx_tracker::RxTracker};
 use std::collections::BTreeMap;
@@ -68,11 +68,6 @@ impl RtpRecvStream {
     }
 
     pub fn receive_rtp_packet(&mut self, packet: RtpPacket) {
-        sink_info!(
-            self.logger,
-            "[Recv Stream] Receive packet"
-        );
-
         sink_debug!(
             self.logger,
             "[Recv Stream] Receive packet - ssrc: {}, seq: {}",
@@ -108,12 +103,7 @@ impl RtpRecvStream {
         };
 
         if self.jitter_buffer.insert(seq, buffered_packet).is_some() {
-            sink_log!(
-                &self.logger,
-                LogLevel::Warn,
-                "[RTP] duplicate packet seq={}",
-                seq
-            );
+            sink_warn!(&self.logger, "[RTP] duplicate packet seq={}", seq);
             return; // Already buffered
         }
 
@@ -126,7 +116,6 @@ impl RtpRecvStream {
     }
 
     fn process_buffer(&mut self) {
-
         let Some(s) = self.next_seq else {
             return; // Nothing to do if not initialized
         };
@@ -138,19 +127,14 @@ impl RtpRecvStream {
             if let Some(buffered) = self.jitter_buffer.remove(&next_seq) {
                 let packet = buffered.packet;
                 // It's the one we were waiting for. Emit it.
-                if let Some(ssrc) = self.remote_ssrc{
-                    sink_info!(
+                if let Some(ssrc) = self.remote_ssrc {
+                    sink_trace!(
                         self.logger,
                         "[Recv Stream {}] Sending RTP Packet to Engine::RtpIn",
                         ssrc
                     );
 
-                    sink_debug!(
-                        self.logger,
-                        "[Recv Stream {}] RTP Packet seq: {}",
-                        ssrc,
-                        s
-                    );
+                    sink_trace!(self.logger, "[Recv Stream {}] RTP Packet seq: {}", ssrc, s);
                 }
 
                 let evt = EngineEvent::RtpIn(RtpIn {
@@ -175,9 +159,8 @@ impl RtpRecvStream {
                 // If the oldest packet in our buffer is already too old,
                 // then the gap before it is definitely lost.
                 if buffered_pkt.received_at.elapsed() > self.max_latency {
-                    sink_log!(
+                    sink_warn!(
                         &self.logger,
-                        LogLevel::Warn,
                         "[RTP] Skipping packets from {} to {} (lost)",
                         next_seq,
                         buffered_seq.wrapping_sub(1)
@@ -225,9 +208,8 @@ impl RtpRecvStream {
 
         // surface for logs/metrics
         //
-        sink_log!(
+        sink_debug!(
             &self.logger,
-            LogLevel::Debug,
             "[RTCP][SR] ssrc={:#010x} rtp_ts={} pkt={} octets={}",
             sender_ssrc,
             info.rtp_ts,

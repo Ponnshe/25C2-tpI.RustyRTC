@@ -1,9 +1,10 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
-use crate::app::log_sink::{LogSink, NoopLogSink};
 use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::{sink_debug, sink_error, sink_info, sink_warn};
 use rand::{Rng, rngs::OsRng};
 use std::sync::Arc;

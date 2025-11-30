@@ -1,3 +1,6 @@
+use crate::sink_warn;
+use crate::srtp::srtp_context::SrtpContext;
+use crate::{sink_trace, srtp::SrtpSessionConfig};
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
@@ -16,10 +19,14 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink}, core::events::EngineEvent, logger_debug, logger_error, rtcp::{
+    core::events::EngineEvent,
+    log::log_sink::LogSink,
+    rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
-    }, rtp::rtp_packet::RtpPacket, sink_debug, sink_error, sink_info, sink_log
+    },
+    rtp::rtp_packet::RtpPacket,
+    sink_error,
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
@@ -43,6 +50,11 @@ pub struct RtpSession {
     local_rtcp_ssrc: u32,
     cname: String,
     rtcp_interval: Duration,
+    //Srtp config
+    srtp_cfg: Option<SrtpSessionConfig>,
+    // Contextos SRTP protegidos por Mutex para acceso compartido
+    srtp_inbound: Option<Arc<Mutex<SrtpContext>>>,
+    srtp_outbound: Option<Arc<Mutex<SrtpContext>>>,
 }
 
 impl RtpSession {
@@ -54,7 +66,23 @@ impl RtpSession {
         rx_media: Receiver<Vec<u8>>,
         initial_recv: Vec<RtpRecvConfig>,
         initial_send: Vec<RtpSendConfig>,
+        srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Result<Self, RtpSessionError> {
+        // Inicializar contextos SRTP si hay configuración
+        let (srtp_inbound, srtp_outbound) = if let Some(srtp_session_cfg) = &srtp_cfg {
+            (
+                Some(Arc::new(Mutex::new(SrtpContext::new(
+                    logger.clone(),
+                    srtp_session_cfg.inbound.clone(),
+                )))),
+                Some(Arc::new(Mutex::new(SrtpContext::new(
+                    logger.clone(),
+                    srtp_session_cfg.outbound.clone(),
+                )))),
+            )
+        } else {
+            (None, None)
+        };
         let this = Self {
             sock,
             peer,
@@ -68,6 +96,9 @@ impl RtpSession {
             local_rtcp_ssrc: OsRng.next_u32(),
             cname: "roomrtc@local".into(),
             rtcp_interval: Duration::from_millis(500),
+            srtp_cfg,
+            srtp_inbound,
+            srtp_outbound,
         };
 
         this.add_recv_streams(initial_recv)?;
@@ -96,11 +127,17 @@ impl RtpSession {
 
     pub fn add_send_stream(
         &self,
-        cfg: RtpSendConfig,
+        rtp_send_config: RtpSendConfig,
     ) -> Result<OutboundTrackHandle, RtpSessionError> {
-        let ssrc = cfg.local_ssrc;
-        let codec = cfg.codec.clone();
-        let st = RtpSendStream::new(cfg, Arc::clone(&self.sock), self.peer);
+        let ssrc = rtp_send_config.local_ssrc;
+        let codec = rtp_send_config.codec.clone();
+        let st = RtpSendStream::new(
+            self.logger.clone(),
+            rtp_send_config,
+            Arc::clone(&self.sock),
+            self.peer,
+            self.srtp_outbound.clone(),
+        );
         self.send_streams.lock()?.insert(ssrc, st);
         Ok(OutboundTrackHandle {
             local_ssrc: ssrc,
@@ -141,18 +178,21 @@ impl RtpSession {
         let pending_recv = Arc::clone(&self.pending_recv);
         let tx_evt = self.tx_evt.clone();
         let logger = self.logger.clone();
+        let srtp_inbound = self.srtp_inbound.clone();
 
         thread::spawn(move || {
             while run.load(Ordering::SeqCst) {
                 match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(pkt) => {
+                    Ok(mut pkt) => {
                         if pkt.len() < 2 {
-                            sink_log!(&logger, LogLevel::Error, "[RTP] packet too short");
+                            sink_error!(&logger, "[RTP] packet too short");
                             continue;
                         }
 
                         // ---- RTCP ----
                         if is_rtcp(&pkt) {
+                            // TODO: Implement SRTCP unprotect here in the future.
+                            // For now, pass cleartext or drop if peer encrypts RTCP.
                             if let Err(e) = handle_rtcp(
                                 &pkt,
                                 &recv_map,
@@ -161,37 +201,50 @@ impl RtpSession {
                                 &tx_evt,
                                 &logger,
                             ) {
-                                sink_log!(&logger, LogLevel::Error, "[RTCP] error: {e:?}");
+                                sink_error!(&logger, "[RTCP] error: {e:?}");
                             }
                             continue;
                         }
 
                         // ---- RTP fast-path ----
                         if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
-                            sink_log!(&logger, LogLevel::Error, "[RTP] invalid header/version");
+                            sink_error!(&logger, "[RTP] invalid header/version");
                             continue;
+                        }
+
+                        // 3. SRTP Unprotect
+                        if let Some(ctx) = &srtp_inbound {
+                            // Mutex lock, attempt unprotect
+                            match ctx.lock().unwrap().unprotect(&mut pkt) {
+                                Ok(_) => {
+                                    // Success: pkt is now cleartext RTP
+                                }
+                                Err(e) => {
+                                    sink_warn!(&logger, "[SRTP] Unprotect failed: {}", e);
+                                    // Drop the packet! Do not try to parse garbage.
+                                    continue;
+                                }
+                            }
                         }
 
                         // Decode RTP (adapt if your API returns Result)
                         let Ok(rtp) = RtpPacket::decode(&pkt) else {
-                            sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
+                            sink_error!(logger, " RTP] decode failed");
                             continue;
                         };
 
-                        sink_info!(
-                            logger,
-                            "[RTP Session] Received RTP packet"
-                        );
+                        sink_trace!(logger, "[RTP Session] Received RTP packet");
 
                         let ssrc = rtp.ssrc();
                         let pt = rtp.payload_type();
 
                         // 1) Known stream?
-                        if let Ok(mut guard) = recv_map.lock() 
-                            && let Some(st) = guard.get_mut(&ssrc) {
-                                st.receive_rtp_packet(rtp);
-                                continue;
-                            }
+                        if let Ok(mut guard) = recv_map.lock()
+                            && let Some(st) = guard.get_mut(&ssrc)
+                        {
+                            st.receive_rtp_packet(rtp);
+                            continue;
+                        }
 
                         // 2) Bind a pending stream by PT, then move it to the map
                         if let Ok(mut pend) = pending_recv.lock() {
@@ -205,9 +258,8 @@ impl RtpSession {
                                 }
                                 continue;
                             } else {
-                                sink_log!(
-                                    &logger,
-                                    LogLevel::Warn,
+                                sink_warn!(
+                                    logger,
                                     "[RTP] couldn't map codec to payload type on the pool of pending receivers: {pt}"
                                 );
                             }
@@ -216,25 +268,13 @@ impl RtpSession {
                         // 3) Unknown SSRC/PT
                         //
 
-                        sink_log!(
-                            &logger,
-                            LogLevel::Warn,
-                            "[RTP] unknown remote SSRC={:#010x} PT={}",
-                            ssrc,
-                            pt
-                        );
-                    },
+                        sink_warn!(logger, "[RTP] unknown remote SSRC={:#010x} PT={}", ssrc, pt);
+                    }
                     Err(RecvTimeoutError::Timeout) => {
-                        sink_debug!(
-                            logger,
-                            "[RTP Session] Received nothing in timeout"
-                        );
-                    },
+                        sink_trace!(logger, "[RTP Session] Received nothing in timeout");
+                    }
                     Err(RecvTimeoutError::Disconnected) => {
-                        sink_error!(
-                            logger,
-                            "[RTP Session] Disconnected"
-                        );
+                        sink_error!(logger, "[RTP Session] Disconnected");
                     }
                 }
             }
@@ -245,7 +285,7 @@ impl RtpSession {
         let sock = Arc::clone(&self.sock);
         let peer = self.peer;
         let recv_map2 = Arc::clone(&self.recv_streams);
-        let send_map2 = Arc::clone(&self.send_streams); // <--- NEW
+        let send_map2 = Arc::clone(&self.send_streams);
         let _tx_evt2 = self.tx_evt.clone();
         let logger2 = self.logger.clone();
         let interval = self.rtcp_interval;
@@ -264,17 +304,13 @@ impl RtpSession {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
                             if let Err(e) = sr.encode_into(&mut sr_bytes) {
-                                logger_error!(logger2, "[RTCP] failed to encode SR: {e}");
+                                sink_error!(logger2, "[RTCP] failed to encode SR: {e}");
                                 continue;
                             }
 
                             comp_pkt.extend_from_slice(&sr_bytes);
 
-                            logger_debug!(
-                                logger2,
-                                "[RTCP] tx built SR ssrc={:#010x}",
-                                st.local_ssrc
-                            );
+                            sink_trace!(logger2, "[RTCP] tx built SR ssrc={:#010x}", st.local_ssrc);
                         }
                     }
                 }
@@ -294,10 +330,10 @@ impl RtpSession {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
                     if let Err(e) = rr.encode_into(&mut rr_bytes) {
-                        logger_error!(logger2, "[RTCP] failed to encode RR: {e}");
+                        sink_error!(logger2, "[RTCP] failed to encode RR: {e}");
                     } else {
                         comp_pkt.extend_from_slice(&rr_bytes);
-                        logger_debug!(logger2, "[RTCP] tx built RR");
+                        sink_trace!(logger2, "[RTCP] tx built RR");
                     }
                 }
 
@@ -306,7 +342,7 @@ impl RtpSession {
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
-                    logger_error!(logger2, "[RTCP] failed to encode SDES: {e}");
+                    sink_error!(logger2, "[RTCP] failed to encode SDES: {e}");
                 } else {
                     comp_pkt.extend_from_slice(&sdes_bytes);
                 }
@@ -331,7 +367,7 @@ impl RtpSession {
         let mut buf = Vec::new();
         let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
-        logger_debug!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
+        sink_trace!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
@@ -339,25 +375,6 @@ impl RtpSession {
         self.recv_streams.lock().unwrap().contains_key(&remote_ssrc)
     }
 
-    pub fn send_frame(&self, local_ssrc: u32, payload: &[u8]) -> Result<(), RtpSessionError> {
-        let mut guard = self.send_streams.lock()?;
-        match guard.get_mut(&local_ssrc) {
-            Some(st) => st
-                .send_frame(payload)
-                .map_err(|source| RtpSessionError::SendStream {
-                    source,
-                    ssrc: local_ssrc,
-                }),
-            None => Err(RtpSessionError::SendStreamMissing { ssrc: local_ssrc }),
-        }
-    }
-
-    /// Convenience: get a mutable handle to a send stream by local SSRC (e.g., to call send_frame).
-    pub fn with_send_stream<F: FnOnce(&mut RtpSendStream)>(&self, local_ssrc: u32, f: F) {
-        if let Some(st) = self.send_streams.lock().unwrap().get_mut(&local_ssrc) {
-            f(st);
-        }
-    }
     pub fn send_rtp_payload(
         &self,
         local_ssrc: u32,
@@ -376,28 +393,6 @@ impl RtpSession {
             })
     }
 
-    /// Batch convenience: send all fragments for one frame timestamp.
-    pub fn send_rtp_payloads_for_frame(
-        &self,
-        local_ssrc: u32,
-        chunks: &[(&[u8], bool)],
-        timestamp: u32,
-    ) -> Result<(), RtpSessionError> {
-        let mut g = self.send_streams.lock()?;
-        let st = g
-            .get_mut(&local_ssrc)
-            .ok_or(RtpSessionError::SendStreamMissing { ssrc: local_ssrc })?;
-        for (i, (bytes, marker)) in chunks.iter().enumerate() {
-            let m = if i + 1 == chunks.len() { true } else { *marker };
-            st.send_rtp_payload(bytes, timestamp, m).map_err(|source| {
-                RtpSessionError::SendStream {
-                    source,
-                    ssrc: local_ssrc,
-                }
-            })?;
-        }
-        Ok(())
-    }
     pub fn send_rtp_chunks_for_frame(
         &self,
         local_ssrc: u32,
@@ -498,12 +493,7 @@ fn handle_rtcp(
 
             RtcpPacket::Sdes(sdes) => {
                 // Optional: keep SSRC → CNAME mapping at session level
-                sink_log!(
-                    logger,
-                    LogLevel::Debug,
-                    "[RTCP][SDES] chunks={}",
-                    sdes.chunks.len()
-                )
+                sink_trace!(logger, "[RTCP][SDES] chunks={}", sdes.chunks.len())
             }
 
             RtcpPacket::Bye(bye) => {
@@ -527,9 +517,8 @@ fn handle_rtcp(
             RtcpPacket::Pli(pli) => {
                 // Inbound PLI means the remote wants a keyframe for media_ssrc
                 // Route to the *sender* stream of that SSRC, or surface an event:
-                sink_log!(
+                sink_trace!(
                     logger,
-                    LogLevel::Debug,
                     "[RTCP][PLI] keyframe requested for ssrc={:#010x}",
                     pli.media_ssrc
                 )
@@ -539,9 +528,8 @@ fn handle_rtcp(
             RtcpPacket::Nack(nack) => {
                 // Inbound NACK asks us to retransmit lost seqnos on media_ssrc
                 // Route to the *sender* stream (implement your RTX/repair path there)
-                sink_log!(
+                sink_trace!(
                     logger,
-                    LogLevel::Debug,
                     "[RTCP][NACK] for media_ssrc={:#010x} fci_count={}",
                     nack.media_ssrc,
                     nack.entries.len()
@@ -549,7 +537,7 @@ fn handle_rtcp(
             }
 
             RtcpPacket::App(_app) => {
-                sink_log!(logger, LogLevel::Debug, "[RTCP][APP] ignored")
+                sink_trace!(logger, "[RTCP][APP] ignored")
             }
         }
     }
