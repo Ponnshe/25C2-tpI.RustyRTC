@@ -2,7 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::app::log_sink::LogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::signaling_server::SignalingServer;
 
 /// Run the signaling server on `addr` using the given log sink.

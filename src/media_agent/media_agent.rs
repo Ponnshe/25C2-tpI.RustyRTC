@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
     core::events::EngineEvent,
+    log::log_sink::LogSink,
     logger_debug, logger_error, logger_info, logger_warn,
     media_agent::{
         camera_worker::spawn_camera_worker,

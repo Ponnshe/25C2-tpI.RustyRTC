@@ -2,7 +2,6 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
-use crate::app::log_sink::LogSink;
 use crate::connection_manager::config::{
     DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_MEDIA_KIND, DEFAULT_NET_TYPE,
     DEFAULT_PORT, DEFAULT_PROTO,
@@ -10,6 +9,7 @@ use crate::connection_manager::config::{
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
+use crate::log::log_sink::LogSink;
 use crate::media_transport::codec::CodecDescriptor;
 use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::attribute::Attribute as SDPAttribute;

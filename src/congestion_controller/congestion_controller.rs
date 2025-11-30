@@ -1,7 +1,7 @@
 use super::constants::*;
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
     core::events::EngineEvent,
+    log::{log_level::LogLevel, log_sink::LogSink},
     rtcp::report_block::ReportBlock,
     rtp_session::tx_tracker::TxTracker,
     sink_log,

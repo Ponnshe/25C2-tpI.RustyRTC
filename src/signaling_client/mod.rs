@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    log::log_sink::LogSink,
     signaling::protocol::{self, FrameError, Msg},
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
 };

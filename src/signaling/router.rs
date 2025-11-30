@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::AuthBackend;
 use crate::signaling::protocol::Msg;
 use crate::signaling::server::Server;

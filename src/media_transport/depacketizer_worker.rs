@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    log::log_sink::LogSink,
     logger_debug, logger_warn,
     media_transport::{
         depacketizer::h264_depacketizer::H264Depacketizer, media_transport_event::RtpIn,

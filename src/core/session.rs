@@ -17,11 +17,11 @@ use crate::rtp_session::{
     rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
     core::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
+    log::{log_level::LogLevel, log_sink::LogSink},
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
     sink_log,
 };

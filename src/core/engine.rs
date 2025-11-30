@@ -7,17 +7,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::dtls_srtp::{self, DtlsRole, SrtpSessionConfig};
+use crate::dtls_srtp::{self, DtlsRole};
 use crate::ice::type_ice::ice_agent::IceRole;
 
 use crate::{
-    app::log_sink::LogSink,
     congestion_controller::congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
+    log::log_sink::LogSink,
     media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
     media_transport::{
         media_transport::MediaTransport, media_transport_event::MediaTransportEvent,

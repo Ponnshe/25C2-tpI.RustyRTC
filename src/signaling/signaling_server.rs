@@ -4,7 +4,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::auth::{AuthBackend, FileUserStore};
 use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;

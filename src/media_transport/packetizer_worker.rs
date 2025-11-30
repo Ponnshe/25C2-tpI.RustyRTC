@@ -10,7 +10,7 @@ use super::events::PacketizerEvent;
 use crate::media_transport::payload::{
     h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk,
 };
-use crate::{app::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
+use crate::{log::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
 
 #[derive(Debug)]
 pub struct PacketizeOrder {

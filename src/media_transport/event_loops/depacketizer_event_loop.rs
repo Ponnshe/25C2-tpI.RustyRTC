@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    log::log_sink::LogSink,
     media_agent::events::MediaAgentEvent,
     media_transport::{event_loops::constants::RECV_TIMEOUT, events::DepacketizerEvent},
     sink_debug, sink_error, sink_info,

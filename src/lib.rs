@@ -5,6 +5,7 @@ pub mod connection_manager;
 pub mod core;
 pub mod dtls_srtp;
 pub mod ice;
+pub mod log;
 pub mod media_agent;
 pub mod media_transport;
 pub mod rtcp;

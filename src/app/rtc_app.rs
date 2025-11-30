@@ -3,13 +3,13 @@ use super::{
     utils::show_camera_in_ui,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     core::{
         engine::Engine,
         events::EngineEvent::{
             self, Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
         },
     },
+    log::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     media_agent::video_frame::{VideoFrame, VideoFrameData},
     signaling::protocol::Msg,
     signaling_client::{SignalingClient, SignalingEvent},

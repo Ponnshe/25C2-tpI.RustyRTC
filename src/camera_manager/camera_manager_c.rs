@@ -12,7 +12,7 @@ use opencv::{
 
 use std::sync::Arc;
 
-use crate::app::log_sink::LogSink;
+use crate::log::log_sink::LogSink;
 
 use super::camera_error::CameraError;
 

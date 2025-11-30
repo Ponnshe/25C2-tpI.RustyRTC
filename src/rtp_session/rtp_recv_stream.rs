@@ -1,6 +1,6 @@
-use crate::app::log_level::LogLevel;
-use crate::app::log_sink::LogSink;
 use crate::core::events::EngineEvent;
+use crate::log::log_level::LogLevel;
+use crate::log::log_sink::LogSink;
 use crate::media_transport::media_transport_event::RtpIn;
 use crate::rtcp::report_block::ReportBlock;
 use crate::rtcp::sender_info::SenderInfo;
@@ -68,10 +68,7 @@ impl RtpRecvStream {
     }
 
     pub fn receive_rtp_packet(&mut self, packet: RtpPacket) {
-        sink_info!(
-            self.logger,
-            "[Recv Stream] Receive packet"
-        );
+        sink_info!(self.logger, "[Recv Stream] Receive packet");
 
         sink_debug!(
             self.logger,
@@ -126,7 +123,6 @@ impl RtpRecvStream {
     }
 
     fn process_buffer(&mut self) {
-
         let Some(s) = self.next_seq else {
             return; // Nothing to do if not initialized
         };
@@ -138,19 +134,14 @@ impl RtpRecvStream {
             if let Some(buffered) = self.jitter_buffer.remove(&next_seq) {
                 let packet = buffered.packet;
                 // It's the one we were waiting for. Emit it.
-                if let Some(ssrc) = self.remote_ssrc{
+                if let Some(ssrc) = self.remote_ssrc {
                     sink_info!(
                         self.logger,
                         "[Recv Stream {}] Sending RTP Packet to Engine::RtpIn",
                         ssrc
                     );
 
-                    sink_debug!(
-                        self.logger,
-                        "[Recv Stream {}] RTP Packet seq: {}",
-                        ssrc,
-                        s
-                    );
+                    sink_debug!(self.logger, "[Recv Stream {}] RTP Packet seq: {}", ssrc, s);
                 }
 
                 let evt = EngineEvent::RtpIn(RtpIn {

@@ -1,4 +1,4 @@
-use crate::app::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
+use crate::log::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
 
 use std::{
     fs::{self, OpenOptions},

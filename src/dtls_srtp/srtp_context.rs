@@ -1,5 +1,5 @@
-use crate::app::log_sink::LogSink;
 use crate::dtls_srtp::SrtpEndpointKeys;
+use crate::log::log_sink::LogSink;
 use crate::{sink_debug, sink_error, sink_trace, sink_warn};
 use aes::Aes128;
 use aes::cipher::{KeyIvInit, StreamCipher};

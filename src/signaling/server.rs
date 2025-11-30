@@ -2,7 +2,8 @@ use rand::Rng;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::AuthError;
 use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};

@@ -18,8 +18,8 @@ use super::{
     rtp_send_stream::RtpSendStream, rtp_session_error::RtpSessionError,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
     core::events::EngineEvent,
+    log::{log_level::LogLevel, log_sink::LogSink},
     logger_debug, logger_error,
     rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,

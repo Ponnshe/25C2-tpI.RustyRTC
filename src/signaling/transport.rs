@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use crate::app::log_sink::LogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::protocol::{FrameError, Msg};
 use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_write_msg};
 use crate::signaling::server_event::ServerEvent;

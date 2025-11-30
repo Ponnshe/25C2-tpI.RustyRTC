@@ -8,15 +8,14 @@ use std::{
 };
 
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink},
-    sink_debug, sink_error, sink_info, sink_log, sink_trace, sink_warn,
-    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH, load_certs},
+    log::log_sink::LogSink,
+    sink_debug, sink_error, sink_info, sink_trace, sink_warn,
+    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH},
 };
 
 use openssl::{
     error::ErrorStack,
     ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream},
-    x509::X509,
 };
 
 use openssl::hash::MessageDigest;
