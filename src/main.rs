@@ -1,4 +1,3 @@
-use eframe;
 use rustyrtc::app::rtc_app::RtcApp;
 
 fn main() -> eframe::Result<()> {
