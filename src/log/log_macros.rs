@@ -188,7 +188,7 @@ macro_rules! logger_info {
 // ---------------------- WARN ----------------------
 #[cfg(feature = "log-warn")]
 #[macro_export]
-macro_rules! sink_warn   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Warn, $($arg)*); } }
+macro_rules! sink_warn   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Warn, $($arg)*) } }
 #[cfg(feature = "log-warn")]
 #[macro_export]
 macro_rules! log_warn_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Warn, $($arg)*); } }

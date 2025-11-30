@@ -1,5 +1,6 @@
-use crate::dtls_srtp::SrtpSessionConfig;
 use crate::dtls_srtp::srtp_context::SrtpContext;
+use crate::sink_warn;
+use crate::{dtls_srtp::SrtpSessionConfig, sink_trace};
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
@@ -20,13 +21,12 @@ use super::{
 use crate::{
     core::events::EngineEvent,
     log::{log_level::LogLevel, log_sink::LogSink},
-    logger_debug, logger_error,
     rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,
     },
     rtp::rtp_packet::RtpPacket,
-    sink_debug, sink_error, sink_info, sink_log,
+    sink_error,
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
@@ -185,7 +185,7 @@ impl RtpSession {
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(mut pkt) => {
                         if pkt.len() < 2 {
-                            sink_log!(&logger, LogLevel::Error, "[RTP] packet too short");
+                            sink_error!(&logger, "[RTP] packet too short");
                             continue;
                         }
 
@@ -201,14 +201,14 @@ impl RtpSession {
                                 &tx_evt,
                                 &logger,
                             ) {
-                                sink_log!(&logger, LogLevel::Error, "[RTCP] error: {e:?}");
+                                sink_error!(&logger, "[RTCP] error: {e:?}");
                             }
                             continue;
                         }
 
                         // ---- RTP fast-path ----
                         if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
-                            sink_log!(&logger, LogLevel::Error, "[RTP] invalid header/version");
+                            sink_error!(&logger, "[RTP] invalid header/version");
                             continue;
                         }
 
@@ -220,12 +220,7 @@ impl RtpSession {
                                     // Success: pkt is now cleartext RTP
                                 }
                                 Err(e) => {
-                                    sink_log!(
-                                        &logger,
-                                        LogLevel::Warn,
-                                        "[SRTP] Unprotect failed: {}",
-                                        e
-                                    );
+                                    sink_warn!(&logger, "[SRTP] Unprotect failed: {}", e);
                                     // Drop the packet! Do not try to parse garbage.
                                     continue;
                                 }
@@ -234,11 +229,11 @@ impl RtpSession {
 
                         // Decode RTP (adapt if your API returns Result)
                         let Ok(rtp) = RtpPacket::decode(&pkt) else {
-                            sink_log!(&logger, LogLevel::Error, " RTP] decode failed");
+                            sink_error!(logger, " RTP] decode failed");
                             continue;
                         };
 
-                        sink_info!(logger, "[RTP Session] Received RTP packet");
+                        sink_trace!(logger, "[RTP Session] Received RTP packet");
 
                         let ssrc = rtp.ssrc();
                         let pt = rtp.payload_type();
@@ -263,9 +258,8 @@ impl RtpSession {
                                 }
                                 continue;
                             } else {
-                                sink_log!(
-                                    &logger,
-                                    LogLevel::Warn,
+                                sink_warn!(
+                                    logger,
                                     "[RTP] couldn't map codec to payload type on the pool of pending receivers: {pt}"
                                 );
                             }
@@ -274,16 +268,10 @@ impl RtpSession {
                         // 3) Unknown SSRC/PT
                         //
 
-                        sink_log!(
-                            &logger,
-                            LogLevel::Warn,
-                            "[RTP] unknown remote SSRC={:#010x} PT={}",
-                            ssrc,
-                            pt
-                        );
+                        sink_warn!(logger, "[RTP] unknown remote SSRC={:#010x} PT={}", ssrc, pt);
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        sink_debug!(logger, "[RTP Session] Received nothing in timeout");
+                        sink_trace!(logger, "[RTP Session] Received nothing in timeout");
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         sink_error!(logger, "[RTP Session] Disconnected");
@@ -316,17 +304,13 @@ impl RtpSession {
                         if let Some(sr) = st.maybe_build_sr() {
                             let mut sr_bytes = Vec::new();
                             if let Err(e) = sr.encode_into(&mut sr_bytes) {
-                                logger_error!(logger2, "[RTCP] failed to encode SR: {e}");
+                                sink_error!(logger2, "[RTCP] failed to encode SR: {e}");
                                 continue;
                             }
 
                             comp_pkt.extend_from_slice(&sr_bytes);
 
-                            logger_debug!(
-                                logger2,
-                                "[RTCP] tx built SR ssrc={:#010x}",
-                                st.local_ssrc
-                            );
+                            sink_trace!(logger2, "[RTCP] tx built SR ssrc={:#010x}", st.local_ssrc);
                         }
                     }
                 }
@@ -346,10 +330,10 @@ impl RtpSession {
                     let rr = ReceiverReport::new(rr_ssrc, blocks);
                     let mut rr_bytes = Vec::new();
                     if let Err(e) = rr.encode_into(&mut rr_bytes) {
-                        logger_error!(logger2, "[RTCP] failed to encode RR: {e}");
+                        sink_error!(logger2, "[RTCP] failed to encode RR: {e}");
                     } else {
                         comp_pkt.extend_from_slice(&rr_bytes);
-                        logger_debug!(logger2, "[RTCP] tx built RR");
+                        sink_trace!(logger2, "[RTCP] tx built RR");
                     }
                 }
 
@@ -358,7 +342,7 @@ impl RtpSession {
                 let sdes = Sdes::cname(rr_ssrc, cname.clone());
                 let mut sdes_bytes = Vec::new();
                 if let Err(e) = sdes.encode_into(&mut sdes_bytes) {
-                    logger_error!(logger2, "[RTCP] failed to encode SDES: {e}");
+                    sink_error!(logger2, "[RTCP] failed to encode SDES: {e}");
                 } else {
                     comp_pkt.extend_from_slice(&sdes_bytes);
                 }
@@ -383,7 +367,7 @@ impl RtpSession {
         let mut buf = Vec::new();
         let _ = pli.encode_into(&mut buf);
         let _ = self.sock.send_to(&buf, self.peer);
-        logger_debug!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
+        sink_trace!(self.logger, "[RTCP] tx sent PLI media_ssrc={remote_ssrc}");
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
@@ -509,12 +493,7 @@ fn handle_rtcp(
 
             RtcpPacket::Sdes(sdes) => {
                 // Optional: keep SSRC → CNAME mapping at session level
-                sink_log!(
-                    logger,
-                    LogLevel::Debug,
-                    "[RTCP][SDES] chunks={}",
-                    sdes.chunks.len()
-                )
+                sink_trace!(logger, "[RTCP][SDES] chunks={}", sdes.chunks.len())
             }
 
             RtcpPacket::Bye(bye) => {
@@ -538,9 +517,8 @@ fn handle_rtcp(
             RtcpPacket::Pli(pli) => {
                 // Inbound PLI means the remote wants a keyframe for media_ssrc
                 // Route to the *sender* stream of that SSRC, or surface an event:
-                sink_log!(
+                sink_trace!(
                     logger,
-                    LogLevel::Debug,
                     "[RTCP][PLI] keyframe requested for ssrc={:#010x}",
                     pli.media_ssrc
                 )
@@ -550,9 +528,8 @@ fn handle_rtcp(
             RtcpPacket::Nack(nack) => {
                 // Inbound NACK asks us to retransmit lost seqnos on media_ssrc
                 // Route to the *sender* stream (implement your RTX/repair path there)
-                sink_log!(
+                sink_trace!(
                     logger,
-                    LogLevel::Debug,
                     "[RTCP][NACK] for media_ssrc={:#010x} fci_count={}",
                     nack.media_ssrc,
                     nack.entries.len()
@@ -560,7 +537,7 @@ fn handle_rtcp(
             }
 
             RtcpPacket::App(_app) => {
-                sink_log!(logger, LogLevel::Debug, "[RTCP][APP] ignored")
+                sink_trace!(logger, "[RTCP][APP] ignored")
             }
         }
     }

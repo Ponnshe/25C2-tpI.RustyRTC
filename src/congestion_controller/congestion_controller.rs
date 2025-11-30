@@ -1,10 +1,7 @@
 use super::constants::*;
 use crate::{
-    core::events::EngineEvent,
-    log::{log_level::LogLevel, log_sink::LogSink},
-    rtcp::report_block::ReportBlock,
-    rtp_session::tx_tracker::TxTracker,
-    sink_log,
+    core::events::EngineEvent, log::log_sink::LogSink, rtcp::report_block::ReportBlock,
+    rtp_session::tx_tracker::TxTracker, sink_debug, sink_error, sink_warn,
 };
 use std::{
     sync::{Arc, mpsc::Sender},
@@ -76,16 +73,14 @@ impl CongestionController {
         let mut new_bitrate = self.current_bitrate_bps;
 
         let fraction_lost_float = metrics.fraction_lost as f32 / 255.0;
-        sink_log!(
+        sink_debug!(
             self.logger.as_ref(),
-            LogLevel::Info,
             "[Congestion] Packet Loss: {:.2}%",
             fraction_lost_float * 100.0,
         );
 
-        sink_log!(
+        sink_debug!(
             self.logger.as_ref(),
-            LogLevel::Info,
             "[Congestion] RTT: {}ms",
             metrics.round_trip_time.as_millis(),
         );
@@ -93,30 +88,27 @@ impl CongestionController {
         // Si la pérdida supera un umbral, reducimos el bitrate drásticamente.
         if fraction_lost_float > self.loss_threshold {
             new_bitrate = (new_bitrate as f64 * self.decrease_factor) as u32;
-            sink_log!(
+            sink_warn!(
                 self.logger.as_ref(),
-                LogLevel::Warn,
                 "[Congestion] High packet loss ({:.2}%), decreasing bitrate to {} bps",
                 fraction_lost_float * 100.0,
                 new_bitrate,
-            )
+            );
 
         // Si el RTT es muy alto, también reducimos el bitrate.
         } else if metrics.round_trip_time > self.rtt_threshold {
             new_bitrate = (new_bitrate as f64 * self.decrease_factor) as u32;
-            sink_log!(
+            sink_warn!(
                 self.logger.as_ref(),
-                LogLevel::Warn,
                 "[Congestion] High RTT ({}ms), decreasing bitrate to {} bps",
                 metrics.round_trip_time.as_millis(),
                 new_bitrate
-            )
+            );
         // Si la red está estable y ha pasado suficiente tiempo, intentamos aumentar el bitrate.
         } else if now.duration_since(self.last_update) > self.increase_interval {
             new_bitrate = (new_bitrate as f64 * self.increase_factor) as u32;
-            sink_log!(
+            sink_debug!(
                 self.logger.as_ref(),
-                LogLevel::Info,
                 "[Congestion] Network stable, increasing bitrate to {} bps",
                 new_bitrate
             );
@@ -131,9 +123,8 @@ impl CongestionController {
 
             // Enviar evento al Engine para que actualice el encoder
             if let Err(e) = self.tx_evt.send(EngineEvent::UpdateBitrate(new_bitrate)) {
-                sink_log!(
+                sink_error!(
                     self.logger.as_ref(),
-                    LogLevel::Error,
                     "[Congestion] Failed to send UpdateBitrate event: {}",
                     e
                 );

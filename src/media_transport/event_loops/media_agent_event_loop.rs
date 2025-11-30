@@ -21,7 +21,7 @@ use crate::{
         packetizer_worker::PacketizeOrder,
     },
     rtp_session::outbound_track_handle::OutboundTrackHandle,
-    sink_debug, sink_error, sink_info,
+    sink_debug, sink_error, sink_info, sink_trace,
 };
 
 pub struct MediaAgentEventLoop {
@@ -76,7 +76,7 @@ impl MediaAgentEventLoop {
                             timestamp_ms,
                             codec_spec,
                         } => {
-                            sink_info!(
+                            sink_debug!(
                                 logger.clone(),
                                 "[MT Event Loop MA] Received SendEncodedFrame."
                             );
@@ -90,7 +90,7 @@ impl MediaAgentEventLoop {
                                 rtp_ts,
                                 codec_spec,
                             };
-                            sink_info!(
+                            sink_trace!(
                                 logger.clone(),
                                 "[MT Event Loop MA] Sending PacketizeOrder to Packetizer."
                             );
@@ -99,11 +99,11 @@ impl MediaAgentEventLoop {
                             }
                         }
                         MediaTransportEvent::RtpIn(pkt) => {
-                            sink_info!(
+                            sink_trace!(
                                 logger,
                                 "[MediaAgent Event Loop (MT)] Received Rtp Packet. Sending it to Depacketizer"
                             );
-                            sink_debug!(
+                            sink_trace!(
                                 logger,
                                 "[MediaAgent Event Loop (MT)] ssrc: {}, seq: {}",
                                 pkt.ssrc,
@@ -201,7 +201,7 @@ fn ensure_outbound_tracks(
         let handle = session
             .register_outbound_track(codec.rtp_representation.clone())
             .map_err(|e| MediaTransportError::Send(e.to_string()))?;
-        sink_info!(
+        sink_debug!(
             logger,
             "[ensure_outbound_tracks] Adding outbound track PT {} ({:?})",
             pt,

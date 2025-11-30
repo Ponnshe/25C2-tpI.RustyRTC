@@ -12,7 +12,7 @@ use crate::{
         utils::now_millis,
         video_frame::{VideoFrame, VideoFrameData},
     },
-    sink_info,
+    sink_debug, sink_info,
 };
 
 pub struct H264Decoder {
@@ -48,7 +48,7 @@ impl H264Decoder {
                 let t1 = std::time::Instant::now();
                 let frame = yuv_to_videoframe(&yuv, frame_format);
                 let t_conv = t1.elapsed();
-                sink_info!(
+                sink_debug!(
                     self.logger,
                     "[Decoder timing] decode: {:?}, yuv_convertion: {:?}",
                     t_decode,

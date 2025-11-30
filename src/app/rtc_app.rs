@@ -209,20 +209,6 @@ impl RtcApp {
         }
     }
 
-    fn push_kbps_log_from_rtp_packets(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.rtp_last_report).as_millis() >= 500 {
-            let kbps = (self.rtp_bytes as f64 * 8.0) / 1000.0 * 2.0; // rough since 0.5s window
-            self.push_ui_log(format!(
-                "RTP: {} pkts, {:.1} kbps (last 0.5s)",
-                self.rtp_pkts, kbps
-            ));
-            self.rtp_pkts = 0;
-            self.rtp_bytes = 0;
-            self.rtp_last_report = now;
-        }
-    }
-
     fn connect_to_signaling(&mut self) {
         let log_sink = Arc::new(self.logger.handle());
 
@@ -401,7 +387,10 @@ impl RtcApp {
                 self.push_ui_log(format!("Received ACK from {from} for txn_id={txn_id}"));
             }
             other => {
-                self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
+                self.background_log(
+                    LogLevel::Debug,
+                    format!("Unhandled signaling message: {:?}", other),
+                );
             }
         }
     }
@@ -649,10 +638,6 @@ impl RtcApp {
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
         if matches!(self.conn_state, ConnState::Running) || have_any_texture {
-            if matches!(self.conn_state, ConnState::Running) {
-                self.push_kbps_log_from_rtp_packets();
-            }
-
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
@@ -972,7 +957,7 @@ impl RtcApp {
                     );
                 }
             } else {
-                self.background_log(LogLevel::Warn, "Skipping debug checks for non-RGB frames");
+                self.background_log(LogLevel::Debug, "Skipping debug checks for non-RGB frames");
             }
         }
     }
@@ -1116,7 +1101,7 @@ fn update_texture_from_frame(
                 minification: egui::TextureFilter::Linear,
                 ..Default::default()
             };
-            let mut tex_mngr = ctx.tex_manager();
+            let tex_mngr = ctx.tex_manager();
 
             if let Some((id, (prev_w, prev_h))) = texture {
                 if *prev_w != w || *prev_h != h {

@@ -7,8 +7,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::dtls_srtp::{self, DtlsRole};
 use crate::ice::type_ice::ice_agent::IceRole;
+use crate::{
+    dtls_srtp::{self, DtlsRole},
+    sink_trace,
+};
 
 use crate::{
     congestion_controller::congestion_controller::CongestionController,
@@ -60,11 +63,11 @@ impl Engine {
             while let Ok(ev) = event_rx.recv() {
                 match &ev {
                     EngineEvent::RtpIn(pkt) => {
-                        sink_info!(
+                        sink_trace!(
                             logger,
                             "[Engine] Sending RTP Packet to MediaTransport::RtpIn"
                         );
-                        sink_debug!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
+                        sink_trace!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
                         if let Some(tx) = &media_tx {
                             let _ = tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
                         }
