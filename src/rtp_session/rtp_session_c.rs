@@ -51,6 +51,7 @@ pub struct RtpSession {
     cname: String,
     rtcp_interval: Duration,
     //Srtp config
+    #[allow(dead_code)]
     srtp_cfg: Option<SrtpSessionConfig>,
     // Contextos SRTP protegidos por Mutex para acceso compartido
     srtp_inbound: Option<Arc<Mutex<SrtpContext>>>,
