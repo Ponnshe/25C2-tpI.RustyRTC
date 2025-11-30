@@ -1,7 +1,7 @@
 use crate::rtcp::{
+    RtcpPacket,
     common_header::CommonHeader,
     packet_type::{PT_APP, RtcpPacketType},
-    rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
 

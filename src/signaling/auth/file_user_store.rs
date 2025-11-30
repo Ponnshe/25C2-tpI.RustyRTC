@@ -156,7 +156,7 @@ impl AuthBackend for FileUserStore {
             .insert(username.to_owned(), UserEntry { salt, hash });
 
         // Persist to disk; if it fails, roll back and signal Internal.
-        if let Err(_) = self.persist() {
+        if self.persist().is_err() {
             self.users.remove(username);
             return Err(RegisterError::Internal);
         }

@@ -1,6 +1,6 @@
 use crate::rtcp::{
+    RtcpPacket,
     packet_type::{PT_SR, RtcpPacketType},
-    rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
 

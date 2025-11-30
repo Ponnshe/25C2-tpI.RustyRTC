@@ -30,7 +30,7 @@ use crate::{
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
-    rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
+    rtcp::{RtcpPacket, picture_loss::PictureLossIndication},
 };
 use rand::{RngCore, rngs::OsRng};
 
