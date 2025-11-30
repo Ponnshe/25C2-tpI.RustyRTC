@@ -149,7 +149,7 @@ impl RtpSendStream {
         if let Some(ctx) = &self.srtp_context {
             // ssrc se necesita para el ROC
             ctx.lock()
-                .unwrap()
+                .expect("SRTP outbound lock poisoned")
                 .protect(self.local_ssrc, &mut encoded)
                 .map_err(|e| {
                     RtpSendError::SRTP(format!("[SRTP] could not protect packet: {e}").to_owned())
