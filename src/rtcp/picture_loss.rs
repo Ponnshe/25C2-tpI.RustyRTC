@@ -22,7 +22,7 @@ impl RtcpPacketType for PictureLossIndication {
         // no FCI for PLI
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
@@ -39,8 +39,10 @@ impl RtcpPacketType for PictureLossIndication {
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
         }
-        let sender_ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
-        let media_ssrc = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+        let sender_ssrc =
+            u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
+        let media_ssrc =
+            u32::from_be_bytes(payload[4..8].try_into().map_err(|_| RtcpError::TooShort)?);
         match hdr.rc_or_fmt() {
             1 => Ok(RtcpPacket::Pli(PictureLossIndication {
                 sender_ssrc,
