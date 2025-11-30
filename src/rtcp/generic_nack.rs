@@ -27,7 +27,7 @@ impl RtcpPacketType for GenericNack {
         }
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
@@ -44,16 +44,26 @@ impl RtcpPacketType for GenericNack {
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
         }
-        let sender_ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
-        let media_ssrc = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+        let sender_ssrc =
+            u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
+        let media_ssrc =
+            u32::from_be_bytes(payload[4..8].try_into().map_err(|_| RtcpError::TooShort)?);
         match hdr.rc_or_fmt() {
             1 => {
                 // Generic NACK entries (pid, blp) pairs
                 let mut idx = 8usize;
                 let mut entries = Vec::new();
                 while idx + 4 <= payload.len() {
-                    let pid = u16::from_be_bytes(payload[idx..idx + 2].try_into().unwrap());
-                    let blp = u16::from_be_bytes(payload[idx + 2..idx + 4].try_into().unwrap());
+                    let pid = u16::from_be_bytes(
+                        payload[idx..idx + 2]
+                            .try_into()
+                            .map_err(|_| RtcpError::TooShort)?,
+                    );
+                    let blp = u16::from_be_bytes(
+                        payload[idx + 2..idx + 4]
+                            .try_into()
+                            .map_err(|_| RtcpError::TooShort)?,
+                    );
                     entries.push((pid, blp));
                     idx += 4;
                 }
