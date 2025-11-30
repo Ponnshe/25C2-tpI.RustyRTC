@@ -163,7 +163,7 @@ impl RtpSession {
         let cfg = RtpSendConfig::new(codec);
         self.add_send_stream(cfg)
     }
-
+    #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), RtpSessionError> {
         self.run.store(true, Ordering::SeqCst);
 
@@ -375,6 +375,7 @@ impl RtpSession {
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
+    #[allow(clippy::expect_used)]
     pub fn has_recv_ssrc(&self, remote_ssrc: u32) -> bool {
         self.recv_streams
             .lock()
