@@ -118,9 +118,10 @@ impl RtpPacket {
         let marker = (m_pt >> 7) != 0;
         let payload_type = m_pt & 0x7F;
 
-        let sequence_number = u16::from_be_bytes(buf[2..4].try_into().unwrap());
-        let timestamp = u32::from_be_bytes(buf[4..8].try_into().unwrap());
-        let ssrc = u32::from_be_bytes(buf[8..12].try_into().unwrap());
+        let sequence_number =
+            u16::from_be_bytes(buf[2..4].try_into().map_err(|_| RtpError::Invalid)?);
+        let timestamp = u32::from_be_bytes(buf[4..8].try_into().map_err(|_| RtpError::Invalid)?);
+        let ssrc = u32::from_be_bytes(buf[8..12].try_into().map_err(|_| RtpError::Invalid)?);
 
         let mut idx = 12usize;
 

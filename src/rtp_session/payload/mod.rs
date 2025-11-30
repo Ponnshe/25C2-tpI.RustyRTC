@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod roundtrip_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use crate::media_transport::depacketizer::h264_depacketizer::H264Depacketizer;
     use crate::media_transport::payload::h264_packetizer::H264Packetizer;
 

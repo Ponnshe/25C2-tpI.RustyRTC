@@ -212,6 +212,7 @@ fn hash_password(password: &str, salt: &[u8; 16]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
     use std::path::PathBuf;

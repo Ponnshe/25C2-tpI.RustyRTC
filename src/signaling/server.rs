@@ -711,6 +711,7 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::signaling::auth::InMemoryAuthBackend;
     use crate::signaling::protocol::SignalingMsg;

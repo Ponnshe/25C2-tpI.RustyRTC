@@ -232,6 +232,7 @@ fn find_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::rtp::rtp_error::RtpError;
     use crate::rtp::rtp_packet::RtpPacket;

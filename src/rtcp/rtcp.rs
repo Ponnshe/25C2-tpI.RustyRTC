@@ -94,6 +94,7 @@ fn encode_one(packet: &RtcpPacket, out: &mut Vec<u8>) -> Result<(), RtcpError> {
 }
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use crate::rtcp::app::App;
     use crate::rtcp::bye::Bye;
     use crate::rtcp::generic_nack::GenericNack;

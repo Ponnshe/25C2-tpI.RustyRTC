@@ -97,10 +97,10 @@ impl FromStr for RtpMap {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_opus() {
         let rm: RtpMap = "96 opus/48000/2".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -110,7 +110,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_pcmu_no_params() {
         let rm: RtpMap = "0 PCMU/8000".parse().unwrap();
         assert_eq!(rm.payload_type, 0);
@@ -120,7 +119,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_vp8_video() {
         let rm: RtpMap = "96 VP8/90000".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -130,7 +128,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn multiple_spaces_and_tabs() {
         let rm: RtpMap = "  101\ttelephone-event/8000  ".parse().unwrap();
         assert_eq!(rm.payload_type, 101);
@@ -140,7 +137,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn channels_over_255_ok() {
         let rm: RtpMap = "97 L16/44100/10".parse().unwrap();
         assert_eq!(rm.payload_type, 97);
@@ -174,7 +170,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn zero_channels_becomes_none() {
         let rm: RtpMap = "98 opus/48000/0".parse().unwrap();
         assert_eq!(rm.encoding_params, None);
