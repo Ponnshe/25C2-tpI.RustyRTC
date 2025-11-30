@@ -74,6 +74,7 @@ impl MediaTransport {
         }
     }
 
+    #[allow(clippy::expect_used)]
     pub fn start_event_loops(&mut self, session: Arc<Mutex<Option<Session>>>) {
         let logger = self.logger.clone();
         let maybe_media_transport_event_tx = self.media_transport_event_tx();
@@ -133,7 +134,10 @@ impl MediaTransport {
             );
         }
 
-        let media_transport_event_rx = self.media_transport_event_rx.take().unwrap();
+        let media_transport_event_rx = self
+            .media_transport_event_rx
+            .take()
+            .expect("MediaTransport event receiver missing (already started?)");
 
         if let Some(rtp_tx) = self.rtp_tx.clone()
             && let Some(allowed_pts) = self.allowed_pts.clone()

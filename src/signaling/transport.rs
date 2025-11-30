@@ -42,6 +42,7 @@ where
 /// TLS-enabled variant: single thread that handles both reading and writing.
 ///
 /// `stream` is a rustls `StreamOwned<ServerConnection, TcpStream>`.
+#[allow(clippy::expect_used)]
 pub(crate) fn spawn_tls_connection_thread(
     client_id: ClientId,
     stream: StreamOwned<ServerConnection, TcpStream>,
@@ -142,6 +143,7 @@ pub(crate) fn spawn_tls_connection_thread(
 /// Spawn reader + writer threads for a single TcpStream client.
 ///
 /// `server_tx` is the Sender<ServerEvent> that talks to the central server loop.
+#[allow(clippy::expect_used)]
 pub(crate) fn spawn_connection_threads(
     client_id: ClientId,
     stream: TcpStream,
