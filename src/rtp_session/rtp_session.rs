@@ -69,10 +69,16 @@ impl RtpSession {
         srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Result<Self, RtpSessionError> {
         // Inicializar contextos SRTP si hay configuración
-        let (srtp_inbound, srtp_outbound) = if let Some(cfg) = &srtp_cfg {
+        let (srtp_inbound, srtp_outbound) = if let Some(srtp_session_cfg) = &srtp_cfg {
             (
-                Some(Arc::new(Mutex::new(SrtpContext::new(cfg.inbound.clone())))),
-                Some(Arc::new(Mutex::new(SrtpContext::new(cfg.outbound.clone())))),
+                Some(Arc::new(Mutex::new(SrtpContext::new(
+                    logger.clone(),
+                    srtp_session_cfg.inbound.clone(),
+                )))),
+                Some(Arc::new(Mutex::new(SrtpContext::new(
+                    logger.clone(),
+                    srtp_session_cfg.outbound.clone(),
+                )))),
             )
         } else {
             (None, None)
@@ -126,6 +132,7 @@ impl RtpSession {
         let ssrc = rtp_send_config.local_ssrc;
         let codec = rtp_send_config.codec.clone();
         let st = RtpSendStream::new(
+            self.logger.clone(),
             rtp_send_config,
             Arc::clone(&self.sock),
             self.peer,
@@ -177,19 +184,6 @@ impl RtpSession {
             while run.load(Ordering::SeqCst) {
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(mut pkt) => {
-                        // 1. SRTP Unprotect (antes de cualquier parseo RTP)
-                        if let Some(ctx) = &srtp_inbound {
-                            // Intentamos desencriptar. Si falla, dropeamos el paquete.
-                            if let Err(e) = ctx.lock().unwrap().unprotect(&mut pkt) {
-                                sink_log!(
-                                    &logger,
-                                    LogLevel::Warn,
-                                    "[SRTP] Unprotect failed: {}",
-                                    e
-                                );
-                                continue;
-                            }
-                        }
                         if pkt.len() < 2 {
                             sink_log!(&logger, LogLevel::Error, "[RTP] packet too short");
                             continue;
@@ -197,6 +191,8 @@ impl RtpSession {
 
                         // ---- RTCP ----
                         if is_rtcp(&pkt) {
+                            // TODO: Implement SRTCP unprotect here in the future.
+                            // For now, pass cleartext or drop if peer encrypts RTCP.
                             if let Err(e) = handle_rtcp(
                                 &pkt,
                                 &recv_map,
@@ -214,6 +210,26 @@ impl RtpSession {
                         if pkt.len() < 12 || (pkt[0] >> 6) != 2 {
                             sink_log!(&logger, LogLevel::Error, "[RTP] invalid header/version");
                             continue;
+                        }
+
+                        // 3. SRTP Unprotect
+                        if let Some(ctx) = &srtp_inbound {
+                            // Mutex lock, attempt unprotect
+                            match ctx.lock().unwrap().unprotect(&mut pkt) {
+                                Ok(_) => {
+                                    // Success: pkt is now cleartext RTP
+                                }
+                                Err(e) => {
+                                    sink_log!(
+                                        &logger,
+                                        LogLevel::Warn,
+                                        "[SRTP] Unprotect failed: {}",
+                                        e
+                                    );
+                                    // Drop the packet! Do not try to parse garbage.
+                                    continue;
+                                }
+                            }
                         }
 
                         // Decode RTP (adapt if your API returns Result)
@@ -281,7 +297,7 @@ impl RtpSession {
         let sock = Arc::clone(&self.sock);
         let peer = self.peer;
         let recv_map2 = Arc::clone(&self.recv_streams);
-        let send_map2 = Arc::clone(&self.send_streams); // <--- NEW
+        let send_map2 = Arc::clone(&self.send_streams);
         let _tx_evt2 = self.tx_evt.clone();
         let logger2 = self.logger.clone();
         let interval = self.rtcp_interval;

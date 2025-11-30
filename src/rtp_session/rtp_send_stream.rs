@@ -7,17 +7,19 @@ use std::{
 use super::rtp_send_error::RtpSendError;
 use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
-use crate::rtcp::{
-    report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport,
-};
-use crate::rtp::rtp_packet::RtpPacket;
 use crate::rtp_session::time;
+use crate::{app::log_sink::LogSink, rtp::rtp_packet::RtpPacket};
 use crate::{
     congestion_controller::congestion_controller::NetworkMetrics,
     dtls_srtp::srtp_context::SrtpContext,
 };
+use crate::{
+    rtcp::{report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport},
+    sink_warn,
+};
 
 pub struct RtpSendStream {
+    logger: Arc<dyn LogSink>,
     pub codec: RtpCodec,
     pub local_ssrc: u32,
     seq: u16,
@@ -37,6 +39,7 @@ pub struct RtpSendStream {
 
 impl RtpSendStream {
     pub fn new(
+        logger: Arc<dyn LogSink>,
         cfg: RtpSendConfig,
         sock: Arc<UdpSocket>,
         peer: SocketAddr,
@@ -44,6 +47,7 @@ impl RtpSendStream {
     ) -> Self {
         use rand::{RngCore, rngs::OsRng};
         Self {
+            logger,
             codec: cfg.codec,
             local_ssrc: cfg.local_ssrc,
             seq: (OsRng.next_u32() as u16),
@@ -151,6 +155,8 @@ impl RtpSendStream {
                 .map_err(|e| {
                     RtpSendError::SRTP(format!("[SRTP] could not protect packet: {e}").to_owned())
                 })?;
+        } else {
+            sink_warn!(self.logger, "Sending UNENCRYPTED packet");
         }
         self.sock.send_to(&encoded, self.peer)?;
         self.last_pkt_sent = Instant::now();
