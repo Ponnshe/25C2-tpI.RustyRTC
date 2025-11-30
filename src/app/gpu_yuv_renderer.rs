@@ -11,7 +11,7 @@
 //!  - wgpu
 //!  - egui_wgpu_backend (o egui_wgpu)
 //!  - egui
-//! Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
+//!   Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
 
 use crate::{
     log::log_sink::LogSink,
@@ -255,7 +255,7 @@ impl GpuYuvRenderer {
     /// Update with a new YUV frame. This uploads Y/U/V planes to GPU, re-create textures if sizes changed,
     /// runs a render pass to the output texture, but DOES NOT register the texture with egui.
     /// After calling this, call `egui_texture_id(...)` to register the output texture for egui.
-
+    #[allow(clippy::expect_used)]
     pub fn update_frame(
         &mut self,
         device: &wgpu::Device,
@@ -288,8 +288,8 @@ impl GpuYuvRenderer {
         // UV planes: size = ceil(width/2), ceil(height/2)
         let y_w = width;
         let y_h = height;
-        let uv_w = (width as usize + 1) / 2;
-        let uv_h = (height as usize + 1) / 2;
+        let uv_w = (width as usize).div_ceil(2);
+        let uv_h = (height as usize).div_ceil(2);
 
         // Re-create texturas si cambian tamaños
         if self.y_size != (y_w, y_h) || self.tex_y.is_none() {
@@ -394,15 +394,32 @@ impl GpuYuvRenderer {
         };
 
         upload_plane(
-            self.tex_y.as_ref().unwrap(),
+            self.tex_y
+                .as_ref()
+                .expect("Y-plane texture not initialized"),
             &y_plane,
             y_w as usize,
             y_h as usize,
             y_stride,
         );
-        upload_plane(self.tex_u.as_ref().unwrap(), &u_plane, uv_w, uv_h, u_stride);
-        upload_plane(self.tex_v.as_ref().unwrap(), &v_plane, uv_w, uv_h, v_stride);
-
+        upload_plane(
+            self.tex_u
+                .as_ref()
+                .expect("U-plane texture not initialized"),
+            &u_plane,
+            uv_w,
+            uv_h,
+            u_stride,
+        );
+        upload_plane(
+            self.tex_v
+                .as_ref()
+                .expect("V-plane texture not initialized"),
+            &v_plane,
+            uv_w,
+            uv_h,
+            v_stride,
+        );
         // Bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("yuv-bind-group"),
@@ -414,7 +431,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_y
                             .as_ref()
-                            .unwrap()
+                            .expect("Y texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -424,7 +441,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_u
                             .as_ref()
-                            .unwrap()
+                            .expect("U texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -434,7 +451,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_v
                             .as_ref()
-                            .unwrap()
+                            .expect("V texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -458,7 +475,10 @@ impl GpuYuvRenderer {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("yuv-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.output_view.as_ref().unwrap(),
+                    view: self
+                        .output_view
+                        .as_ref()
+                        .expect("Output view not initialized"),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -471,7 +491,13 @@ impl GpuYuvRenderer {
             });
 
             rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+            rpass.set_bind_group(
+                0,
+                self.bind_group
+                    .as_ref()
+                    .expect("Bind group not initialized"),
+                &[],
+            );
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             rpass.draw(0..self.vertex_count, 0..1);
         }
@@ -484,5 +510,5 @@ impl GpuYuvRenderer {
 }
 
 fn aligned_bytes_per_row(stride: usize) -> u32 {
-    ((stride as u32 + 255) / 256) * 256
+    (stride as u32).div_ceil(256) * 256
 }
