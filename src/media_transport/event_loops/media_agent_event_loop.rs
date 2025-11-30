@@ -141,7 +141,7 @@ impl MediaAgentEventLoop {
                                 "[MediaTransport] Telling MediaAgent to update bitrate {}",
                                 b
                             );
-                            media_agent_tx.send(MediaAgentEvent::UpdateBitrate(b));
+                            let _ = media_agent_tx.send(MediaAgentEvent::UpdateBitrate(b));
                         }
                     },
                     Err(RecvTimeoutError::Disconnected) => {

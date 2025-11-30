@@ -49,7 +49,7 @@ impl DepacketizerEventLoop {
                 const TIMEOUT: Duration = Duration::from_millis(RECV_TIMEOUT);
                 match depacketizer_event_rx.recv_timeout(TIMEOUT) {
                     Ok(event) => {
-                        match event {
+                        let _ = match event {
                             DepacketizerEvent::AnnexBFrameReady { codec_spec, bytes } => {
                                 sink_trace!(
                                     logger,
