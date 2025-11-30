@@ -116,6 +116,11 @@ impl Router {
         queue.push(out_msg.msg);
     }
 }
+impl Default for Router {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
