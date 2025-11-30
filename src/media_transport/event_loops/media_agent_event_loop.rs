@@ -44,7 +44,7 @@ impl MediaAgentEventLoop {
             target_fps,
         }
     }
-
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         &mut self,
         media_transport_event_rx: Receiver<MediaTransportEvent>,
@@ -113,7 +113,7 @@ impl MediaAgentEventLoop {
                         }
                         MediaTransportEvent::Established => {
                             sink_info!(logger, "[MediaAgent Event Loop (MT)] Received Established");
-                            let mut sess_guard = session.lock().unwrap();
+                            let mut sess_guard = session.lock().expect("session lock poisoned");
                             if let Some(sess) = sess_guard.as_mut() {
                                 if let Err(e) = ensure_outbound_tracks(
                                     sess,
@@ -132,7 +132,9 @@ impl MediaAgentEventLoop {
                             }
                         }
                         MediaTransportEvent::Closing | MediaTransportEvent::Closed => {
-                            let mut guard = outbound_tracks.lock().unwrap();
+                            let mut guard = outbound_tracks
+                                .lock()
+                                .expect("outbound_tracks lock poisoned");
                             guard.clear();
                         }
                         MediaTransportEvent::UpdateBitrate(b) => {
@@ -172,6 +174,7 @@ impl MediaAgentEventLoop {
         self.event_loop_handler = Some(handle);
     }
 
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         sink_info!(self.logger, "[MT Event Loop MA] Stopping the event loop");
         self.stop_flag.store(true, Ordering::SeqCst);
@@ -187,6 +190,7 @@ impl MediaAgentEventLoop {
     }
 }
 
+#[allow(clippy::expect_used)]
 fn ensure_outbound_tracks(
     session: &Session,
     payload_map: Arc<HashMap<u8, CodecDescriptor>>,
@@ -194,7 +198,9 @@ fn ensure_outbound_tracks(
     logger: Arc<dyn LogSink>,
 ) -> Result<()> {
     for (pt, codec) in payload_map.iter() {
-        let mut guard = outbound_tracks.lock().unwrap();
+        let mut guard = outbound_tracks
+            .lock()
+            .expect("outbound_tracks lock poisoned");
         if guard.contains_key(pt) {
             continue;
         }

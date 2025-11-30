@@ -57,6 +57,7 @@ pub struct RtpSession {
     srtp_outbound: Option<Arc<Mutex<SrtpContext>>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl RtpSession {
     pub fn new(
         sock: Arc<UdpSocket>,
