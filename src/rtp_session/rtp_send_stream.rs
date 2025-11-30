@@ -129,6 +129,7 @@ impl RtpSendStream {
     }
     /// Send one RTP payload with explicit timestamp & marker.
     /// Increments seqno and updates SR counters. Does NOT change pacing itself.
+    #[allow(clippy::expect_used)]
     pub fn send_rtp_payload(
         &mut self,
         payload: &[u8],
