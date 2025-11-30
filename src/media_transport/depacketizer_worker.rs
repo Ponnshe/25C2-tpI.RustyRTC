@@ -16,6 +16,7 @@ use crate::{
     sink_trace,
 };
 
+#[allow(clippy::expect_used)]
 pub fn spawn_depacketizer_worker(
     logger: Arc<dyn LogSink>,
     allowed_pts: Arc<RwLock<HashSet<u8>>>,
