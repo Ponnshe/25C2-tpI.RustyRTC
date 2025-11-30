@@ -3,7 +3,7 @@
 use crate::signaling::protocol::{SessionCode, SessionId, TxnId, UserName};
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Msg {
+pub enum SignalingMsg {
     // Handshake / auth
     Hello {
         client_version: String,

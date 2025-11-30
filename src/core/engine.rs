@@ -144,6 +144,18 @@ impl Engine {
         self.media_transport.stop();
     }
 
+    pub fn close_session(&mut self) {
+        let mut guard = self.session.lock().unwrap();
+        *guard = None;
+        // This ensures cm.ice_agent.get_data_channel_socket() returns Err/None
+        // in the next poll() loop, preventing the zombie DTLS handshake.
+        self.cm.reset();
+        sink_debug!(
+            self.logger_sink,
+            "[Engine] Session closed and ConnectionManager reset."
+        );
+    }
+
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
         self.cm.drain_ice_events();
@@ -253,11 +265,6 @@ impl Engine {
     #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_transport.snapshot_frames()
-    }
-
-    pub fn close_session(&mut self) {
-        let mut guard = self.session.lock().unwrap();
-        *guard = None;
     }
 
     pub fn start_media_transport(&mut self) {

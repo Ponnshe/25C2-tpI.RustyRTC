@@ -11,7 +11,7 @@ use crate::{
     },
     log::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     media_agent::video_frame::{VideoFrame, VideoFrameData},
-    signaling::protocol::Msg,
+    signaling::protocol::SignalingMsg,
     signaling_client::{SignalingClient, SignalingEvent},
     sink_debug,
 };
@@ -296,33 +296,33 @@ impl RtcApp {
         }
     }
 
-    fn handle_server_msg(&mut self, msg: Msg) {
+    fn handle_server_msg(&mut self, msg: SignalingMsg) {
         match msg {
-            Msg::LoginOk { username } => {
+            SignalingMsg::LoginOk { username } => {
                 self.current_username = Some(username.clone());
                 self.signaling_screen = SignalingScreen::Home;
                 self.status_line = format!("Logged in as {username}");
                 self.login_password.clear();
                 self.request_peer_list();
             }
-            Msg::LoginErr { code } => {
+            SignalingMsg::LoginErr { code } => {
                 let msg = format!("Login failed with code {}", code);
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::RegisterOk { username } => {
+            SignalingMsg::RegisterOk { username } => {
                 self.status_line = format!("Registered {username}. You can now log in.");
                 self.login_username = username;
             }
-            Msg::RegisterErr { code } => {
+            SignalingMsg::RegisterErr { code } => {
                 let msg = format!("Registration failed with code {}", code);
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::PeersOnline { peers } => {
+            SignalingMsg::PeersOnline { peers } => {
                 self.peers_online = peers;
             }
-            Msg::Offer {
+            SignalingMsg::Offer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -333,7 +333,7 @@ impl RtcApp {
                         sdp: body,
                     };
                     self.status_line = format!("Incoming call from {from}");
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from.clone(),
                         txn_id,
@@ -343,7 +343,7 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
                 }
             },
-            Msg::Answer {
+            SignalingMsg::Answer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -352,7 +352,7 @@ impl RtcApp {
                     self.call_flow = CallFlow::Active { peer: from.clone() };
                     self.status_line = format!("Received answer from {from}");
                     // Acknowledge receipt so the sender can stop retries if they add reliability.
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from.clone(),
                         txn_id,
@@ -360,7 +360,7 @@ impl RtcApp {
                 }
                 Err(e) => self.push_ui_log(format!("Invalid answer from {from}: {e}")),
             },
-            Msg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
+            SignalingMsg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
                 Ok(line) => match self.engine.apply_remote_candidate(&line) {
                     Ok(()) => {
                         self.push_ui_log(format!("Applied ICE candidate from {from}"));
@@ -375,15 +375,15 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid ICE candidate from {from}: {e}"));
                 }
             },
-            Msg::Ping { nonce } => {
-                let _ = self.send_signaling(Msg::Pong { nonce });
+            SignalingMsg::Ping { nonce } => {
+                let _ = self.send_signaling(SignalingMsg::Pong { nonce });
             }
-            Msg::Bye { from, reason, .. } => {
+            SignalingMsg::Bye { from, reason, .. } => {
                 self.push_ui_log(format!("Peer {from} ended call: {:?}", reason));
                 // Remote already sent BYE; don't echo it back.
                 self.teardown_call(reason, false);
             }
-            Msg::Ack { txn_id, from, .. } => {
+            SignalingMsg::Ack { txn_id, from, .. } => {
                 self.push_ui_log(format!("Received ACK from {from} for txn_id={txn_id}"));
             }
             other => {
@@ -396,10 +396,10 @@ impl RtcApp {
     }
 
     fn request_peer_list(&mut self) {
-        let _ = self.send_signaling(Msg::ListPeers);
+        let _ = self.send_signaling(SignalingMsg::ListPeers);
     }
 
-    fn send_signaling(&mut self, msg: Msg) -> Result<(), ()> {
+    fn send_signaling(&mut self, msg: SignalingMsg) -> Result<(), ()> {
         if let Some(client) = self.signaling_client.as_ref() {
             if let Err(e) = client.send(msg) {
                 let err = format!("Failed to send signaling message: {e}");
@@ -426,7 +426,7 @@ impl RtcApp {
             return;
         }
         for cand_line in candidates {
-            let msg = Msg::Candidate {
+            let msg = SignalingMsg::Candidate {
                 from: user.clone(),
                 to: peer.to_string(),
                 mid: "0".into(),
@@ -441,7 +441,7 @@ impl RtcApp {
         let Some(user) = self.current_username.clone() else {
             return;
         };
-        let msg = Msg::Bye {
+        let msg = SignalingMsg::Bye {
             from: user,
             to: peer.to_string(),
             reason,
@@ -469,7 +469,7 @@ impl RtcApp {
         let txn_id = self.next_txn_id;
         self.next_txn_id += 1;
         let from = self.current_username.clone().unwrap_or_default();
-        let msg = Msg::Offer {
+        let msg = SignalingMsg::Offer {
             txn_id,
             from: from.clone(),
             to: peer.to_string(),
@@ -495,7 +495,7 @@ impl RtcApp {
                     self.status_line = "Answer not generated.".into();
                     return;
                 }
-                let msg = Msg::Answer {
+                let msg = SignalingMsg::Answer {
                     txn_id,
                     from: self.current_username.clone().unwrap_or_default(),
                     to: from.clone(),
@@ -741,7 +741,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
         });
         if ui.button("Login").clicked() {
-            let _ = self.send_signaling(Msg::Login {
+            let _ = self.send_signaling(SignalingMsg::Login {
                 username: self.login_username.clone(),
                 password: self.login_password.clone(),
             });
@@ -757,7 +757,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.register_password).password(true));
         });
         if ui.button("Register").clicked() {
-            let _ = self.send_signaling(Msg::Register {
+            let _ = self.send_signaling(SignalingMsg::Register {
                 username: self.register_username.clone(),
                 password: self.register_password.clone(),
             });

@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     log::log_sink::LogSink,
-    signaling::protocol::{self, FrameError, Msg},
+    signaling::protocol::{self, FrameError, SignalingMsg},
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
 };
 
@@ -25,13 +25,13 @@ pub enum SignalingEvent {
     Connected,
     Disconnected,
     Error(String),
-    ServerMsg(Msg),
+    ServerMsg(SignalingMsg),
 }
 
 /// Commands issued by the GUI / application into the signaling client.
 #[derive(Debug)]
 enum SignalingCommand {
-    Send(Msg),
+    Send(SignalingMsg),
     Disconnect,
 }
 
@@ -187,7 +187,7 @@ impl SignalingClient {
             sink_debug!(log, "[signaling_client] sending Hello to {}", addr);
             if let Err(err) = protocol::write_msg(
                 &mut stream,
-                &Msg::Hello {
+                &SignalingMsg::Hello {
                     client_version: Self::CLIENT_VERSION.to_string(),
                 },
             ) {
@@ -332,7 +332,7 @@ impl SignalingClient {
                 }
 
                 if now >= next_ping {
-                    let ping_msg = Msg::Ping { nonce };
+                    let ping_msg = SignalingMsg::Ping { nonce };
                     if let Err(e) = protocol::write_msg(&mut stream, &ping_msg) {
                         match e {
                             FrameError::Io(ioe) => {
@@ -386,7 +386,7 @@ impl SignalingClient {
     /// Note: actual IO happens in the network thread; any IO/protocol errors
     /// will be reported asynchronously as `SignalingEvent::Error`. From here we
     /// can only tell if the client is already disconnected.
-    pub fn send(&self, msg: Msg) -> Result<(), SignalingClientError> {
+    pub fn send(&self, msg: SignalingMsg) -> Result<(), SignalingClientError> {
         self.cmd_tx
             .send(SignalingCommand::Send(msg))
             .map_err(|_| SignalingClientError::Disconnected)
@@ -405,8 +405,8 @@ impl SignalingClient {
     }
 }
 
-fn msg_name(msg: &Msg) -> &'static str {
-    use Msg::*;
+fn msg_name(msg: &SignalingMsg) -> &'static str {
+    use SignalingMsg::*;
     match msg {
         Hello { .. } => "Hello",
         Login { .. } => "Login",

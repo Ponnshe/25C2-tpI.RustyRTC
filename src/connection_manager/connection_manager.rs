@@ -539,6 +539,28 @@ impl ConnectionManager {
         // but for a full connection, it's eventually required.
         Ok(())
     }
+    /// Resets the manager to a clean state, ready for a new call.
+    /// This clears ICE state, signaling state, and stops the worker.
+    pub fn reset(&mut self) {
+        // Stop the background worker immediately
+        self.stop_ice_worker();
+
+        // Re-initialize the ICE agent (clears candidates, nominated pairs, etc.)
+        self.ice_agent = IceAgent::with_logger(IceRole::Controlling, self.logger_handle.clone());
+
+        // Reset state flags
+        self.signaling = SignalingState::Stable;
+        self.ice_phase = IcePhase::Idle;
+
+        // Clear SDPs
+        self.local_description = None;
+        self.remote_description = None;
+        self.remote_codecs.clear();
+        self.remote_fingerprint = None;
+
+        // We keep local_codecs, local_fingerprint, and logger_handle
+        // as they are consistent across calls.
+    }
 }
 
 /// Determines if an SDP is probably an offer (heuristic for glare resolution).

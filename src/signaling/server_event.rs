@@ -1,11 +1,14 @@
 use std::sync::mpsc::Sender;
 
-use crate::signaling::{protocol::Msg, types::ClientId};
+use crate::signaling::{protocol::SignalingMsg, types::ClientId};
 
 /// Events sent *to* the central server thread.
 pub enum ServerEvent {
     /// A client sent a signaling message.
-    MsgFromClient { client_id: ClientId, msg: Msg },
+    MsgFromClient {
+        client_id: ClientId,
+        msg: SignalingMsg,
+    },
 
     /// A client disconnected (TCP/TLS closed or errored).
     Disconnected { client_id: ClientId },
@@ -13,6 +16,6 @@ pub enum ServerEvent {
     /// A new client is registered with its outgoing channel.
     RegisterClient {
         client_id: ClientId,
-        to_client: Sender<Msg>,
+        to_client: Sender<SignalingMsg>,
     },
 }
