@@ -35,7 +35,7 @@ impl RtcpPacketType for Bye {
 
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
