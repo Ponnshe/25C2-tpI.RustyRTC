@@ -64,7 +64,7 @@ impl VideoFrame {
         for yy in 0..h {
             for xx in 0..w {
                 // simple luminance pattern
-                y[yy * y_stride + xx] = (((xx ^ yy) as u8).wrapping_add(tick));
+                y[yy * y_stride + xx] = ((xx ^ yy) as u8).wrapping_add(tick);
             }
         }
 
