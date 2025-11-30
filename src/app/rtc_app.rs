@@ -35,6 +35,7 @@ enum CallFlow {
     Idle,
     Dialing {
         peer: String,
+        #[allow(dead_code)]
         txn_id: u64,
     },
     Incoming {
@@ -72,6 +73,7 @@ pub struct RtcApp {
     // RTP summaries
     rtp_pkts: u64,
     rtp_bytes: u64,
+    #[allow(dead_code)]
     rtp_last_report: Instant,
 
     //Siganling setup
@@ -515,12 +517,6 @@ impl RtcApp {
 
     fn decline_incoming_call(&mut self) {
         self.teardown_call(Some("declined".into()), true);
-    }
-
-    fn reset_call_flow(&mut self) {
-        self.call_flow = CallFlow::Idle;
-        self.pending_remote_sdp = None;
-        self.engine.stop();
     }
 
     fn create_or_renegotiate_local_sdp(&mut self) -> Result<(), GuiError> {
