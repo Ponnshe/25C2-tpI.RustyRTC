@@ -10,7 +10,7 @@ use std::{
 use crate::{
     core::{events::EngineEvent, session::Session},
     log::log_sink::LogSink,
-    media_agent::{media_agent::MediaAgent, spec::CodecSpec, video_frame::VideoFrame},
+    media_agent::{MediaAgent, spec::CodecSpec, video_frame::VideoFrame},
     media_transport::{
         codec::CodecDescriptor,
         constants::{DYNAMIC_PAYLOAD_TYPE_START, RTP_TX_CHANNEL_SIZE},
