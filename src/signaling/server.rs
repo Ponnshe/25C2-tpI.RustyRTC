@@ -24,15 +24,12 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Self {
-        Self::with_log_and_auth(
-            Arc::new(NoopLogSink),
-            Box::new(AllowAllAuthBackend::default()),
-        )
+        Self::with_log_and_auth(Arc::new(NoopLogSink), Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom logger, but still "accept all" auth backend.
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
-        Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend::default()))
+        Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom auth backend, but Noop logging.
