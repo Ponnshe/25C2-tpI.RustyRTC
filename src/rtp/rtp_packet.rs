@@ -134,7 +134,11 @@ impl RtpPacket {
         }
         let mut csrcs = Vec::with_capacity(cc);
         for _ in 0..cc {
-            let csrc = u32::from_be_bytes(buf[idx..idx + 4].try_into().unwrap());
+            let csrc = u32::from_be_bytes(
+                buf[idx..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
             csrcs.push(csrc);
             idx += 4;
         }
@@ -145,8 +149,16 @@ impl RtpPacket {
             if buf.len() < idx + 4 {
                 return Err(RtpError::HeaderExtensionTooShort);
             }
-            let profile = u16::from_be_bytes(buf[idx..idx + 2].try_into().unwrap());
-            let length_words = u16::from_be_bytes(buf[idx + 2..idx + 4].try_into().unwrap());
+            let profile = u16::from_be_bytes(
+                buf[idx..idx + 2]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
+            let length_words = u16::from_be_bytes(
+                buf[idx + 2..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
             idx += 4;
 
             let ext_len = (length_words as usize) * 4;
