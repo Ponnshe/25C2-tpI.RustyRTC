@@ -372,7 +372,7 @@ mod tests {
             entries: vec![(1000, 0b0000_0000_0000_0011)],
         });
 
-        let enc = RtcpPacket::encode_compound(&[nack.clone()]).unwrap();
+        let enc = RtcpPacket::encode_compound(std::slice::from_ref(&nack)).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode");
         assert_eq!(dec.len(), 1);
         match &dec[0] {
