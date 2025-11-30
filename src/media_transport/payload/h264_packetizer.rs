@@ -131,10 +131,10 @@ impl H264Packetizer {
 
             // If this NALU was the last NALU of the AU and we already pushed at least one chunk,
             // mark the last emitted chunk as marker=true (end of frame).
-            if ni + 1 == nalus.len() {
-                if let Some(last) = out.last_mut() {
-                    last.marker = true;
-                }
+            if ni + 1 == nalus.len()
+                && let Some(last) = out.last_mut()
+            {
+                last.marker = true;
             }
         }
 
