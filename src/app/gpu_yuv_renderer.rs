@@ -50,6 +50,7 @@ pub struct GpuYuvRenderer {
     // formats and config
     output_format: wgpu::TextureFormat,
 
+    #[allow(dead_code)]
     logger: Arc<dyn LogSink>,
 
     // dentro de GpuYuvRenderer
