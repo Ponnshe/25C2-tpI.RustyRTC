@@ -164,19 +164,23 @@ impl Engine {
                     // Esto asegura que nadie más esté leyendo del socket.
                     self.cm.stop_ice_worker();
 
-                    // --- decidir rol DTLS en base al rol ICE ---
+                    // --- IceRole -> DtlsRole ---
                     let dtls_role = match self.cm.ice_agent.role {
                         IceRole::Controlling => DtlsRole::Server,
                         IceRole::Controlled => DtlsRole::Client,
                     };
 
-                    // --- correr DTLS handshake bloqueante ---
+                    // Retrieve the remote fingerprint stored in CM
+                    let remote_fp = self.cm.remote_fingerprint.clone();
+
+                    // --- blocking DTLS handshake ---
                     let srtp_cfg = match dtls_srtp::run_dtls_handshake(
                         Arc::clone(&sock),
                         peer,
                         dtls_role,
                         self.logger_sink.clone(),
                         Duration::from_secs_f32(5.0),
+                        remote_fp,
                     ) {
                         Ok(cfg) => Some(cfg),
                         Err(e) => {

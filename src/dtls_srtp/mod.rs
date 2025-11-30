@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     app::{log_level::LogLevel, log_sink::LogSink},
-    sink_log,
+    sink_debug, sink_error, sink_info, sink_log, sink_trace, sink_warn,
     tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH, load_certs},
 };
 
@@ -18,6 +18,9 @@ use openssl::{
     ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream},
     x509::X509,
 };
+
+use openssl::hash::MessageDigest;
+use openssl::ssl::SslVerifyMode;
 
 /// RAII guard para dejar el socket en blocking + timeout mientras exista,
 /// y restaurar non-blocking + sin timeout cuando se suelte.
@@ -76,8 +79,6 @@ impl From<ErrorStack> for DtlsError {
     }
 }
 /// Convierte un HandshakeError a DtlsError con mensaje útil.
-/// Nota: para WouldBlock devolvemos un variant Handshake con el string —
-/// en sitios donde queramos la semántica WouldBlock, mapear explícitamente.
 fn handshake_error_to_dtlserr<E: std::fmt::Debug>(he: HandshakeError<E>) -> DtlsError {
     match he {
         HandshakeError::WouldBlock(_) => DtlsError::Handshake("Handshake would block".into()),
@@ -109,21 +110,33 @@ pub struct SrtpSessionConfig {
     pub outbound: SrtpEndpointKeys,
     pub inbound: SrtpEndpointKeys,
 }
-#[derive(Debug, Clone)]
+
+// Struct modificado para incluir logger
+#[derive(Clone)]
 struct BufferedUdpChannel {
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
     reader: Cursor<Vec<u8>>,
     recv_buf: Vec<u8>,
+    logger: Arc<dyn LogSink>,
+}
+
+impl fmt::Debug for BufferedUdpChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedUdpChannel")
+            .field("peer", &self.peer)
+            .finish()
+    }
 }
 
 impl BufferedUdpChannel {
-    fn new(sock: Arc<UdpSocket>, peer: SocketAddr) -> Self {
+    fn new(sock: Arc<UdpSocket>, peer: SocketAddr, logger: Arc<dyn LogSink>) -> Self {
         Self {
             sock,
             peer,
             reader: Cursor::new(Vec::new()),
             recv_buf: vec![0u8; 4096],
+            logger,
         }
     }
 }
@@ -141,12 +154,17 @@ impl Read for BufferedUdpChannel {
             match self.sock.recv_from(&mut self.recv_buf) {
                 Ok((n, from)) => {
                     if from == self.peer {
+                        sink_trace!(&self.logger, "[DTLS IO] Read {} bytes from {}", n, from);
                         // reusar parte del recv_buf sin alocar extra
                         self.reader = Cursor::new(self.recv_buf[..n].to_vec());
                         return self.reader.read(buf);
                     } else {
-                        // paquete de otro peer: ignorar (o loguear)
-                        // sink_log!(..., LogLevel::Debug, "[DTLS] packet from other peer: {:?}", from);
+                        sink_warn!(
+                            &self.logger,
+                            "[DTLS IO] Ignored packet from unknown peer: {} (expected {})",
+                            from,
+                            self.peer
+                        );
                         continue;
                     }
                 }
@@ -161,6 +179,12 @@ impl Read for BufferedUdpChannel {
 
 impl Write for BufferedUdpChannel {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        sink_trace!(
+            &self.logger,
+            "[DTLS IO] Sending {} bytes to {}",
+            buf.len(),
+            self.peer
+        );
         self.sock.send_to(buf, self.peer)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -169,95 +193,92 @@ impl Write for BufferedUdpChannel {
 }
 
 // -----------------------------------------------------------------------------
-// LÓGICA DE HANDSHAKE
+// HANDSHAKE
 // -----------------------------------------------------------------------------
 
-/// Configuración común para Cliente y Servidor para evitar mismatches.
 pub fn run_dtls_handshake(
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
     role: DtlsRole,
     logger: Arc<dyn LogSink>,
     timeout: Duration,
+    expected_fingerprint: Option<String>,
 ) -> Result<SrtpSessionConfig, DtlsError> {
-    // Drenaje inicial defensivo (nonblocking)
+    // Draining socket (nonblocking)
     sock.set_nonblocking(true).ok();
     let mut drain_buf = [0u8; 4096];
+    let mut drained_count = 0;
     loop {
         match sock.recv_from(&mut drain_buf) {
-            Ok(_) => continue,
+            Ok(_) => drained_count += 1,
             Err(_) => break,
         }
     }
+    if drained_count > 0 {
+        sink_debug!(
+            &logger,
+            "[DTLS] Drained {} stale packets before handshake",
+            drained_count
+        );
+    }
 
-    // Guard: pone socket en blocking y configura read timeout; al salir restaurará el estado.
+    // Guard: pone socket en blocking y configura read timeout
     let _guard = SocketBlockingGuard::new(sock.clone(), Some(timeout)).map_err(DtlsError::from)?;
 
-    sink_log!(
+    sink_info!(
         &logger,
-        LogLevel::Info,
-        "[DTLS] starting handshake as {:?}",
-        role
+        "[DTLS] Starting handshake with {} as {:?}. Timeout: {:?}",
+        peer,
+        role,
+        timeout
     );
 
-    let channel = BufferedUdpChannel::new(sock.clone(), peer);
+    if let Some(fp) = &expected_fingerprint {
+        sink_debug!(&logger, "[DTLS] Expecting remote fingerprint: {}", fp);
+    } else {
+        sink_warn!(
+            &logger,
+            "[DTLS] No remote fingerprint provided. Verification will be disabled (INSECURE for WebRTC)."
+        );
+    }
 
-    // Llamada al handshake (puede retornar error)
+    let channel = BufferedUdpChannel::new(sock.clone(), peer, logger.clone());
+
+    // Llamada al handshake
     let dtls_stream = match role {
-        DtlsRole::Client => dtls_connect_openssl(channel),
-        DtlsRole::Server => dtls_accept_openssl(channel),
+        DtlsRole::Client => dtls_connect_openssl(logger.clone(), channel, expected_fingerprint),
+        DtlsRole::Server => dtls_accept_openssl(logger.clone(), channel, expected_fingerprint),
     }
     .map_err(|e| {
-        sink_log!(
-            &logger,
-            LogLevel::Error,
-            "[DTLS] handshake error with {}: {}",
-            peer,
-            e
-        );
+        sink_error!(&logger, "[DTLS] Handshake FAILED with {}: {}", peer, e);
         e
     })?;
 
-    // al salir del scope, _guard.drop() se ejecuta y deja socket non-blocking y sin timeout
-    let cfg = derive_srtp_keys(&dtls_stream, role).map_err(|e| DtlsError::from(e))?;
-    sink_log!(&logger, LogLevel::Info, "[DTLS] Handshake Success!");
+    // Exportación de llaves
+    let cfg = derive_srtp_keys(&dtls_stream, role, logger.clone()).map_err(|e| {
+        sink_error!(&logger, "[DTLS] Key derivation failed: {}", e);
+        DtlsError::from(e)
+    })?;
+
+    sink_info!(&logger, "[DTLS] Handshake Success! SRTP keys derived.");
     Ok(cfg)
 }
 
 fn dtls_connect_openssl(
+    logger: Arc<dyn LogSink>,
     stream: BufferedUdpChannel,
+    expected_fingerprint: Option<String>,
 ) -> Result<SslStream<BufferedUdpChannel>, DtlsError> {
-    let mut builder = create_base_context().map_err(DtlsError::from)?;
+    sink_debug!(&logger, "[DTLS] Client: Initializing OpenSSL context...");
+    let mut builder =
+        create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
 
-    let server_cert_der = load_certs(DTLS_CERT_PATH).map_err(|e| {
-        DtlsError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to load certs: {}", e),
-        ))
-    })?;
-
-    for cert_der in server_cert_der {
-        let x509 = X509::from_der(&cert_der.to_vec())
-            .map_err(|e| DtlsError::Ssl(format!("Invalid cert DER: {}", e)))?;
-        builder
-            .cert_store_mut()
-            .add_cert(x509)
-            .map_err(|e| DtlsError::Ssl(format!("Failed to add cert to store: {}", e)))?;
-    }
-
-    let ssl = Ssl::new(&builder.build())
-        .map_err(|e| DtlsError::Ssl(format!("Ssl::new failed: {}", e)))?;
-
-    match ssl.connect(stream) {
-        Ok(s) => Ok(s),
-        Err(he) => Err(handshake_error_to_dtlserr(he)),
-    }
-}
-
-fn dtls_accept_openssl(
-    stream: BufferedUdpChannel,
-) -> Result<SslStream<BufferedUdpChannel>, DtlsError> {
-    let mut builder = create_base_context().map_err(DtlsError::from)?;
+    sink_debug!(
+        &logger,
+        "[DTLS] Client: Loading identity (chain {} and key {})",
+        DTLS_CERT_PATH,
+        DTLS_KEY_PATH
+    );
 
     builder
         .set_certificate_chain_file(DTLS_CERT_PATH)
@@ -274,14 +295,55 @@ fn dtls_accept_openssl(
     let ssl = Ssl::new(&builder.build())
         .map_err(|e| DtlsError::Ssl(format!("Ssl::new failed: {}", e)))?;
 
+    sink_debug!(&logger, "[DTLS] Client: Starting connect()...");
+    match ssl.connect(stream) {
+        Ok(s) => Ok(s),
+        Err(he) => Err(handshake_error_to_dtlserr(he)),
+    }
+}
+
+fn dtls_accept_openssl(
+    logger: Arc<dyn LogSink>,
+    stream: BufferedUdpChannel,
+    expected_fingerprint: Option<String>,
+) -> Result<SslStream<BufferedUdpChannel>, DtlsError> {
+    sink_debug!(&logger, "[DTLS] Server: Initializing OpenSSL context...");
+    let mut builder =
+        create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
+
+    sink_debug!(
+        &logger,
+        "[DTLS] Server: Loading chain {} and key {}",
+        DTLS_CERT_PATH,
+        DTLS_KEY_PATH
+    );
+
+    builder
+        .set_certificate_chain_file(DTLS_CERT_PATH)
+        .map_err(|e| DtlsError::Ssl(format!("set_certificate_chain_file failed: {}", e)))?;
+
+    builder
+        .set_private_key_file(DTLS_KEY_PATH, SslFiletype::PEM)
+        .map_err(|e| DtlsError::Ssl(format!("set_private_key_file failed: {}", e)))?;
+
+    builder
+        .check_private_key()
+        .map_err(|e| DtlsError::Ssl(format!("Private key does not match certificate: {}", e)))?;
+
+    let ssl = Ssl::new(&builder.build())
+        .map_err(|e| DtlsError::Ssl(format!("Ssl::new failed: {}", e)))?;
+
+    sink_debug!(&logger, "[DTLS] Server: Starting accept()...");
     match ssl.accept(stream) {
         Ok(s) => Ok(s),
         Err(he) => Err(handshake_error_to_dtlserr(he)),
     }
 }
+
 fn derive_srtp_keys(
     stream: &SslStream<BufferedUdpChannel>,
     role: DtlsRole,
+    logger: Arc<dyn LogSink>,
 ) -> Result<SrtpSessionConfig, DtlsError> {
     let selected_profile = stream
         .ssl()
@@ -289,9 +351,18 @@ fn derive_srtp_keys(
         .ok_or(DtlsError::NoSrtpProfile)?;
 
     let profile_name = selected_profile.name();
+    sink_debug!(&logger, "[DTLS] Negotiated SRTP Profile: {}", profile_name);
+
     let profile = match profile_name {
         "SRTP_AES128_CM_SHA1_80" => SrtpProfile::Aes128CmHmacSha1_80,
-        _ => return Err(DtlsError::NoSrtpProfile),
+        _ => {
+            sink_warn!(
+                &logger,
+                "[DTLS] Unknown SRTP Profile selected: {}",
+                profile_name
+            );
+            return Err(DtlsError::NoSrtpProfile);
+        }
     };
 
     let label = "EXTRACTOR-dtls_srtp";
@@ -304,6 +375,12 @@ fn derive_srtp_keys(
         .ssl()
         .export_keying_material(&mut key_mat, label, None)
         .map_err(|e| DtlsError::KeyExport(format!("{}", e)))?;
+
+    sink_trace!(
+        &logger,
+        "[DTLS] Key material exported successfully ({} bytes)",
+        total_len
+    );
 
     let (client_key, rest) = key_mat.split_at(key_len);
     let (server_key, rest) = rest.split_at(key_len);
@@ -331,7 +408,10 @@ fn derive_srtp_keys(
     })
 }
 
-fn create_base_context() -> io::Result<SslContextBuilder> {
+fn create_base_context(
+    logger: Arc<dyn LogSink>,
+    expected_fingerprint: Option<String>,
+) -> io::Result<SslContextBuilder> {
     let mut builder = SslContextBuilder::new(SslMethod::dtls())
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("OpenSSL init failed: {}", e)))?;
 
@@ -344,7 +424,6 @@ fn create_base_context() -> io::Result<SslContextBuilder> {
             )
         })?;
 
-    // Ciphers permisivos
     builder
         .set_cipher_list("DEFAULT:@SECLEVEL=0")
         .map_err(|e| {
@@ -353,6 +432,63 @@ fn create_base_context() -> io::Result<SslContextBuilder> {
                 format!("set_cipher_list failed: {}", e),
             )
         })?;
+
+    if let Some(fp) = expected_fingerprint {
+        let logger_cb = logger.clone();
+
+        // Enforce that a peer certificate is present
+        builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+
+        builder.set_verify_callback(
+            SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+            move |_preverify_ok, ctx| {
+                let cert = match ctx.current_cert() {
+                    Some(c) => c,
+                    None => {
+                        sink_warn!(
+                            logger_cb,
+                            "[DTLS] Verify: No certificate presented by peer!"
+                        );
+                        return false;
+                    }
+                };
+
+                let digest_bytes = match cert.digest(MessageDigest::sha256()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        sink_error!(logger_cb, "[DTLS] Verify: Failed to compute digest: {}", e);
+                        return false;
+                    }
+                };
+
+                let computed_fp = digest_bytes
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<String>>()
+                    .join(":");
+
+                // Perform case-insensitive comparison
+                if computed_fp.eq_ignore_ascii_case(&fp) {
+                    sink_info!(
+                        logger_cb,
+                        "[DTLS] Verify: Fingerprint MATCHED ({})",
+                        computed_fp
+                    );
+                    true
+                } else {
+                    sink_warn!(
+                        logger_cb,
+                        "[DTLS] Verify: Fingerprint MISMATCH!\n  Expected: {}\n  Got:      {}",
+                        fp,
+                        computed_fp
+                    );
+                    false
+                }
+            },
+        );
+    } else {
+        builder.set_verify(SslVerifyMode::NONE);
+    }
 
     Ok(builder)
 }

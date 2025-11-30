@@ -59,6 +59,7 @@ pub struct ConnectionManager {
     ice_worker: Option<IceWorker>,
     /// The SHA-256 fingerprint of our DTLS certificate
     local_fingerprint: String,
+    pub remote_fingerprint: Option<String>,
 }
 
 impl ConnectionManager {
@@ -83,6 +84,7 @@ impl ConnectionManager {
             remote_codecs: vec![],
             ice_worker: None,
             local_fingerprint,
+            remote_fingerprint: None,
         }
     }
 
@@ -129,6 +131,7 @@ impl ConnectionManager {
                 let (remote_is_ice_lite, _ufrag, _pwd) =
                     self.extract_and_store_remote_ice_meta(&sdp)?;
                 self.extract_and_store_rtp_meta(&sdp)?;
+                self.extract_and_store_fingerprint(&sdp)?;
                 self.remote_description = Some(sdp);
                 self.signaling = SignalingState::HaveRemoteOffer;
 
@@ -147,6 +150,7 @@ impl ConnectionManager {
                 let (_remote_is_ice_lite, _ufrag, _pwd) =
                     self.extract_and_store_remote_ice_meta(&sdp)?;
                 self.extract_and_store_rtp_meta(&sdp)?;
+                self.extract_and_store_fingerprint(&sdp)?;
                 self.remote_description = Some(sdp);
                 self.signaling = SignalingState::Stable;
                 Ok(OutboundSdp::None)
@@ -514,6 +518,26 @@ impl ConnectionManager {
         attrs.push(SDPAttribute::new("rtcp-mux", None));
         media_desc.set_attrs(attrs);
         media_desc
+    }
+
+    fn extract_and_store_fingerprint(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
+        for m in remote.media() {
+            for a in m.attrs() {
+                if a.key() == "fingerprint" {
+                    if let Some(val) = a.value() {
+                        let parts: Vec<&str> = val.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            // parts[0] is "sha-256", parts[1] is the hash
+                            self.remote_fingerprint = Some(parts[1].to_string());
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        // It is valid to not find one immediately if the SDP is partial,
+        // but for a full connection, it's eventually required.
+        Ok(())
     }
 }
 
