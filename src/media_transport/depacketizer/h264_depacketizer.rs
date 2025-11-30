@@ -47,10 +47,10 @@ impl H264Depacketizer {
             self.cur_ts = Some(timestamp);
         }
 
-        if let Some(expect) = self.expected_seq {
-            if seq != expect {
-                self.frame_corrupted = true;
-            }
+        if let Some(expect) = self.expected_seq
+            && seq != expect
+        {
+            self.frame_corrupted = true;
         }
         self.expected_seq = Some(seq.wrapping_add(1));
 
