@@ -23,7 +23,7 @@ use rustls::{ServerConnection, StreamOwned};
 /// - bind address
 /// - logging sink
 /// - auth backend (e.g. FileUserStore)
-/// and knows how to spin up the central Router+Server loop plus per-connection threads.
+///     and knows how to spin up the central Router+Server loop plus per-connection threads.
 pub struct SignalingServer {
     bind_addr: String,
     log: Arc<dyn LogSink>,
