@@ -22,7 +22,7 @@ macro_rules! log_ev {
                     $lvl,
                     format!($($arg)*),
                     module_path!(),
-                    crate::media_agent::utils::now_millis(),
+                    $crate::media_agent::utils::now_millis(),
                 )
             )
         );
