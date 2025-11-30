@@ -38,7 +38,7 @@ impl RtcpPacketType for ReceiverReport {
         if payload.len() < 4 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let mut idx = 4usize;
 
         let rc = hdr.rc_or_fmt() as usize;
