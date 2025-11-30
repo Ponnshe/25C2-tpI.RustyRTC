@@ -11,7 +11,7 @@ use crate::{dtls, ice::type_ice::ice_agent::IceRole};
 use crate::{dtls::DtlsRole, sink_trace};
 
 use crate::{
-    congestion_controller::congestion_controller::CongestionController,
+    congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
