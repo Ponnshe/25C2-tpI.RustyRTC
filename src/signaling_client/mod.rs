@@ -151,7 +151,7 @@ impl SignalingClient {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid DNS name"))?;
 
         let conn = ClientConnection::new(tls_config, server_name)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS error: {e}")))?;
+            .map_err(|e| io::Error::other(format!("TLS error: {e}")))?;
 
         // 3) Wrap TCP + TLS into a single stream that implements Read + Write.
         let tls_stream = StreamOwned::new(conn, tcp);
