@@ -89,6 +89,7 @@ impl DepacketizerEventLoop {
         self.event_loop_handler = Some(handle);
     }
 
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         sink_debug!(self.logger, "[MT Event Loop MA] Stopping the event loop");
         self.stop_flag.store(true, Ordering::SeqCst);
