@@ -66,7 +66,7 @@ impl RtpPacket {
 
         if let Some(ext) = &self.header.header_extension {
             // RFC3550: 16-bit profile, 16-bit length in 32-bit words
-            let words = ((ext.data.len() + 3) / 4) as u32;
+            let words = ext.data.len().div_ceil(4) as u32;
             if words > u16::MAX as u32 {
                 return Err(RtpError::HeaderExtensionTooLong);
             }
@@ -78,7 +78,7 @@ impl RtpPacket {
             // pad to 32-bit boundary with zero bytes
             let pad = (4 - (ext.data.len() % 4)) % 4;
             if pad != 0 {
-                out.extend(std::iter::repeat(0u8).take(pad));
+                out.extend(std::iter::repeat_n(0u8, pad));
             }
         }
 
@@ -90,7 +90,7 @@ impl RtpPacket {
         if has_pad {
             // Add (padding_bytes - 1) filler bytes (any value is legal; use 0) and end with the pad count
             if self.padding_bytes > 1 {
-                out.extend(std::iter::repeat(0u8).take((self.padding_bytes - 1) as usize));
+                out.extend(std::iter::repeat_n(0u8, (self.padding_bytes - 1) as usize));
             }
             out.push(self.padding_bytes);
         }
