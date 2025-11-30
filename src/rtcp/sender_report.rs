@@ -49,7 +49,7 @@ impl RtcpPacketType for SenderReport {
         if payload.len() < 24 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let (info, used) = SenderInfo::decode(&payload[4..])?;
         let mut idx = 4 + used;
 
