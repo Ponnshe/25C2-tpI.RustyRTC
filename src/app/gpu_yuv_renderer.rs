@@ -11,12 +11,12 @@
 //!  - wgpu
 //!  - egui_wgpu_backend (o egui_wgpu)
 //!  - egui
-//!   Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
+//!    Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
 
 use crate::{
     log::log_sink::LogSink,
     media_agent::video_frame::{VideoFrame, VideoFrameData},
-    sink_debug, sink_error,
+    sink_error,
 };
 use eframe::wgpu::{self, util::DeviceExt};
 use std::sync::Arc;
