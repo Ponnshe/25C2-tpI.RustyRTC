@@ -144,6 +144,7 @@ pub(crate) fn spawn_tls_connection_thread(
 ///
 /// `server_tx` is the Sender<ServerEvent> that talks to the central server loop.
 #[allow(clippy::expect_used)]
+#[allow(dead_code)]
 pub(crate) fn spawn_connection_threads(
     client_id: ClientId,
     stream: TcpStream,
