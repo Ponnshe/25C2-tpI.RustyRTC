@@ -12,7 +12,7 @@ use crate::{
         utils::now_millis,
         video_frame::{VideoFrame, VideoFrameData},
     },
-    sink_debug, sink_info,
+    sink_debug,
 };
 
 pub struct H264Decoder {
