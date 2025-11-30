@@ -705,6 +705,11 @@ impl Server {
         out_msgs
     }
 }
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
