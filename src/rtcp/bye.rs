@@ -29,7 +29,7 @@ impl RtcpPacketType for Bye {
             // pad to 4 bytes
             let pad = (4 - ((1 + rbytes.len()) % 4)) % 4;
             if pad != 0 {
-                out.extend(std::iter::repeat(0u8).take(pad));
+                out.extend(std::iter::repeat_n(0u8, pad));
             }
         }
 
