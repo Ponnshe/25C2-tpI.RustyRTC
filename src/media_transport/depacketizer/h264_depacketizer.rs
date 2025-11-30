@@ -7,8 +7,9 @@
 
 #[derive(Debug, Clone)]
 struct FuState {
+    #[allow(dead_code)]
     nalu_header: u8, // reconstructed: F|NRI|Type
-    buf: Vec<u8>,    // complete NAL content: [nalu_header, ...payload...]
+    buf: Vec<u8>, // complete NAL content: [nalu_header, ...payload...]
 }
 
 #[derive(Debug, Default, Clone)]
