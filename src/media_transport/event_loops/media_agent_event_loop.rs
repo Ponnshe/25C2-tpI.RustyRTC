@@ -45,6 +45,7 @@ impl MediaAgentEventLoop {
         }
     }
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::expect_used)]
     pub fn start(
         &mut self,
         media_transport_event_rx: Receiver<MediaTransportEvent>,
