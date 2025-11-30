@@ -70,8 +70,8 @@ impl GpuYuvRenderer {
             label: Some("yuv-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -368,100 +368,74 @@ impl GpuYuvRenderer {
 
 fn upload_plane(
     logger: Arc<dyn LogSink>,
-    tex: &wgpu::Texture, 
-    data: &[u8], 
-    width: u32, 
-    height: u32, 
+    tex: &wgpu::Texture,
+    data: &[u8],
+    width: u32,
+    height: u32,
     stride: usize,
-    queue: &wgpu::Queue
+    queue: &wgpu::Queue,
 ) {
-    let unpadded_bytes_per_row = width as usize;
-    let aligned_bytes_per_row = ((unpadded_bytes_per_row as u32 + 255) / 256) * 256;
+    let w = width as usize;
+    let h = height as usize;
     
+    // wgpu requires texture row alignment to be a multiple of 256 bytes.
+    let aligned_bpr = ((w as u32 + 255) / 256) * 256;
+
     sink_debug!(
-        logger, 
-        "Upload plane - Width: {}, Height: {}, Stride: {}, Unpadded: {}, Aligned: {}, Data len: {}",
-        width, height, stride, unpadded_bytes_per_row, aligned_bytes_per_row, data.len()
+        logger,
+        "[UPLOAD] w={} h={} stride={} aligned_bpr={}",
+        w, h, stride, aligned_bpr
     );
 
-    // No padding
-    if stride == unpadded_bytes_per_row {
-        let expected_size = (aligned_bytes_per_row * height) as usize;
-        if data.len() < expected_size {
-            sink_error!(logger, "Insufficient data: have {}, need {}", data.len(), expected_size);
-            return;
-        }
-        
+    // If the source stride happens to match the required alignment, we can copy directly.
+    // This avoids an expensive allocation and copy for every frame plane.
+    if stride as u32 == aligned_bpr {
         queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
+            tex.as_image_copy(),
             data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(aligned_bytes_per_row),
+                bytes_per_row: Some(stride as u32),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d { 
-                width, 
-                height, 
-                depth_or_array_layers: 1 
-            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-    } else {
-        let total_size = (aligned_bytes_per_row * height) as usize;
-        let mut aligned_data = Vec::with_capacity(total_size);
-        
-        for row in 0..height as usize {
-            let start = row * stride;
-            let end = start + unpadded_bytes_per_row.min(data.len().saturating_sub(start));
-            
-            // Copiar datos válidos de esta fila
-            if start < data.len() {
-                let row_data = &data[start..end.min(data.len())];
-                aligned_data.extend_from_slice(row_data);
-            } else {
-                // Si no hay datos, llenar con negro
-                aligned_data.extend(std::iter::repeat(0).take(unpadded_bytes_per_row));
-            }
-            
-            // Añadir padding de alineación para esta fila
-            let bytes_in_current_row = aligned_data.len() % aligned_bytes_per_row as usize;
-            if bytes_in_current_row > 0 {
-                let padding_needed = aligned_bytes_per_row as usize - bytes_in_current_row;
-                aligned_data.extend(std::iter::repeat(0).take(padding_needed));
-            }
-        }
-        
-        // Asegurar que el tamaño final es exactamente el esperado
-        if aligned_data.len() != total_size {
-            sink_debug!(logger, "Resizing aligned data from {} to {}", aligned_data.len(), total_size);
-            aligned_data.resize(total_size, 0);
-        }
-        
-        sink_debug!(logger, "Final aligned data size: {}", aligned_data.len());
-        
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &aligned_data,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(aligned_bytes_per_row),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d { 
-                width, 
-                height, 
-                depth_or_array_layers: 1 
-            },
-        );
+        return;
     }
+
+    // The stride from the decoder is not 256-byte aligned. We must copy the data
+    // row-by-row into a temporary, correctly aligned buffer before uploading to the GPU.
+    let mut aligned_data = Vec::with_capacity((aligned_bpr * height) as usize);
+    for row_idx in 0..h {
+        let src_start = row_idx * stride;
+        let src_end = src_start + w;
+
+        if src_end > data.len() {
+            // Source data is smaller than expected for this row.
+            // Avoid panicking by padding the rest of the row with black.
+            let valid_len = data.len().saturating_sub(src_start).max(0);
+            if valid_len > 0 {
+                aligned_data.extend_from_slice(&data[src_start..src_start + valid_len]);
+            }
+            aligned_data.extend(std::iter::repeat(0).take(w - valid_len));
+        } else {
+            // Copy the actual pixel data for the row.
+            aligned_data.extend_from_slice(&data[src_start..src_end]);
+        }
+        
+        // Add padding to the end of the row to meet wgpu's alignment requirement.
+        let padding = aligned_bpr as usize - w;
+        aligned_data.extend(std::iter::repeat(0).take(padding));
+    }
+    
+    queue.write_texture(
+        tex.as_image_copy(),
+        &aligned_data,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(aligned_bpr),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
 }

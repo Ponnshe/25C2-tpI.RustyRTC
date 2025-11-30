@@ -3,7 +3,7 @@ use super::{
     utils::show_camera_in_ui,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
+    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger, debug_yuv_to_rgb::debug_yuv_to_rgb},
     core::{
         engine::Engine,
         events::EngineEvent::{
@@ -103,7 +103,7 @@ impl RtcApp {
     const LOCAL_CAMERA_SIZE: f32 = 400.0;
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
 
-    const SIGNALING_SERVER_ADDR: &str = "192.168.0.12:6000";
+    const SIGNALING_SERVER_ADDR: &str = "127.0.0.1:5005";
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
@@ -1110,6 +1110,16 @@ fn update_texture_from_frame(
     );
     match &frame.data {
         crate::media_agent::video_frame::VideoFrameData::Rgb(rgb) => {
+            // ejemplo: central pixel
+            let x = w as usize / 2;
+            let y = h as usize / 2;
+            let idx = (y * w as usize + x) * 3;
+
+            let r = rgb[idx];
+            let g = rgb[idx+1];
+            let b = rgb[idx+2];
+
+            sink_debug!(logger, "RGB LOCAL: R={} G={} B={}", r, g, b);
             let image = egui::ColorImage::from_rgb([w as usize, h as usize], rgb);
             let options = egui::TextureOptions {
                 magnification: egui::TextureFilter::Linear,
@@ -1141,7 +1151,59 @@ fn update_texture_from_frame(
                 *texture = Some((new_id, (w, h)));
             }
         }
-        crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
+        crate::media_agent::video_frame::VideoFrameData::Yuv420 {
+            y,
+            u,
+            v,
+            y_stride,
+            u_stride,
+            v_stride,
+        } => {
+
+            let cx = (frame.width / 2) as usize;
+            let cy = (frame.height / 2) as usize;
+
+            let (r, g, b) = yuv420_to_rgb_at(
+                cx, cy,
+                frame.width as usize,
+                frame.height as usize,
+                y, u, v,
+                *y_stride, *u_stride, *v_stride,
+            );
+
+            // Coordenada central
+            let cx = (frame.width / 2) as usize;
+            let cy = (frame.height / 2) as usize;
+
+            // Índice Y
+            let y_idx = cy * *y_stride + cx;
+
+            // Índice UV (submuestreo 4:2:0)
+            let uv_x = cx / 2;
+            let uv_y = cy / 2;
+            let uv_idx = uv_y * *u_stride + uv_x;
+
+            let y_sample = y[y_idx];
+            let u_sample = u[uv_idx];
+            let v_sample = v[uv_idx];
+
+            sink_debug!(logger, "YUV REMOTO: Y={} U={} V={}", y_sample, u_sample, v_sample);
+
+            // Imprimir todas las conversiones RGB posibles
+            debug_yuv_to_rgb(y_sample, u_sample, v_sample);
+
+            // Además, tu conversión actual para ver qué está devolviendo
+            let (r, g, b) = yuv420_to_rgb_at(
+                cx, cy,
+                frame.width as usize,
+                frame.height as usize,
+                y, u, v,
+                *y_stride, *u_stride, *v_stride,
+            );
+
+            sink_debug!(logger, "RGB REMOTO (TU FUNCIÓN): R={} G={} B={}", r, g, b);
+
+
             if let (Some(renderer), Some(render_state)) = (yuv_renderer, render_state) {
                 sink_debug!(&logger, "[YUV] Using renderer for {}", unique_name,);
                 renderer.update_frame(
@@ -1154,7 +1216,7 @@ fn update_texture_from_frame(
                 if let Some(output_texture) = renderer.output_texture() {
                     let view =
                         output_texture.create_view(&eframe::wgpu::TextureViewDescriptor::default());
-                    let filter = eframe::wgpu::FilterMode::Linear;
+                    let filter = eframe::wgpu::FilterMode::Nearest;
                     let mut wgpu_renderer = render_state.renderer.write();
 
                     if let Some((id, (prev_w, prev_h))) = texture {
@@ -1186,4 +1248,43 @@ fn update_texture_from_frame(
             }
         }
     }
+}
+
+fn yuv420_to_rgb_at(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    y_plane: &[u8],
+    u_plane: &[u8],
+    v_plane: &[u8],
+    y_stride: usize,
+    u_stride: usize,
+    v_stride: usize,
+) -> (u8, u8, u8) {
+    // ---- Leer Y ----
+    let y_idx = y * y_stride + x;
+    let Y = y_plane[y_idx] as f32;
+
+    // ---- Leer U y V (resolución /2) ----
+    let uv_x = x / 2;
+    let uv_y = y / 2;
+
+    let u_idx = uv_y * u_stride + uv_x;
+    let v_idx = uv_y * v_stride + uv_x;
+
+    let U = u_plane[u_idx] as f32 - 128.0;
+    let V = v_plane[v_idx] as f32 - 128.0;
+
+    // ---- MISMA FÓRMULA QUE TU SHADER WGSL ----
+    let r = (Y + 1.402 * V) / 255.0;
+    let g = (Y - 0.344136 * U - 0.714136 * V) / 255.0;
+    let b = (Y + 1.772 * U) / 255.0;
+
+    // ---- Clamp y convertir ----
+    let rc = (r.clamp(0.0, 1.0) * 255.0) as u8;
+    let gc = (g.clamp(0.0, 1.0) * 255.0) as u8;
+    let bc = (b.clamp(0.0, 1.0) * 255.0) as u8;
+
+    (rc, gc, bc)
 }

@@ -8,4 +8,5 @@ pub mod logger;
 pub mod logger_handle;
 pub mod rtc_app;
 pub mod gpu_yuv_renderer;
+pub mod debug_yuv_to_rgb;
 mod utils;
