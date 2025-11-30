@@ -92,8 +92,7 @@ mod tests {
         let (tx, _rx) = sync_channel::<LogMsg>(1);
         let h = LoggerHandle { tx };
 
-        let _ = h
-            .try_log(LogLevel::Info, "first", "test::target")
+        h.try_log(LogLevel::Info, "first", "test::target")
             .expect("first send should succeed");
 
         match h.try_log(LogLevel::Info, "second", "test::target") {
