@@ -972,10 +972,8 @@ impl RtcApp {
 
     fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
         // 1) Conditionally send Bye Singaling Message
-        if send_bye {
-            if let Some(peer) = self.current_peer() {
-                self.send_bye(&peer, reason.clone());
-            }
+        if send_bye && let Some(peer) = self.current_peer() {
+            self.send_bye(&peer, reason.clone());
         }
 
         // 2) Tear down media (safe to call even if session never started)
