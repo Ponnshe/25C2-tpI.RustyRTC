@@ -292,11 +292,11 @@ impl RtcApp {
                 self.signaling_error = Some(err.clone());
                 self.push_ui_log(format!("Signaling error: {err}"));
             }
-            SignalingEvent::ServerMsg(msg) => self.handle_server_msg(msg),
+            SignalingEvent::ServerMsg(msg) => self.handle_signaling_server_msg(msg),
         }
     }
 
-    fn handle_server_msg(&mut self, msg: SignalingMsg) {
+    fn handle_signaling_server_msg(&mut self, msg: SignalingMsg) {
         match msg {
             SignalingMsg::LoginOk { username } => {
                 self.current_username = Some(username.clone());
@@ -971,7 +971,7 @@ impl RtcApp {
     }
 
     fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
-        // 1) Optionally send BYE
+        // 1) Conditionally send Bye Singaling Message
         if send_bye {
             if let Some(peer) = self.current_peer() {
                 self.send_bye(&peer, reason.clone());
@@ -986,6 +986,10 @@ impl RtcApp {
         self.pending_remote_sdp = None;
         self.has_local_description = false;
         self.has_remote_description = false;
+
+        // This ensures 'have_any_texture' becomes false, closing the window.
+        self.local_camera_texture = None;
+        self.remote_camera_texture = None;
 
         if let Some(r) = reason {
             self.status_line = format!("Call ended: {r}");
@@ -1014,7 +1018,15 @@ impl App for RtcApp {
         self.poll_signaling_events();
         self.drain_ui_log_tap();
 
-        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+        // If we hung up (CallFlow::Idle), force frames to None.
+        // This prevents the "last frame" from resurrecting the textures
+        // while the Engine is busy closing gracefully in the background.
+        let (local_frame, remote_frame) = if !matches!(self.call_flow, CallFlow::Idle) {
+            self.engine.snapshot_frames()
+        } else {
+            (None, None)
+        };
+
         self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
 
         let logger_handle = Arc::new(self.logger.handle());
