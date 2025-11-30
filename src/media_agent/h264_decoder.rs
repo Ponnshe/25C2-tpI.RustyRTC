@@ -99,18 +99,16 @@ fn yuv_to_rgbframe(yuv: &DecodedYUV<'_>) -> VideoFrame {
 
 fn yuv_to_yuv420frame(yuv: &DecodedYUV<'_>) -> VideoFrame {
     let (w, h) = yuv.dimensions();
-    let w = w as usize;
-    let h = h as usize;
 
     let (y_stride_orig, u_stride_orig, v_stride_orig) = yuv.strides();
 
     // New strides for wgpu
     let y_stride_new = aligned_stride(w);
-    let uv_w = (w + 1) / 2;
+    let uv_w = w.div_ceil(2);
     let u_stride_new = aligned_stride(uv_w);
     let v_stride_new = aligned_stride(uv_w);
 
-    let uv_h = (h + 1) / 2;
+    let uv_h = h.div_ceil(2);
 
     let mut y_plane = vec![0u8; y_stride_new * h];
     let mut u_plane = vec![0u8; u_stride_new * uv_h];
@@ -161,5 +159,5 @@ fn yuv_to_yuv420frame(yuv: &DecodedYUV<'_>) -> VideoFrame {
 
 fn aligned_stride(width: usize) -> usize {
     const ALIGNMENT: usize = 256; // wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-    (width + ALIGNMENT - 1) / ALIGNMENT * ALIGNMENT
+    width.div_ceil(ALIGNMENT) * ALIGNMENT
 }
