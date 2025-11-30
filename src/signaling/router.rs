@@ -37,7 +37,7 @@ impl Router {
     ///
     /// For now this just ensures an outbox exists.
     pub fn register_client(&mut self, client_id: ClientId) {
-        self.outboxes.entry(client_id).or_insert_with(Vec::new);
+        self.outboxes.entry(client_id).or_default();
     }
 
     /// Unregister a client:
@@ -109,10 +109,7 @@ impl Router {
     }
 
     fn enqueue(&mut self, out_msg: OutgoingMsg) {
-        let queue = self
-            .outboxes
-            .entry(out_msg.client_id_target)
-            .or_insert_with(Vec::new);
+        let queue = self.outboxes.entry(out_msg.client_id_target).or_default();
         queue.push(out_msg.msg);
     }
 }
@@ -121,6 +118,7 @@ impl Default for Router {
         Self::new()
     }
 }
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
