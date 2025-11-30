@@ -390,7 +390,7 @@ mod tests {
 
         assert_eq!(sdp.attrs.len(), 1);
         assert_eq!(sdp.attrs[0].key(), "tool");
-        assert_eq!(sdp.attrs[0].value().as_deref(), Some("libSDP"));
+        assert_eq!(sdp.attrs[0].value(), Some("libSDP"));
 
         assert_eq!(sdp.media.len(), 1);
         assert_eq!(sdp.media[0].kind().to_string(), "audio");
@@ -399,14 +399,11 @@ mod tests {
         assert_eq!(sdp.media[0].fmts().len(), 1);
         assert_eq!(sdp.media[0].fmts()[0], "0");
 
-        assert_eq!(sdp.media[0].title().as_deref(), Some("Audio stream"));
+        assert_eq!(sdp.media[0].title(), Some("Audio stream"));
         assert_eq!(sdp.media[0].attrs().len(), 1);
         assert_eq!(sdp.media[0].attrs()[0].key(), "rtpmap");
 
-        assert_eq!(
-            sdp.media[0].attrs()[0].value().as_deref(),
-            Some("0 PCMU/8000")
-        );
+        assert_eq!(sdp.media[0].attrs()[0].value(), Some("0 PCMU/8000"));
     }
 
     #[test]
