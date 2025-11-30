@@ -215,7 +215,11 @@ impl RtpSession {
                         // 3. SRTP Unprotect
                         if let Some(ctx) = &srtp_inbound {
                             // Mutex lock, attempt unprotect
-                            match ctx.lock().unwrap().unprotect(&mut pkt) {
+                            match ctx
+                                .lock()
+                                .expect("SRTP inbound lock poisoned")
+                                .unprotect(&mut pkt)
+                            {
                                 Ok(_) => {
                                     // Success: pkt is now cleartext RTP
                                 }
@@ -372,7 +376,10 @@ impl RtpSession {
 
     /// Convenience: does this remote SSRC exist as a recv stream?
     pub fn has_recv_ssrc(&self, remote_ssrc: u32) -> bool {
-        self.recv_streams.lock().unwrap().contains_key(&remote_ssrc)
+        self.recv_streams
+            .lock()
+            .expect("recv_streams lock poisoned")
+            .contains_key(&remote_ssrc)
     }
 
     pub fn send_rtp_payload(
