@@ -85,7 +85,8 @@ impl MediaTransport {
         let (packetizer_event_tx, packetizer_event_rx) = mpsc::channel();
 
         if let Some(media_transport_event_tx) = maybe_media_transport_event_tx {
-            self.media_agent
+            let _ = self
+                .media_agent
                 .start(self.event_tx.clone(), media_transport_event_tx);
         }
 
