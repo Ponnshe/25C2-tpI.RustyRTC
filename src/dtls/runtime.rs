@@ -37,11 +37,8 @@ pub fn run_dtls_handshake(
     sock.set_nonblocking(true).ok();
     let mut drain_buf = [0u8; 4096];
     let mut drained_count = 0;
-    loop {
-        match sock.recv_from(&mut drain_buf) {
-            Ok(_) => drained_count += 1,
-            Err(_) => break,
-        }
+    while let Ok(_) = sock.recv_from(&mut drain_buf) {
+        drained_count += 1;
     }
     if drained_count > 0 {
         sink_debug!(
@@ -86,7 +83,7 @@ pub fn run_dtls_handshake(
     // Exportación de llaves
     let cfg = derive_srtp_keys(&dtls_stream, role, logger.clone()).map_err(|e| {
         sink_error!(&logger, "[DTLS] Key derivation failed: {}", e);
-        DtlsError::from(e)
+        e
     })?;
 
     sink_info!(&logger, "[DTLS] Handshake Success! SRTP keys derived.");
@@ -242,25 +239,15 @@ fn create_base_context(
     expected_fingerprint: Option<String>,
 ) -> io::Result<SslContextBuilder> {
     let mut builder = SslContextBuilder::new(SslMethod::dtls())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("OpenSSL init failed: {}", e)))?;
+        .map_err(|e| io::Error::other(format!("OpenSSL init failed: {}", e)))?;
 
     builder
         .set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80")
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("set_tlsext_use_srtp failed: {}", e),
-            )
-        })?;
+        .map_err(|e| io::Error::other(format!("set_tlsext_use_srtp failed: {}", e)))?;
 
     builder
         .set_cipher_list("DEFAULT:@SECLEVEL=0")
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("set_cipher_list failed: {}", e),
-            )
-        })?;
+        .map_err(|e| io::Error::other(format!("set_cipher_list failed: {}", e)))?;
 
     if let Some(fp) = expected_fingerprint {
         let logger_cb = logger.clone();
