@@ -54,4 +54,9 @@ impl Presence {
     pub fn online_usernames(&self) -> Vec<UserName> {
         self.user_to_client.keys().cloned().collect()
     }
+    /// Return all client IDs currently logged in.
+    /// This is used to iterate over all clients to broadcast updates.
+    pub fn all_client_ids(&self) -> Vec<ClientId> {
+        self.client_to_user.keys().copied().collect()
+    }
 }

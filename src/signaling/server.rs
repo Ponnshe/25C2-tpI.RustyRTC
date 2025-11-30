@@ -154,6 +154,30 @@ impl Server {
         }
     }
 
+    fn broadcast_peer_list_update(&self) -> Vec<OutgoingMsg> {
+        let mut out_msgs = Vec::new();
+        let all_usernames = self.presence.online_usernames();
+        let all_clients = self.presence.all_client_ids();
+
+        for client_id in all_clients {
+            // Get the username for this specific client so we can filter it out of their list
+            if let Some(my_username) = self.presence.username_for(client_id) {
+                // Filter: everyone except me
+                let peers: Vec<String> = all_usernames
+                    .iter()
+                    .filter(|u| *u != my_username)
+                    .cloned()
+                    .collect();
+
+                out_msgs.push(OutgoingMsg {
+                    client_id_target: client_id,
+                    msg: SignalingMsg::PeersOnline { peers },
+                });
+            }
+        }
+        out_msgs
+    }
+
     /// Called when a TCP connection closes, to clean up state.
     pub fn handle_disconnect(&mut self, client: ClientId) -> Vec<OutgoingMsg> {
         let mut out_msgs = Vec::new();
@@ -185,6 +209,9 @@ impl Server {
                     });
                 }
             }
+
+            // 2. Broadcast updated peer list to everyone else
+            out_msgs.extend(self.broadcast_peer_list_update());
         } else {
             sink_info!(
                 self.log,
@@ -261,6 +288,8 @@ impl Server {
             client_id_target: client,
             msg: SignalingMsg::LoginOk { username },
         });
+        // 4) Broadcast updated peer list to everyone (including the new user)
+        out.extend(self.broadcast_peer_list_update());
         out
     }
 
