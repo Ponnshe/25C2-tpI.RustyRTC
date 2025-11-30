@@ -12,8 +12,8 @@ use std::{
 };
 
 use crate::rtp_session::{
-    outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
-    rtp_recv_config::RtpRecvConfig, rtp_session::RtpSession,
+    RtpSession, outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec,
+    rtp_recv_config::RtpRecvConfig,
 };
 use crate::{
     core::{
