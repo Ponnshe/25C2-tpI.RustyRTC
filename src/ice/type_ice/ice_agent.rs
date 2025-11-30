@@ -558,7 +558,7 @@ impl IceAgent {
                     "[ICE] Received NOMINATION_REQUEST from {}",
                     from_addr
                 );
-                if self.nominated_pair.as_ref().map_or(true, |np| {
+                if self.nominated_pair.as_ref().is_none_or(|np| {
                     np.local.address != pair.local.address
                         || np.remote.address != pair.remote.address
                 }) {
