@@ -653,6 +653,7 @@ impl Server {
         }]
     }
 
+    #[allow(dead_code)]
     fn handle_ack(&mut self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
         let username = self.presence.username_for(from_cid).cloned();
         sink_trace!(
@@ -666,6 +667,7 @@ impl Server {
         Vec::new()
     }
 
+    #[allow(dead_code)]
     fn handle_bye(&mut self, from: ClientId, reason: Option<String>) -> Vec<OutgoingMsg> {
         let username_opt = self.presence.username_for(from).cloned();
 
