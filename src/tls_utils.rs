@@ -124,7 +124,7 @@ pub fn get_local_fingerprint_sha256() -> std::io::Result<String> {
     // Calcular Digest SHA256
     let digest = x509
         .digest(MessageDigest::sha256())
-        .map_err(|e| io::Error::other(e))?;
+        .map_err(io::Error::other)?;
 
     // Formatear a Hex separado por colons
     let hex: Vec<String> = digest.iter().map(|b| format!("{:02X}", b)).collect();
