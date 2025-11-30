@@ -114,20 +114,17 @@ pub fn get_local_fingerprint_sha256() -> std::io::Result<String> {
     let certs_der = load_certs(DTLS_CERT_PATH)?;
 
     if certs_der.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "No certs found",
-        ));
+        return Err(io::Error::other("No certs found"));
     }
 
     // Parsear con OpenSSL
-    let x509 = X509::from_der(&certs_der[0].to_vec())
+    let x509 = X509::from_der(&certs_der[0])
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     // Calcular Digest SHA256
     let digest = x509
         .digest(MessageDigest::sha256())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(|e| io::Error::other(e))?;
 
     // Formatear a Hex separado por colons
     let hex: Vec<String> = digest.iter().map(|b| format!("{:02X}", b)).collect();
