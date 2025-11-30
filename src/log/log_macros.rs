@@ -17,8 +17,8 @@
 macro_rules! log_ev {
     ($tx:expr, $lvl:expr, $($arg:tt)*) => {{
         let _ = $tx.send(
-            crate::core::events::EngineEvent::Log(
-                crate::log::log_msg::LogMsg::new(
+            $crate::core::events::EngineEvent::Log(
+                $crate::log::log_msg::LogMsg::new(
                     $lvl,
                     format!($($arg)*),
                     module_path!(),
@@ -59,16 +59,16 @@ macro_rules! logger_log {
 // ---------------------- TRACE ----------------------
 #[cfg(feature = "log-trace")]
 #[macro_export]
-macro_rules! sink_trace   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Trace, $($arg)*); } }
+macro_rules! sink_trace   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Trace, $($arg)*) } }
 #[cfg(feature = "log-trace")]
 #[macro_export]
-macro_rules! log_trace_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Trace, $($arg)*); } }
+macro_rules! log_trace_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, $crate::log::log_level::LogLevel::Trace, $($arg)*) } }
 #[cfg(feature = "log-trace")]
 #[macro_export]
-macro_rules! bg_trace     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, crate::log::log_level::LogLevel::Trace, $($arg)*); } }
+macro_rules! bg_trace     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, $crate::log::log_level::LogLevel::Trace, $($arg)*) } }
 #[cfg(feature = "log-trace")]
 #[macro_export]
-macro_rules! logger_trace { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::log::log_level::LogLevel::Trace, $($arg)*); } }
+macro_rules! logger_trace { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, $crate::log::log_level::LogLevel::Trace, $($arg)*) } }
 
 #[cfg(not(feature = "log-trace"))]
 #[macro_export]
@@ -102,16 +102,16 @@ macro_rules! logger_trace {
 // ---------------------- DEBUG ----------------------
 #[cfg(feature = "log-debug")]
 #[macro_export]
-macro_rules! sink_debug   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Debug, $($arg)*); } }
+macro_rules! sink_debug   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Debug, $($arg)*); } }
 #[cfg(feature = "log-debug")]
 #[macro_export]
-macro_rules! log_debug_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Debug, $($arg)*); } }
+macro_rules! log_debug_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, $crate::log::log_level::LogLevel::Debug, $($arg)*); } }
 #[cfg(feature = "log-debug")]
 #[macro_export]
-macro_rules! bg_debug     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, crate::log::log_level::LogLevel::Debug, $($arg)*); } }
+macro_rules! bg_debug     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, $crate::log::log_level::LogLevel::Debug, $($arg)*); } }
 #[cfg(feature = "log-debug")]
 #[macro_export]
-macro_rules! logger_debug { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::log::log_level::LogLevel::Debug, $($arg)*); } }
+macro_rules! logger_debug { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, $crate::log::log_level::LogLevel::Debug, $($arg)*); } }
 
 #[cfg(not(feature = "log-debug"))]
 #[macro_export]
@@ -145,16 +145,16 @@ macro_rules! logger_debug {
 // ---------------------- INFO ----------------------
 #[cfg(feature = "log-info")]
 #[macro_export]
-macro_rules! sink_info   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Info, $($arg)*); } }
+macro_rules! sink_info   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Info, $($arg)*); } }
 #[cfg(feature = "log-info")]
 #[macro_export]
-macro_rules! log_info_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Info, $($arg)*); } }
+macro_rules! log_info_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, $crate::log::log_level::LogLevel::Info, $($arg)*); } }
 #[cfg(feature = "log-info")]
 #[macro_export]
-macro_rules! bg_info     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, crate::log::log_level::LogLevel::Info, $($arg)*); } }
+macro_rules! bg_info     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, $crate::log::log_level::LogLevel::Info, $($arg)*); } }
 #[cfg(feature = "log-info")]
 #[macro_export]
-macro_rules! logger_info { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::log::log_level::LogLevel::Info, $($arg)*); } }
+macro_rules! logger_info { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, $crate::log::log_level::LogLevel::Info, $($arg)*); } }
 
 #[cfg(not(feature = "log-info"))]
 #[macro_export]
@@ -188,16 +188,16 @@ macro_rules! logger_info {
 // ---------------------- WARN ----------------------
 #[cfg(feature = "log-warn")]
 #[macro_export]
-macro_rules! sink_warn   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Warn, $($arg)*) } }
+macro_rules! sink_warn   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Warn, $($arg)*) } }
 #[cfg(feature = "log-warn")]
 #[macro_export]
-macro_rules! log_warn_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Warn, $($arg)*); } }
+macro_rules! log_warn_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, $crate::log::log_level::LogLevel::Warn, $($arg)*); } }
 #[cfg(feature = "log-warn")]
 #[macro_export]
-macro_rules! bg_warn     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, crate::log::log_level::LogLevel::Warn, $($arg)*); } }
+macro_rules! bg_warn     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, $crate::log::log_level::LogLevel::Warn, $($arg)*); } }
 #[cfg(feature = "log-warn")]
 #[macro_export]
-macro_rules! logger_warn { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::log::log_level::LogLevel::Warn, $($arg)*); } }
+macro_rules! logger_warn { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, $crate::log::log_level::LogLevel::Warn, $($arg)*); } }
 
 #[cfg(not(feature = "log-warn"))]
 #[macro_export]
@@ -232,16 +232,16 @@ macro_rules! logger_warn {
 // Generally always enabled, but consistent structure allows user to disable if really needed.
 #[cfg(feature = "log-error")]
 #[macro_export]
-macro_rules! sink_error   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, crate::log::log_level::LogLevel::Error, $($arg)*); } }
+macro_rules! sink_error   { ($sink:expr, $($arg:tt)*)   => { $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Error, $($arg)*); } }
 #[cfg(feature = "log-error")]
 #[macro_export]
-macro_rules! log_error_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, crate::log::log_level::LogLevel::Error, $($arg)*); } }
+macro_rules! log_error_ev { ($tx:expr, $($arg:tt)*)     => { $crate::log_ev!($tx, $crate::log::log_level::LogLevel::Error, $($arg)*); } }
 #[cfg(feature = "log-error")]
 #[macro_export]
-macro_rules! bg_error     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, crate::log::log_level::LogLevel::Error, $($arg)*); } }
+macro_rules! bg_error     { ($self_:expr, $($arg:tt)*)  => { $crate::bg_log!($self_, $crate::log::log_level::LogLevel::Error, $($arg)*); } }
 #[cfg(feature = "log-error")]
 #[macro_export]
-macro_rules! logger_error { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, crate::log::log_level::LogLevel::Error, $($arg)*); } }
+macro_rules! logger_error { ($logger:expr, $($arg:tt)*) => { $crate::logger_log!($logger, $crate::log::log_level::LogLevel::Error, $($arg)*); } }
 
 #[cfg(not(feature = "log-error"))]
 #[macro_export]
