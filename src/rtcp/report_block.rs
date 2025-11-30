@@ -52,7 +52,7 @@ impl ReportBlock {
         out.push(self.fraction_lost);
         // 24-bit signed
         let cl = self.cumulative_lost.clamp(-8_388_608, 8_388_607);
-        let cl_u = cl as i32 as u32 & 0x00FF_FFFF;
+        let cl_u = cl as u32 & 0x00FF_FFFF;
         out.push(((cl_u >> 16) & 0xFF) as u8);
         out.push(((cl_u >> 8) & 0xFF) as u8);
         out.push((cl_u & 0xFF) as u8);
