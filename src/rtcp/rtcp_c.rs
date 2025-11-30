@@ -95,13 +95,13 @@ fn encode_one(packet: &RtcpPacket, out: &mut Vec<u8>) -> Result<(), RtcpError> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use crate::rtcp::RtcpPacket;
     use crate::rtcp::app::App;
     use crate::rtcp::bye::Bye;
     use crate::rtcp::generic_nack::GenericNack;
     use crate::rtcp::packet_type::{PT_APP, PT_BYE, PT_PSFB, PT_RR, PT_RTPFB, PT_SDES, PT_SR};
     use crate::rtcp::picture_loss::PictureLossIndication;
     use crate::rtcp::receiver_report::ReceiverReport;
-    use crate::rtcp::rtcp::RtcpPacket;
     use crate::rtcp::rtcp_error::RtcpError;
     use crate::rtcp::sdes::{Sdes, SdesChunk, SdesItem};
     use crate::rtcp::sender_info::SenderInfo;
