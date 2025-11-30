@@ -99,23 +99,16 @@ impl RtcApp {
     const CAMERAS_WINDOW_HEIGHT: f32 = 400.0;
     const LOCAL_CAMERA_SIZE: f32 = 400.0;
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
-
-    const SIGNALING_SERVER_ADDR: &str = "127.0.0.1:5005";
+    const SERVER_ADDR: &str = "127.0.0.1:5005";
 
     #[must_use]
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Arc<Config>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
         let logger_handle = Arc::new(logger.handle());
-        let config = match config::Config::load("app.conf") {
-            Ok(cfg) => Arc::new(cfg),
-            Err(e) => {
-                sink_error!(
-                    logger_handle,
-                    "Error loading config: {e}. Using default config"
-                );
-                Arc::new(Config::empty())
-            }
-        };
+        
+        let server_addr_input = config
+            .get_or_default("Signaling", "server_address", Self::SERVER_ADDR)
+            .to_string();
 
         let (local_yuv_renderer, remote_yuv_renderer) =
             cc.wgpu_render_state.as_ref().map_or_else(
@@ -141,7 +134,7 @@ impl RtcApp {
             local_sdp_text: String::new(),
             pending_remote_sdp: None,
             status_line: "Ready.".into(),
-            engine: Engine::new(logger_handle),
+            engine: Engine::new(logger_handle, config.clone()),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
@@ -156,7 +149,7 @@ impl RtcApp {
             remote_camera_texture: None,
             signaling_client: None,
             signaling_screen: SignalingScreen::Connect,
-            server_addr_input: Self::SIGNALING_SERVER_ADDR.into(),
+            server_addr_input,
             login_username: String::new(),
             login_password: String::new(),
             register_username: String::new(),
@@ -168,7 +161,7 @@ impl RtcApp {
             next_txn_id: 1,
             local_yuv_renderer,
             remote_yuv_renderer,
-            config
+            config,
         }
     }
 
@@ -236,7 +229,9 @@ impl RtcApp {
         // TLS SNI / certificate name.
         // This MUST match the mkcert-generated certificate (signal.internal).
         // We keep it fixed for now, even if the user types 127.0.0.1:6000.
-        let domain = "signal.internal";
+        let domain = self
+            .config
+            .get_or_default("Signaling", "tls_domain", "signal.internal");
 
         // Build TLS config + connect over TLS, handling errors explicitly (no `?`).
         let res: io::Result<SignalingClient> =
@@ -1015,9 +1010,14 @@ impl RtcApp {
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
+        let ui_fps = self.config
+            .get_or_default("UI", "fps", "60")
+            .parse()
+            .unwrap_or(60);
+        let time = 1/ui_fps;
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(time));
         }
 
         if let Some(sdp) = self.pending_remote_sdp.take() {
