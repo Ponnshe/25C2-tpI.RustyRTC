@@ -271,7 +271,7 @@ impl Engine {
             "[Engine] Sending Established Event to Media Transport"
         );
         if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx() {
-            media_transport_event_tx.send(MediaTransportEvent::Established);
+            let _ = media_transport_event_tx.send(MediaTransportEvent::Established);
         }
     }
 }
