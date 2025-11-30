@@ -523,14 +523,14 @@ impl ConnectionManager {
     fn extract_and_store_fingerprint(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
         for m in remote.media() {
             for a in m.attrs() {
-                if a.key() == "fingerprint" {
-                    if let Some(val) = a.value() {
-                        let parts: Vec<&str> = val.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            // parts[0] is "sha-256", parts[1] is the hash
-                            self.remote_fingerprint = Some(parts[1].to_string());
-                            return Ok(());
-                        }
+                if a.key() == "fingerprint"
+                    && let Some(val) = a.value()
+                {
+                    let parts: Vec<&str> = val.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        // parts[0] is "sha-256", parts[1] is the hash
+                        self.remote_fingerprint = Some(parts[1].to_string());
+                        return Ok(());
                     }
                 }
             }
