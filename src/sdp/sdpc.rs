@@ -75,6 +75,7 @@ pub struct Sdp {
 
 impl Sdp {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         version: u8,
         origin: Origin,
