@@ -12,19 +12,19 @@ pub use codec::{decode_msg, encode_msg};
 pub use constants::{MAX_BODY_LEN, PROTO_VERSION};
 pub use errors::{FrameError, ProtoError};
 pub use framing::{read_frame, write_frame};
-pub use msg::Msg;
+pub use msg::SignalingMsg;
 pub use msg_type::MsgType;
 pub use types::{SessionCode, SessionId, TxnId, UserName};
 
 /// High-level: write a full framed Msg to the wire.
-pub fn write_msg<W: Write>(w: &mut W, msg: &Msg) -> Result<(), FrameError> {
+pub fn write_msg<W: Write>(w: &mut W, msg: &SignalingMsg) -> Result<(), FrameError> {
     let (msg_type, body) = encode_msg(msg)?;
     write_frame(w, msg_type, &body)?;
     Ok(())
 }
 
 /// High-level: read a full framed Msg from the wire.
-pub fn read_msg<R: Read>(r: &mut R) -> Result<Msg, FrameError> {
+pub fn read_msg<R: Read>(r: &mut R) -> Result<SignalingMsg, FrameError> {
     let (msg_type, body) = read_frame(r, MAX_BODY_LEN)?;
     let msg = decode_msg(msg_type, &body)?;
     Ok(msg)
@@ -35,7 +35,7 @@ mod tests {
     use super::*;
     use std::io::Cursor as IoCursor;
 
-    fn roundtrip(msg: &Msg) -> Msg {
+    fn roundtrip(msg: &SignalingMsg) -> SignalingMsg {
         let mut buf = IoCursor::new(Vec::<u8>::new());
         write_msg(&mut buf, msg).expect("write_msg failed");
         buf.set_position(0);
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn roundtrip_hello() {
-        let original = Msg::Hello {
+        let original = SignalingMsg::Hello {
             client_version: "roomrtc-0.1".to_string(),
         };
 
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn roundtrip_login() {
-        let original = Msg::Login {
+        let original = SignalingMsg::Login {
             username: "alice".to_string(),
             password: "secret".to_string(),
         };
@@ -67,11 +67,11 @@ mod tests {
 
     #[test]
     fn roundtrip_list_peers_and_peers_online() {
-        let list = Msg::ListPeers;
+        let list = SignalingMsg::ListPeers;
         let decoded_list = roundtrip(&list);
         assert_eq!(decoded_list, list);
 
-        let peers = Msg::PeersOnline {
+        let peers = SignalingMsg::PeersOnline {
             peers: vec!["alice".into(), "bob".into()],
         };
         let decoded_peers = roundtrip(&peers);
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn roundtrip_created() {
-        let original = Msg::Created {
+        let original = SignalingMsg::Created {
             session_id: "sess-123".to_string(),
             session_code: "ABCD12".to_string(),
         };
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn roundtrip_joinok() {
-        let original = Msg::JoinOk {
+        let original = SignalingMsg::JoinOk {
             session_id: "sess-123".to_string(),
         };
 
@@ -104,7 +104,7 @@ mod tests {
         let sdp = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n".to_vec();
         let cand = b"candidate:1 1 udp 2122252543 192.0.2.1 54400 typ host".to_vec();
 
-        let offer = Msg::Offer {
+        let offer = SignalingMsg::Offer {
             txn_id: 42,
             from: "alice".to_string(),
             to: "bob".to_string(),
@@ -113,7 +113,7 @@ mod tests {
         let decoded_offer = roundtrip(&offer);
         assert_eq!(decoded_offer, offer);
 
-        let answer = Msg::Answer {
+        let answer = SignalingMsg::Answer {
             txn_id: 43,
             from: "bob".to_string(),
             to: "alice".to_string(),
@@ -122,7 +122,7 @@ mod tests {
         let decoded_answer = roundtrip(&answer);
         assert_eq!(decoded_answer, answer);
 
-        let candidate = Msg::Candidate {
+        let candidate = SignalingMsg::Candidate {
             from: "alice".to_string(),
             to: "bob".to_string(),
             mid: "0".to_string(),
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn roundtrip_bye_some_and_none() {
-        let bye_some = Msg::Bye {
+        let bye_some = SignalingMsg::Bye {
             from: "alice".into(),
             to: "bob".into(),
             reason: Some("done".to_string()),
@@ -143,7 +143,7 @@ mod tests {
         let decoded_some = roundtrip(&bye_some);
         assert_eq!(decoded_some, bye_some);
 
-        let bye_none = Msg::Bye {
+        let bye_none = SignalingMsg::Bye {
             from: "alice".into(),
             to: "bob".into(),
             reason: None,
@@ -154,8 +154,8 @@ mod tests {
 
     #[test]
     fn roundtrip_ping_pong() {
-        let ping = Msg::Ping { nonce: 123 };
-        let pong = Msg::Pong { nonce: 456 };
+        let ping = SignalingMsg::Ping { nonce: 123 };
+        let pong = SignalingMsg::Pong { nonce: 456 };
 
         let decoded_ping = roundtrip(&ping);
         let decoded_pong = roundtrip(&pong);
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn encode_str16_exact_u16_max_ok() {
         let s = "x".repeat(u16::MAX as usize); // exactly max size
-        let msg = Msg::Hello { client_version: s };
+        let msg = SignalingMsg::Hello { client_version: s };
 
         let res = encode_msg(&msg);
         assert!(res.is_ok(), "encode_msg should accept exact u16::MAX len");
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn encode_str16_too_long_fails() {
         let s = "x".repeat(u16::MAX as usize + 1);
-        let msg = Msg::Hello {
+        let msg = SignalingMsg::Hello {
             client_version: s.clone(),
         };
 
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn read_frame_too_large() {
         // Build a valid Ping frame via write_frame, then read with a tiny max_body
-        let msg = Msg::Ping { nonce: 42 };
+        let msg = SignalingMsg::Ping { nonce: 42 };
         let (ty, body) = encode_msg(&msg).unwrap();
 
         let mut buf = IoCursor::new(Vec::<u8>::new());

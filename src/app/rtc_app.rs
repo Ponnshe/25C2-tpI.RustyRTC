@@ -3,15 +3,15 @@ use super::{
     utils::show_camera_in_ui,
 };
 use crate::{
-    app::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     core::{
         engine::Engine,
         events::EngineEvent::{
             self, Closed, Closing, Error, Established, IceNominated, Log, RtpIn, Status,
         },
     },
+    log::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     media_agent::video_frame::{VideoFrame, VideoFrameData},
-    signaling::protocol::Msg,
+    signaling::protocol::SignalingMsg,
     signaling_client::{SignalingClient, SignalingEvent},
     sink_debug,
 };
@@ -209,20 +209,6 @@ impl RtcApp {
         }
     }
 
-    fn push_kbps_log_from_rtp_packets(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.rtp_last_report).as_millis() >= 500 {
-            let kbps = (self.rtp_bytes as f64 * 8.0) / 1000.0 * 2.0; // rough since 0.5s window
-            self.push_ui_log(format!(
-                "RTP: {} pkts, {:.1} kbps (last 0.5s)",
-                self.rtp_pkts, kbps
-            ));
-            self.rtp_pkts = 0;
-            self.rtp_bytes = 0;
-            self.rtp_last_report = now;
-        }
-    }
-
     fn connect_to_signaling(&mut self) {
         let log_sink = Arc::new(self.logger.handle());
 
@@ -306,37 +292,37 @@ impl RtcApp {
                 self.signaling_error = Some(err.clone());
                 self.push_ui_log(format!("Signaling error: {err}"));
             }
-            SignalingEvent::ServerMsg(msg) => self.handle_server_msg(msg),
+            SignalingEvent::ServerMsg(msg) => self.handle_signaling_server_msg(msg),
         }
     }
 
-    fn handle_server_msg(&mut self, msg: Msg) {
+    fn handle_signaling_server_msg(&mut self, msg: SignalingMsg) {
         match msg {
-            Msg::LoginOk { username } => {
+            SignalingMsg::LoginOk { username } => {
                 self.current_username = Some(username.clone());
                 self.signaling_screen = SignalingScreen::Home;
                 self.status_line = format!("Logged in as {username}");
                 self.login_password.clear();
                 self.request_peer_list();
             }
-            Msg::LoginErr { code } => {
+            SignalingMsg::LoginErr { code } => {
                 let msg = format!("Login failed with code {}", code);
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::RegisterOk { username } => {
+            SignalingMsg::RegisterOk { username } => {
                 self.status_line = format!("Registered {username}. You can now log in.");
                 self.login_username = username;
             }
-            Msg::RegisterErr { code } => {
+            SignalingMsg::RegisterErr { code } => {
                 let msg = format!("Registration failed with code {}", code);
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
-            Msg::PeersOnline { peers } => {
+            SignalingMsg::PeersOnline { peers } => {
                 self.peers_online = peers;
             }
-            Msg::Offer {
+            SignalingMsg::Offer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -347,7 +333,7 @@ impl RtcApp {
                         sdp: body,
                     };
                     self.status_line = format!("Incoming call from {from}");
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from.clone(),
                         txn_id,
@@ -357,7 +343,7 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
                 }
             },
-            Msg::Answer {
+            SignalingMsg::Answer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
                 Ok(body) => {
@@ -366,7 +352,7 @@ impl RtcApp {
                     self.call_flow = CallFlow::Active { peer: from.clone() };
                     self.status_line = format!("Received answer from {from}");
                     // Acknowledge receipt so the sender can stop retries if they add reliability.
-                    let _ = self.send_signaling(Msg::Ack {
+                    let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from.clone(),
                         txn_id,
@@ -374,7 +360,7 @@ impl RtcApp {
                 }
                 Err(e) => self.push_ui_log(format!("Invalid answer from {from}: {e}")),
             },
-            Msg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
+            SignalingMsg::Candidate { from, cand, .. } => match String::from_utf8(cand) {
                 Ok(line) => match self.engine.apply_remote_candidate(&line) {
                     Ok(()) => {
                         self.push_ui_log(format!("Applied ICE candidate from {from}"));
@@ -389,28 +375,31 @@ impl RtcApp {
                     self.push_ui_log(format!("Invalid ICE candidate from {from}: {e}"));
                 }
             },
-            Msg::Ping { nonce } => {
-                let _ = self.send_signaling(Msg::Pong { nonce });
+            SignalingMsg::Ping { nonce } => {
+                let _ = self.send_signaling(SignalingMsg::Pong { nonce });
             }
-            Msg::Bye { from, reason, .. } => {
+            SignalingMsg::Bye { from, reason, .. } => {
                 self.push_ui_log(format!("Peer {from} ended call: {:?}", reason));
                 // Remote already sent BYE; don't echo it back.
                 self.teardown_call(reason, false);
             }
-            Msg::Ack { txn_id, from, .. } => {
+            SignalingMsg::Ack { txn_id, from, .. } => {
                 self.push_ui_log(format!("Received ACK from {from} for txn_id={txn_id}"));
             }
             other => {
-                self.push_ui_log(format!("Unhandled signaling message: {:?}", other));
+                self.background_log(
+                    LogLevel::Debug,
+                    format!("Unhandled signaling message: {:?}", other),
+                );
             }
         }
     }
 
     fn request_peer_list(&mut self) {
-        let _ = self.send_signaling(Msg::ListPeers);
+        let _ = self.send_signaling(SignalingMsg::ListPeers);
     }
 
-    fn send_signaling(&mut self, msg: Msg) -> Result<(), ()> {
+    fn send_signaling(&mut self, msg: SignalingMsg) -> Result<(), ()> {
         if let Some(client) = self.signaling_client.as_ref() {
             if let Err(e) = client.send(msg) {
                 let err = format!("Failed to send signaling message: {e}");
@@ -437,7 +426,7 @@ impl RtcApp {
             return;
         }
         for cand_line in candidates {
-            let msg = Msg::Candidate {
+            let msg = SignalingMsg::Candidate {
                 from: user.clone(),
                 to: peer.to_string(),
                 mid: "0".into(),
@@ -452,7 +441,7 @@ impl RtcApp {
         let Some(user) = self.current_username.clone() else {
             return;
         };
-        let msg = Msg::Bye {
+        let msg = SignalingMsg::Bye {
             from: user,
             to: peer.to_string(),
             reason,
@@ -480,7 +469,7 @@ impl RtcApp {
         let txn_id = self.next_txn_id;
         self.next_txn_id += 1;
         let from = self.current_username.clone().unwrap_or_default();
-        let msg = Msg::Offer {
+        let msg = SignalingMsg::Offer {
             txn_id,
             from: from.clone(),
             to: peer.to_string(),
@@ -506,7 +495,7 @@ impl RtcApp {
                     self.status_line = "Answer not generated.".into();
                     return;
                 }
-                let msg = Msg::Answer {
+                let msg = SignalingMsg::Answer {
                     txn_id,
                     from: self.current_username.clone().unwrap_or_default(),
                     to: from.clone(),
@@ -649,10 +638,6 @@ impl RtcApp {
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
 
         if matches!(self.conn_state, ConnState::Running) || have_any_texture {
-            if matches!(self.conn_state, ConnState::Running) {
-                self.push_kbps_log_from_rtp_packets();
-            }
-
             egui::Window::new("Camera View")
                 .default_size([Self::CAMERAS_WINDOW_WIDTH, Self::CAMERAS_WINDOW_HEIGHT])
                 .resizable(true)
@@ -756,7 +741,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
         });
         if ui.button("Login").clicked() {
-            let _ = self.send_signaling(Msg::Login {
+            let _ = self.send_signaling(SignalingMsg::Login {
                 username: self.login_username.clone(),
                 password: self.login_password.clone(),
             });
@@ -772,7 +757,7 @@ impl RtcApp {
             ui.add(egui::TextEdit::singleline(&mut self.register_password).password(true));
         });
         if ui.button("Register").clicked() {
-            let _ = self.send_signaling(Msg::Register {
+            let _ = self.send_signaling(SignalingMsg::Register {
                 username: self.register_username.clone(),
                 password: self.register_password.clone(),
             });
@@ -972,7 +957,7 @@ impl RtcApp {
                     );
                 }
             } else {
-                self.background_log(LogLevel::Warn, "Skipping debug checks for non-RGB frames");
+                self.background_log(LogLevel::Debug, "Skipping debug checks for non-RGB frames");
             }
         }
     }
@@ -986,7 +971,7 @@ impl RtcApp {
     }
 
     fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
-        // 1) Optionally send BYE
+        // 1) Conditionally send Bye Singaling Message
         if send_bye {
             if let Some(peer) = self.current_peer() {
                 self.send_bye(&peer, reason.clone());
@@ -1001,6 +986,10 @@ impl RtcApp {
         self.pending_remote_sdp = None;
         self.has_local_description = false;
         self.has_remote_description = false;
+
+        // This ensures 'have_any_texture' becomes false, closing the window.
+        self.local_camera_texture = None;
+        self.remote_camera_texture = None;
 
         if let Some(r) = reason {
             self.status_line = format!("Call ended: {r}");
@@ -1029,7 +1018,15 @@ impl App for RtcApp {
         self.poll_signaling_events();
         self.drain_ui_log_tap();
 
-        let (local_frame, remote_frame) = self.engine.snapshot_frames();
+        // If we hung up (CallFlow::Idle), force frames to None.
+        // This prevents the "last frame" from resurrecting the textures
+        // while the Engine is busy closing gracefully in the background.
+        let (local_frame, remote_frame) = if !matches!(self.call_flow, CallFlow::Idle) {
+            self.engine.snapshot_frames()
+        } else {
+            (None, None)
+        };
+
         self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
 
         let logger_handle = Arc::new(self.logger.handle());
@@ -1116,7 +1113,7 @@ fn update_texture_from_frame(
                 minification: egui::TextureFilter::Linear,
                 ..Default::default()
             };
-            let mut tex_mngr = ctx.tex_manager();
+            let tex_mngr = ctx.tex_manager();
 
             if let Some((id, (prev_w, prev_h))) = texture {
                 if *prev_w != w || *prev_h != h {

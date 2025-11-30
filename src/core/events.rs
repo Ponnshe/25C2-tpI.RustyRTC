@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    app::log_msg::LogMsg, congestion_controller::congestion_controller::NetworkMetrics,
+    congestion_controller::congestion_controller::NetworkMetrics, log::log_msg::LogMsg,
     media_transport::media_transport_event::RtpIn,
 };
 

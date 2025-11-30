@@ -9,9 +9,8 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
     core::events::EngineEvent,
-    logger_debug, logger_error, logger_info, logger_warn,
+    log::log_sink::LogSink,
     media_agent::{
         camera_worker::spawn_camera_worker,
         decoder_event::DecoderEvent,
@@ -25,7 +24,7 @@ use crate::{
         video_frame::VideoFrame,
     },
     media_transport::media_transport_event::MediaTransportEvent,
-    sink_info,
+    sink_debug, sink_error, sink_info, sink_trace, sink_warn,
 };
 
 use super::constants::{DEFAULT_CAMERA_ID, KEYINT, TARGET_FPS};
@@ -75,7 +74,7 @@ impl MediaAgent {
         media_transport_event_tx: Sender<MediaTransportEvent>,
     ) -> Result<(), MediaAgentError> {
         let logger = self.logger.clone();
-        sink_info!(logger, "[MediaAgent] Starting MediaAgent");
+        sink_debug!(logger, "[MediaAgent] Starting MediaAgent");
         self.running.store(true, Ordering::SeqCst);
         let logger = self.logger.clone();
         let running = self.running.clone();
@@ -84,10 +83,10 @@ impl MediaAgent {
 
         //Start camera worker
         let camera_id = discover_camera_id().unwrap_or(DEFAULT_CAMERA_ID);
-        sink_info!(logger.clone(), "[MediaAgent] Starting Camera Worker...");
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Camera Worker...");
         let (local_frame_rx, status, handle) =
             spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id, running.clone());
-        sink_info!(logger.clone(), "[MediaAgent] Camera Worker Started");
+        sink_debug!(logger.clone(), "[MediaAgent] Camera Worker Started");
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
@@ -99,7 +98,7 @@ impl MediaAgent {
         self.media_agent_event_tx = Some(media_agent_event_tx_clone);
 
         // Start decoder worker
-        sink_info!(logger.clone(), "[MediaAgent] Starting Decoder Worker...");
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Decoder Worker...");
         let decoder_handle = Some(spawn_decoder_worker(
             logger.clone(),
             ma_decoder_event_rx,
@@ -107,13 +106,13 @@ impl MediaAgent {
             running.clone(),
         ));
         self.decoder_handle = decoder_handle;
-        sink_info!(logger.clone(), "[MediaAgent] Decoder Worker Started");
+        sink_debug!(logger.clone(), "[MediaAgent] Decoder Worker Started");
 
         // Start encoder worker
         let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
         let ma_encoder_event_tx_clone = ma_encoder_event_tx.clone();
         self.ma_encoder_event_tx = Some(ma_encoder_event_tx_clone);
-        sink_info!(logger.clone(), "[MediaAgent] Starting Encoder Worker...");
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Encoder Worker...");
         let encoder_handle = spawn_encoder_worker(
             logger.clone(),
             ma_encoder_event_rx,
@@ -122,10 +121,10 @@ impl MediaAgent {
         )
         .map_err(|e| MediaAgentError::EncoderSpawn(e.to_string()))?;
         self.encoder_handle = Some(encoder_handle);
-        sink_info!(logger.clone(), "[MediaAgent] Encoder Worker Started");
+        sink_debug!(logger.clone(), "[MediaAgent] Encoder Worker Started");
 
         // Start listener
-        sink_info!(logger.clone(), "[MediaAgent] Starting Listener...");
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Listener...");
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
             local_frame_rx,
@@ -176,7 +175,7 @@ impl MediaAgent {
             *rf = None;
         }
 
-        logger_info!(self.logger, "[MediaAgent] stopped cleanly");
+        sink_debug!(self.logger, "[MediaAgent] stopped cleanly");
     }
 
     #[must_use]
@@ -188,7 +187,7 @@ impl MediaAgent {
         if let Some(media_agent_event_tx) = self.media_agent_event_tx.clone()
             && let Err(err) = media_agent_event_tx.send(event)
         {
-            logger_error!(
+            sink_error!(
                 self.logger,
                 "[MediaAgent] failed to enqueue event for listener: {err}"
             );
@@ -281,7 +280,7 @@ impl MediaAgent {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    logger_info!(
+                    sink_debug!(
                         logger,
                         "[MediaAgent] listener thread exiting: event channel closed"
                     );
@@ -289,7 +288,7 @@ impl MediaAgent {
                 }
             }
         }
-        logger_info!(logger, "[MediaAgent Listener] Thread closing gracefully");
+        sink_debug!(logger, "[MediaAgent Listener] Thread closing gracefully");
     }
 
     fn drain_camera_frames(
@@ -312,7 +311,7 @@ impl MediaAgent {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    logger_warn!(logger, "[MediaAgent] camera worker disconnected");
+                    sink_debug!(logger, "[MediaAgent] camera worker disconnected");
                     break;
                 }
             }
@@ -329,7 +328,7 @@ impl MediaAgent {
         if let Ok(mut guard) = local_frame.lock() {
             *guard = Some(frame.clone());
         } else {
-            logger_warn!(logger, "[MediaAgent] failed to lock local frame for update");
+            sink_warn!(logger, "[MediaAgent] failed to lock local frame for update");
         }
 
         let force_keyframe = !sent_any_frame.swap(true, Ordering::SeqCst);
@@ -337,12 +336,12 @@ impl MediaAgent {
         let ts = frame.timestamp_ms;
         let instruction = EncoderInstruction::Encode(frame, force_keyframe);
         if ma_encoder_event_tx.send(instruction).is_err() {
-            logger_error!(
+            sink_error!(
                 logger,
                 "[MediaAgent] encoder worker offline, dropping local frame"
             );
         } else {
-            logger_debug!(
+            sink_trace!(
                 logger,
                 "[MediaAgent] queued local frame (ts={}, force_keyframe={})",
                 ts,
@@ -367,10 +366,10 @@ impl MediaAgent {
                 if let Ok(mut guard) = remote_frame.lock() {
                     *guard = Some(frame);
                 } else {
-                    logger_warn!(logger, "[MediaAgent] failed to update remote frame");
+                    sink_warn!(logger, "[MediaAgent] failed to update remote frame");
                     return;
                 }
-                logger_debug!(
+                sink_debug!(
                     logger,
                     "[MediaAgent] updated remote frame snapshot (ts={ts})"
                 );
@@ -380,11 +379,11 @@ impl MediaAgent {
                 timestamp_ms,
                 codec_spec,
             } => {
-                logger_debug!(
+                sink_trace!(
                     logger,
                     "[MediaAgent] encoded frame ready for transport (ts={timestamp_ms})"
                 );
-                logger_info!(
+                sink_debug!(
                     logger,
                     "[MediaAgent] Received EncodedVideoFrame from Encoder. Now sending SendEncodedFrame to Media Transport"
                 );
@@ -396,14 +395,14 @@ impl MediaAgent {
                     })
                     .is_err()
                 {
-                    logger_warn!(
+                    sink_warn!(
                         logger,
                         "[MediaAgent] media transport channel dropped encoded frame"
                     );
                 }
             }
             MediaAgentEvent::AnnexBFrameReady { codec_spec, bytes } => {
-                logger_debug!(
+                sink_trace!(
                     logger,
                     "[MediaAgent] forwarding AnnexB payload to decoder ({:?})",
                     codec_spec
@@ -412,7 +411,7 @@ impl MediaAgent {
                     .send(DecoderEvent::AnnexBFrameReady { codec_spec, bytes })
                     .is_err()
                 {
-                    logger_warn!(
+                    sink_warn!(
                         logger,
                         "[MediaAgent] decoder worker offline, dropping AnnexB frame"
                     );
@@ -425,7 +424,7 @@ impl MediaAgent {
                     keyint: KEYINT,
                 };
                 if ma_encoder_event_tx.send(instruction).is_ok() {
-                    logger_info!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
+                    sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
                 }
             }
         }

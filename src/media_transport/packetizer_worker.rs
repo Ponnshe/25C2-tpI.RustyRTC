@@ -10,7 +10,7 @@ use super::events::PacketizerEvent;
 use crate::media_transport::payload::{
     h264_packetizer::H264Packetizer, rtp_payload_chunk::RtpPayloadChunk,
 };
-use crate::{app::log_sink::LogSink, media_agent::spec::CodecSpec, sink_info};
+use crate::{log::log_sink::LogSink, media_agent::spec::CodecSpec, sink_trace};
 
 #[derive(Debug)]
 pub struct PacketizeOrder {
@@ -37,7 +37,7 @@ pub fn spawn_packetizer_worker(
             let h264_packetizer = H264Packetizer::new(1200); // MTU is hardcoded here, maybe configure it.
 
             while let Ok(order) = order_rx.recv() {
-                sink_info!(
+                sink_trace!(
                     logger.clone(),
                     "[Packetizer] Received Order"
                 );
@@ -51,7 +51,7 @@ pub fn spawn_packetizer_worker(
                                 rtp_ts: order.rtp_ts,
                                 codec_spec: order.codec_spec,
                             };
-                            sink_info!(
+                            sink_trace!(
                                 logger.clone(),
                                 "[Packetizer] Sending PacketizedFrame to MediaTranport Packetizer Event Loop"
                             );

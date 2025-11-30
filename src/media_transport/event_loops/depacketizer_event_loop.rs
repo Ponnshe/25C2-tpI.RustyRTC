@@ -9,10 +9,10 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    log::log_sink::LogSink,
     media_agent::events::MediaAgentEvent,
     media_transport::{event_loops::constants::RECV_TIMEOUT, events::DepacketizerEvent},
-    sink_debug, sink_error, sink_info,
+    sink_debug, sink_error, sink_info, sink_trace,
 };
 
 pub struct DepacketizerEventLoop {
@@ -51,7 +51,7 @@ impl DepacketizerEventLoop {
                     Ok(event) => {
                         match event {
                             DepacketizerEvent::AnnexBFrameReady { codec_spec, bytes } => {
-                                sink_info!(
+                                sink_trace!(
                                     logger,
                                     "[DepacketizerEventLoop (MT)] Received AnnexBFrameReady. Sending it to MediaAgent"
                                 );
@@ -71,7 +71,7 @@ impl DepacketizerEventLoop {
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         #[cfg(debug_assertions)]
-                        sink_debug!(
+                        sink_trace!(
                             logger,
                             "[MT Event Loop Depack] The channel received nothing in {}ms",
                             RECV_TIMEOUT
@@ -79,7 +79,7 @@ impl DepacketizerEventLoop {
                     }
                 }
             }
-            sink_info!(
+            sink_debug!(
                 logger,
                 "[MT Event Loop Depack] Event Loop has received the order to stop"
             );
@@ -90,7 +90,7 @@ impl DepacketizerEventLoop {
     }
 
     pub fn stop(&mut self) {
-        sink_info!(self.logger, "[MT Event Loop MA] Stopping the event loop");
+        sink_debug!(self.logger, "[MT Event Loop MA] Stopping the event loop");
         self.stop_flag.store(true, Ordering::SeqCst);
 
         if let Some(handle) = self.event_loop_handler.take() {

@@ -1,4 +1,4 @@
-use crate::app::log_level::LogLevel;
+use crate::log::log_level::LogLevel;
 
 #[derive(Debug, Clone)]
 pub struct LogMsg {

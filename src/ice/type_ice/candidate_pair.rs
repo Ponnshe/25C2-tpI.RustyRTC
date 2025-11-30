@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::ice_agent::IceRole;
-use crate::{app::log_sink::LogSink, ice::type_ice::candidate::Candidate, sink_debug};
+use crate::{ice::type_ice::candidate::Candidate, log::log_sink::LogSink, sink_debug};
 
 /// Constants used in the pair priority formula (RFC 8445 §6.1.2.3)
 // 2^32 multiplier

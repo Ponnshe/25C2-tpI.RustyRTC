@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::{env, process};
 
-use rustyrtc::app::log_sink::LogSink;
-use rustyrtc::app::logger::Logger;
+use rustyrtc::log::log_sink::LogSink;
+use rustyrtc::log::logger::Logger;
 use rustyrtc::signaling::run::run_signaling_server_with_log;
 
 fn main() -> std::io::Result<()> {

@@ -4,19 +4,20 @@ use openh264::{
 };
 use std::sync::Arc;
 
-use crate::{app::log_sink::LogSink, media_agent::{
-    frame_format::FrameFormat,
-    media_agent_error::{MediaAgentError, Result},
-    utils::now_millis,
-    video_frame::{
-        VideoFrame,
-        VideoFrameData,
+use crate::{
+    log::log_sink::LogSink,
+    media_agent::{
+        frame_format::FrameFormat,
+        media_agent_error::{MediaAgentError, Result},
+        utils::now_millis,
+        video_frame::{VideoFrame, VideoFrameData},
     },
-}, sink_info};
+    sink_debug, sink_info,
+};
 
 pub struct H264Decoder {
     inner: Option<ODecoder>,
-    logger: Arc<dyn LogSink>
+    logger: Arc<dyn LogSink>,
 }
 
 impl H264Decoder {
@@ -27,7 +28,11 @@ impl H264Decoder {
         }
     }
 
-    pub fn decode_frame(&mut self, bytes: &[u8], frame_format: FrameFormat) -> Result<Option<VideoFrame>> {
+    pub fn decode_frame(
+        &mut self,
+        bytes: &[u8],
+        frame_format: FrameFormat,
+    ) -> Result<Option<VideoFrame>> {
         let Some(dec) = self.inner.as_mut() else {
             return Err(MediaAgentError::Codec(
                 "openh264 decoder unavailable".into(),
@@ -43,7 +48,12 @@ impl H264Decoder {
                 let t1 = std::time::Instant::now();
                 let frame = yuv_to_videoframe(&yuv, frame_format);
                 let t_conv = t1.elapsed();
-                sink_info!(self.logger, "[Decoder timing] decode: {:?}, yuv_convertion: {:?}", t_decode, t_conv);
+                sink_debug!(
+                    self.logger,
+                    "[Decoder timing] decode: {:?}, yuv_convertion: {:?}",
+                    t_decode,
+                    t_conv
+                );
                 Ok(Some(frame))
             }
             Ok(None) => Ok(None),
@@ -99,7 +109,7 @@ fn yuv_to_yuv420frame(yuv: &DecodedYUV<'_>) -> VideoFrame {
     let uv_w = (w + 1) / 2;
     let u_stride_new = aligned_stride(uv_w);
     let v_stride_new = aligned_stride(uv_w);
-    
+
     let uv_h = (h + 1) / 2;
 
     let mut y_plane = vec![0u8; y_stride_new * h];

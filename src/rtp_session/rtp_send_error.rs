@@ -5,6 +5,7 @@ use std::io;
 pub enum RtpSendError {
     Network(io::Error),
     Rtp(RtpError),
+    SRTP(String),
 }
 
 impl fmt::Display for RtpSendError {
@@ -13,6 +14,7 @@ impl fmt::Display for RtpSendError {
         match self {
             Network(e) => write!(f, "Network error: {e}"),
             Rtp(e) => write!(f, "Rtp error: {e}"),
+            SRTP(s) => write!(f, "SRTP error: {s}"),
         }
     }
 }

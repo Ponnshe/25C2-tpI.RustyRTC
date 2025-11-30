@@ -10,13 +10,13 @@ use std::{
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    log::log_sink::LogSink,
     logger_debug, logger_error,
     media_agent::{
         constants::CHANNELS_TIMEOUT, encoder_instruction::EncoderInstruction,
         events::MediaAgentEvent, h264_encoder::H264Encoder, spec::CodecSpec,
     },
-    sink_info,
+    sink_debug,
 };
 
 use super::constants::{BITRATE, KEYINT, TARGET_FPS};
@@ -27,7 +27,7 @@ pub fn spawn_encoder_worker(
     media_agent_event_tx: Sender<MediaAgentEvent>,
     running: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, Error> {
-    sink_info!(logger.clone(), "[Encoder] Starting...");
+    sink_debug!(logger.clone(), "[Encoder] Starting...");
     thread::Builder::new()
         .name("media-agent-encoder".into())
         .spawn(move || {
@@ -42,7 +42,7 @@ pub fn spawn_encoder_worker(
                             }
                             match h264_encoder.encode_frame_to_h264(&frame) {
                                 Ok(annexb_frame) => {
-                                    sink_info!(
+                                    sink_debug!(
                                         logger.clone(),
                                         "[Encoder] Sending EncodedVideoFrame to MediaAgent"
                                     );
