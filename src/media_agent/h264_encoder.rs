@@ -90,7 +90,7 @@ impl H264Encoder {
     pub fn request_keyframe(&mut self) {
         if let Some(enc) = self.enc.as_mut() {
             // 0.9 uses `force_intra_frame`, not `request_keyframe`
-            let _ = enc.force_intra_frame();
+            enc.force_intra_frame();
         }
     }
 
