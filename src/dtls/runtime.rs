@@ -37,7 +37,7 @@ pub fn run_dtls_handshake(
     sock.set_nonblocking(true).ok();
     let mut drain_buf = [0u8; 4096];
     let mut drained_count = 0;
-    while let Ok(_) = sock.recv_from(&mut drain_buf) {
+    while sock.recv_from(&mut drain_buf).is_ok() {
         drained_count += 1;
     }
     if drained_count > 0 {
