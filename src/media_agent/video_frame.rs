@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use crate::media_agent::{frame_format::FrameFormat, utils::now_millis};
 
+pub type YuvPlanes<'a> = (&'a [u8], &'a [u8], &'a [u8], usize, usize, usize);
+
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub width: u32,
@@ -99,7 +101,7 @@ impl VideoFrame {
         }
     }
 
-    pub fn as_yuv_planes(&self) -> Option<(&[u8], &[u8], &[u8], usize, usize, usize)> {
+    pub fn as_yuv_planes(&self) -> Option<YuvPlanes<'_>> {
         match &self.data {
             VideoFrameData::Yuv420 {
                 y,

@@ -1,4 +1,3 @@
-// src/gpu_yuv_renderer.rs
 //! GPU YUV420 -> RGB renderer using wgpu + egui_wgpu_backend.
 //!
 //! Usage (resumen):
@@ -12,7 +11,8 @@
 //!  - egui_wgpu_backend (o egui_wgpu)
 //!  - egui
 //!    Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
-
+/// (Y_plane, U_plane, V_plane, y_stride, u_stride, v_stride)
+///
 use crate::{
     log::log_sink::LogSink,
     media_agent::video_frame::{VideoFrame, VideoFrameData},
