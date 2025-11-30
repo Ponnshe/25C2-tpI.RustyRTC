@@ -9,8 +9,7 @@ use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxT
 
 use crate::rtp_session::time;
 use crate::{
-    congestion_controller::congestion_controller::NetworkMetrics,
-    dtls_srtp::srtp_context::SrtpContext,
+    congestion_controller::congestion_controller::NetworkMetrics, srtp::srtp_context::SrtpContext,
 };
 use crate::{log::log_sink::LogSink, rtp::rtp_packet::RtpPacket};
 use crate::{

@@ -1,195 +1,25 @@
-pub mod srtp_context;
-use core::fmt;
 use std::{
-    io::{self, Cursor, Read, Write},
+    io::{self},
     net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::Duration,
 };
 
 use crate::{
+    dtls::{
+        buffered_udp_channel::BufferedUdpChannel, dtls_error::DtlsError, dtls_role::DtlsRole,
+        socket_blocking_guard::SocketBlockingGuard,
+    },
     log::log_sink::LogSink,
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
+    srtp::{SrtpEndpointKeys, SrtpProfile, SrtpSessionConfig},
     tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH},
 };
 
-use openssl::{
-    error::ErrorStack,
-    ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream},
-};
+use openssl::ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream};
 
 use openssl::hash::MessageDigest;
 use openssl::ssl::SslVerifyMode;
-
-/// RAII guard para dejar el socket en blocking + timeout mientras exista,
-/// y restaurar non-blocking + sin timeout cuando se suelte.
-struct SocketBlockingGuard {
-    sock: Arc<UdpSocket>,
-}
-
-impl SocketBlockingGuard {
-    /// Pone el socket en blocking y setea read timeout.
-    fn new(sock: Arc<UdpSocket>, timeout: Option<Duration>) -> io::Result<Self> {
-        // Setear timeout primero (opcional)
-        sock.set_read_timeout(timeout)?;
-        // Forzar blocking (true -> blocking == set_nonblocking(false))
-        sock.set_nonblocking(false)?;
-        Ok(SocketBlockingGuard { sock })
-    }
-}
-
-impl Drop for SocketBlockingGuard {
-    fn drop(&mut self) {
-        // Restauramos non-blocking y limpiamos el timeout.
-        // Ignoramos errores en el Drop para no panicar.
-        let _ = self.sock.set_nonblocking(true);
-        let _ = self.sock.set_read_timeout(None);
-    }
-}
-
-#[derive(Debug)]
-pub enum DtlsError {
-    Io(io::Error),
-    Ssl(String),       // errores de OpenSSL como string
-    Handshake(String), // fallo en handshake (incluye Failure/SetupFailure)
-    NoSrtpProfile,
-    KeyExport(String),
-}
-impl fmt::Display for DtlsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DtlsError::Io(e) => write!(f, "IO error: {}", e),
-            DtlsError::Ssl(s) => write!(f, "OpenSSL error: {}", s),
-            DtlsError::Handshake(s) => write!(f, "Handshake error: {}", s),
-            DtlsError::NoSrtpProfile => write!(f, "No SRTP profile negotiated"),
-            DtlsError::KeyExport(s) => write!(f, "Key export failed: {}", s),
-        }
-    }
-}
-
-impl From<io::Error> for DtlsError {
-    fn from(e: io::Error) -> Self {
-        DtlsError::Io(e)
-    }
-}
-impl From<ErrorStack> for DtlsError {
-    fn from(e: ErrorStack) -> Self {
-        DtlsError::Ssl(format!("{}", e))
-    }
-}
-/// Convierte un HandshakeError a DtlsError con mensaje útil.
-fn handshake_error_to_dtlserr<E: std::fmt::Debug>(he: HandshakeError<E>) -> DtlsError {
-    match he {
-        HandshakeError::WouldBlock(_) => DtlsError::Handshake("Handshake would block".into()),
-        HandshakeError::Failure(s) => DtlsError::Handshake(format!("{:?}", s.into_error())),
-        HandshakeError::SetupFailure(e) => DtlsError::Ssl(format!("{:?}", e)),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DtlsRole {
-    Client,
-    Server,
-}
-
-#[derive(Debug, Clone)]
-pub struct SrtpEndpointKeys {
-    pub master_key: Vec<u8>,
-    pub master_salt: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SrtpProfile {
-    Aes128CmHmacSha1_80,
-}
-
-#[derive(Debug, Clone)]
-pub struct SrtpSessionConfig {
-    pub profile: SrtpProfile,
-    pub outbound: SrtpEndpointKeys,
-    pub inbound: SrtpEndpointKeys,
-}
-
-// Struct modificado para incluir logger
-#[derive(Clone)]
-struct BufferedUdpChannel {
-    sock: Arc<UdpSocket>,
-    peer: SocketAddr,
-    reader: Cursor<Vec<u8>>,
-    recv_buf: Vec<u8>,
-    logger: Arc<dyn LogSink>,
-}
-
-impl fmt::Debug for BufferedUdpChannel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BufferedUdpChannel")
-            .field("peer", &self.peer)
-            .finish()
-    }
-}
-
-impl BufferedUdpChannel {
-    fn new(sock: Arc<UdpSocket>, peer: SocketAddr, logger: Arc<dyn LogSink>) -> Self {
-        Self {
-            sock,
-            peer,
-            reader: Cursor::new(Vec::new()),
-            recv_buf: vec![0u8; 4096],
-            logger,
-        }
-    }
-}
-
-impl Read for BufferedUdpChannel {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // entrega datos pendientes
-        let pos = self.reader.position();
-        if pos < self.reader.get_ref().len() as u64 {
-            return self.reader.read(buf);
-        }
-
-        // buffer vacío: leer del socket
-        loop {
-            match self.sock.recv_from(&mut self.recv_buf) {
-                Ok((n, from)) => {
-                    if from == self.peer {
-                        sink_trace!(&self.logger, "[DTLS IO] Read {} bytes from {}", n, from);
-                        // reusar parte del recv_buf sin alocar extra
-                        self.reader = Cursor::new(self.recv_buf[..n].to_vec());
-                        return self.reader.read(buf);
-                    } else {
-                        sink_warn!(
-                            &self.logger,
-                            "[DTLS IO] Ignored packet from unknown peer: {} (expected {})",
-                            from,
-                            self.peer
-                        );
-                        continue;
-                    }
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    return Err(io::Error::from(io::ErrorKind::WouldBlock));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl Write for BufferedUdpChannel {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        sink_trace!(
-            &self.logger,
-            "[DTLS IO] Sending {} bytes to {}",
-            buf.len(),
-            self.peer
-        );
-        self.sock.send_to(buf, self.peer)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 // -----------------------------------------------------------------------------
 // HANDSHAKE
@@ -490,4 +320,13 @@ fn create_base_context(
     }
 
     Ok(builder)
+}
+
+/// Convierte un HandshakeError a DtlsError con mensaje útil.
+fn handshake_error_to_dtlserr<E: std::fmt::Debug>(he: HandshakeError<E>) -> DtlsError {
+    match he {
+        HandshakeError::WouldBlock(_) => DtlsError::Handshake("Handshake would block".into()),
+        HandshakeError::Failure(s) => DtlsError::Handshake(format!("{:?}", s.into_error())),
+        HandshakeError::SetupFailure(e) => DtlsError::Ssl(format!("{:?}", e)),
+    }
 }

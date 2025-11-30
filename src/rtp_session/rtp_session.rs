@@ -1,6 +1,6 @@
-use crate::dtls_srtp::srtp_context::SrtpContext;
 use crate::sink_warn;
-use crate::{dtls_srtp::SrtpSessionConfig, sink_trace};
+use crate::srtp::srtp_context::SrtpContext;
+use crate::{sink_trace, srtp::SrtpSessionConfig};
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     core::events::EngineEvent,
-    log::{log_level::LogLevel, log_sink::LogSink},
+    log::log_sink::LogSink,
     rtcp::{
         packet_type::RtcpPacketType, receiver_report::ReceiverReport, report_block::ReportBlock,
         sdes::Sdes,

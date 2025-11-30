@@ -1,4 +1,4 @@
-use crate::{dtls_srtp::SrtpSessionConfig, sink_debug, sink_error, sink_info};
+use crate::{sink_debug, sink_error, sink_info, srtp::SrtpSessionConfig};
 use rand::{RngCore, rngs::OsRng};
 use std::{
     net::{self, UdpSocket},

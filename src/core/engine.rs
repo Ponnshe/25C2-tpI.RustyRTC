@@ -7,11 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::ice::type_ice::ice_agent::IceRole;
-use crate::{
-    dtls_srtp::{self, DtlsRole},
-    sink_trace,
-};
+use crate::{dtls, ice::type_ice::ice_agent::IceRole};
+use crate::{dtls::DtlsRole, sink_trace};
 
 use crate::{
     congestion_controller::congestion_controller::CongestionController,
@@ -189,7 +186,7 @@ impl Engine {
                     let remote_fp = self.cm.remote_fingerprint.clone();
 
                     // --- blocking DTLS handshake ---
-                    let srtp_cfg = match dtls_srtp::run_dtls_handshake(
+                    let srtp_cfg = match dtls::run_dtls_handshake(
                         Arc::clone(&sock),
                         peer,
                         dtls_role,
