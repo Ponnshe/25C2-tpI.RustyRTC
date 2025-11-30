@@ -19,9 +19,7 @@ use crate::{
     },
     log::log_sink::LogSink,
     media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
-    media_transport::{
-        media_transport::MediaTransport, media_transport_event::MediaTransportEvent,
-    },
+    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
     sink_debug, sink_info,
 };
 
