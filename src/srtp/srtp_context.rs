@@ -10,7 +10,7 @@ use crate::{sink_debug, sink_error, sink_trace, sink_warn};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::{BigEndian, ByteOrder};
 use hmac::Mac;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
 use std::sync::Arc;
 
 pub struct SrtpContext {
@@ -174,8 +174,8 @@ impl SrtpContext {
     }
 
     fn get_or_create_roc(&mut self, ssrc: u32, seq: u16) -> u32 {
-        if !self.last_seqs.contains_key(&ssrc) {
-            self.last_seqs.insert(ssrc, seq);
+        if let hash_map::Entry::Vacant(e) = self.last_seqs.entry(ssrc) {
+            e.insert(seq);
             self.rocs.insert(ssrc, 0);
             return 0;
         }
