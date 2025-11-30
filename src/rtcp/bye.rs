@@ -56,7 +56,11 @@ impl RtcpPacketType for Bye {
         let mut sources = Vec::with_capacity(sc);
         let mut idx = 0usize;
         for _ in 0..sc {
-            let ssrc = u32::from_be_bytes(payload[idx..idx + 4].try_into().unwrap());
+            let ssrc = u32::from_be_bytes(
+                payload[idx..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtcpError::Truncated)?,
+            );
             sources.push(ssrc);
             idx += 4;
         }
