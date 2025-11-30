@@ -213,7 +213,7 @@ impl MediaAgent {
             .and_then(|guard| guard.as_ref().cloned());
         (local, remote)
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn spawn_listener_thread(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
@@ -245,7 +245,7 @@ impl MediaAgent {
             })
             .ok()
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn listener_loop(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
