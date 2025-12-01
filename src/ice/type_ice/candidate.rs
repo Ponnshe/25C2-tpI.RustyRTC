@@ -22,21 +22,21 @@ const COMPONENT_OFFSET: u32 = 256;
 /// Represents a network address that a client can offer to connect.
 #[derive(Debug, Clone)]
 pub struct Candidate {
-    /// Unique identifier that groups similar candidates
+    /// Unique identifier that groups similar candidates.
     pub foundation: String,
-    /// 1 = RTP or 2 = RTCP, normally
+    /// 1 = RTP or 2 = RTCP, normally.
     pub component: u8,
-    ///UDP in this case.
+    /// Transport protocol (e.g., "udp").
     pub transport: String,
-    /// number for sort candidates.
+    /// Priority number for sorting candidates.
     pub priority: u32,
-    /// IP + port.
+    /// IP address and port.
     pub address: SocketAddr,
-    /// a type of candidate.
+    /// Type of candidate (e.g., Host, ServerReflexive).
     pub cand_type: CandidateType,
-    /// this is for reflexive.
+    /// Related address for reflexive candidates.
     pub related_address: Option<SocketAddr>,
-    /// socket to establish the connection
+    /// Optional UDP socket associated with the candidate.
     pub socket: Option<Arc<UdpSocket>>,
 }
 
@@ -87,7 +87,7 @@ impl Candidate {
     }
 
     #[must_use]
-    /// Convenience for host candidates
+    /// Convenience for host candidates.
     pub fn host(
         address: SocketAddr,
         transport: &str,
@@ -107,6 +107,7 @@ impl Candidate {
     }
 
     #[must_use]
+    /// Converts the candidate to a JSON string representation.
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"foundation":"{}","component":{},"transport":"{}","priority":{},"address":"{}","type":"{:?}"}}"#,

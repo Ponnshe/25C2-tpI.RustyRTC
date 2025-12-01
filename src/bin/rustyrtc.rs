@@ -1,3 +1,6 @@
+//! The client binary for the RoomRTC application.
+//! It starts the `eframe` application and the `RtcApp`.
+
 use rustyrtc::{app::rtc_app::RtcApp, config::Config};
 use std::env;
 use std::sync::Arc; // Importamos env para leer argumentos

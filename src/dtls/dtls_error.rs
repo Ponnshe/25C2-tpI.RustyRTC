@@ -3,12 +3,18 @@ use std::io;
 
 use openssl::error::ErrorStack;
 
+/// Represents errors that can occur during DTLS operations.
 #[derive(Debug)]
 pub enum DtlsError {
+    /// An I/O error occurred.
     Io(io::Error),
-    Ssl(String),       // errores de OpenSSL como string
+    /// An OpenSSL-specific error occurred.
+    Ssl(String), // errores de OpenSSL como string
+    /// A DTLS handshake failed.
     Handshake(String), // fallo en handshake (incluye Failure/SetupFailure)
+    /// No SRTP profile was negotiated.
     NoSrtpProfile,
+    /// Key export failed.
     KeyExport(String),
 }
 impl fmt::Display for DtlsError {

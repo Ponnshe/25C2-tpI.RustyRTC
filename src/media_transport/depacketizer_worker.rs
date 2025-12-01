@@ -16,6 +16,32 @@ use crate::{
     sink_trace,
 };
 
+/// Spawns a dedicated thread responsible for reassembling RTP packets into video frames.
+///
+/// This worker consumes raw RTP packets from the `rtp_packet_rx` channel, validates them
+/// against negotiated codecs, and feeds them into a specific depacketizer (currently H.264).
+/// When a complete frame is reconstructed, it emits a `DepacketizerEvent`.
+///
+/// # Architecture
+///
+/// 1. **Filtering**: Checks if the packet's Payload Type (PT) is in the `allowed_pts` set.
+///    This allows dynamic filtering based on SDP negotiation (e.g., ignoring unnegotiated streams).
+/// 2. **Lookup**: Retrieves codec details from `payload_map` to associate the PT with a codec spec.
+/// 3. **Reassembly**: Uses `H264Depacketizer` to buffer fragments (FU-A) until the "Marker" bit
+///    or a complete NAL unit signifies the end of a frame.
+/// 4. **Output**: Sends `AnnexBFrameReady` containing the full byte buffer of the frame.
+///
+/// # Arguments
+///
+/// * `logger` - Shared logger for tracing packet flow.
+/// * `allowed_pts` - A thread-safe set of currently valid RTP Payload Types (updated via SDP).
+/// * `rtp_packet_rx` - Input channel for raw RTP packets.
+/// * `event_tx` - Output channel for reassembled frames.
+/// * `payload_map` - Static mapping between Payload Types and `CodecDescriptor`s.
+///
+/// # Panics
+///
+/// Panics if the OS fails to create the thread (`expect` on `thread::spawn`).
 #[allow(clippy::expect_used)]
 pub fn spawn_depacketizer_worker(
     logger: Arc<dyn LogSink>,
@@ -27,6 +53,8 @@ pub fn spawn_depacketizer_worker(
     thread::Builder::new()
         .name("media-transport-depack".into())
         .spawn(move || {
+            // Currently hardcoded to H264. 
+            // In the future, this could be a dynamic trait object based on the Payload Type.
             let mut depacketizer = H264Depacketizer::new();
 
             while let Ok(pkt) = rtp_packet_rx.recv() {
@@ -38,6 +66,8 @@ pub fn spawn_depacketizer_worker(
                     pkt.ssrc,
                     pkt.seq
                 );
+                
+                // 1. Verify if this Payload Type is currently negotiated/allowed.
                 let ok_pt = allowed_pts
                     .read()
                     .map(|set| set.contains(&pkt.pt))
@@ -48,6 +78,7 @@ pub fn spawn_depacketizer_worker(
                     continue;
                 }
 
+                // 2. Resolve the codec specification.
                 let Some(codec_desc) = payload_map.get(&pkt.pt) else {
                     sink_trace!(logger, "[MediaTransport] unknown payload type {}", pkt.pt);
                     continue;
@@ -61,6 +92,8 @@ pub fn spawn_depacketizer_worker(
                     pkt.seq
                 );
 
+                // 3. Feed the packet into the reassembly logic.
+                // The depacketizer returns `Some(bytes)` only when a full frame is complete.
                 if let Some(annex_b_frame) =
                     depacketizer.push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
                 {

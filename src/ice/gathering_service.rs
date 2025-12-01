@@ -24,12 +24,15 @@ const DISCOVERY_TARGET_PORT: u16 = 80;
 const DEFAULT_COMPONENT_ID: u8 = 1; // RTP/Data, good enough for mock
 const TRANSPORT_UDP: &str = "udp"; // lowercase is safer across stacks
 
-#[must_use]
-/// Gathers a single IPv4 host candidate for the primary egress interface.
-/// (No deps, robust enough for LAN tests.)
+/// Gathers local host ICE candidates.
 ///
-/// # Return
-/// Return a list of local candidates.
+/// This function discovers the primary local IPv4 address and creates a host
+/// candidate bound to that interface. It also attempts to gather a loopback
+/// candidate for same-host demos.
+///
+/// # Returns
+///
+/// A `Vec<Candidate>` containing the gathered host candidates.
 pub fn gather_host_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
 
@@ -66,12 +69,17 @@ pub fn gather_host_candidates() -> Vec<Candidate> {
     out
 }
 
-/// Format error messages
+/// Formats an error message consistently.
 fn error_message(msg: &str) -> String {
     format!("{ERROR_MSG}{WHITESPACE}{QUOTE}{msg}{QUOTE}")
 }
 
-/// Discover the primary IPv4 local IP using a temporary socket.
+/// Discovers the primary IPv4 local IP address using a temporary UDP socket.
+///
+/// # Errors
+///
+/// Returns a `String` error if socket creation, connection, or local address
+/// retrieval fails, or if no valid non-loopback IPv4 address is found.
 fn discover_local_ipv4() -> Result<IpAddr, String> {
     let probe = UdpSocket::bind(DEFAULT_GATEWAY).map_err(|_| error_message(SOCKET_CREATE_ERROR))?;
 
@@ -91,7 +99,11 @@ fn discover_local_ipv4() -> Result<IpAddr, String> {
     }
 }
 
-/// Creates the main socket on the discovered local interface.
+/// Creates and binds a main UDP socket to the specified local IP address.
+///
+/// # Errors
+///
+/// Returns a `String` error if binding the socket or getting its local address fails.
 fn create_main_socket(local_ip: IpAddr) -> Result<(SocketAddr, UdpSocket), String> {
     let sock = UdpSocket::bind(SocketAddr::new(local_ip, 0))
         .map_err(|_| error_message(BIND_SOCKET_ERROR))?;
@@ -103,7 +115,12 @@ fn create_main_socket(local_ip: IpAddr) -> Result<(SocketAddr, UdpSocket), Strin
     Ok((addr, sock))
 }
 
-//loopback for same-host demos only
+/// Gathers a loopback candidate for same-host testing.
+///
+/// # Returns
+///
+/// An `Option<Candidate>` which is `Some` if a loopback candidate could be
+/// successfully created and bound, `None` otherwise.
 fn gather_loopback_candidate() -> Option<Candidate> {
     UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
         .map_err(|_| {
