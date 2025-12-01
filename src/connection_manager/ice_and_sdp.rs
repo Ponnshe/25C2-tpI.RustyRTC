@@ -5,16 +5,19 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
+/// A wrapper for an ICE candidate that can be formatted as an SDP attribute.
 pub struct ICEAndSDP {
     candidate: Candidate,
 }
 
 impl ICEAndSDP {
+    /// Creates a new `ICEAndSDP` from a `Candidate`.
     #[must_use]
     pub const fn new(candidate: Candidate) -> Self {
         Self { candidate }
     }
 
+    /// Sets the inner candidate.
     pub fn set_candidate(&mut self, candidate: Candidate) {
         self.candidate = candidate;
     }
@@ -28,6 +31,7 @@ impl ICEAndSDP {
         }
     }
 
+    /// Consumes the `ICEAndSDP` and returns the inner `Candidate`.
     #[must_use]
     pub fn candidate(self) -> Candidate {
         self.candidate

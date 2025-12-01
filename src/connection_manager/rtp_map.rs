@@ -1,19 +1,30 @@
 use std::str::FromStr;
 
+/// Represents an `rtpmap` attribute from an SDP message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtpMap {
+    /// The payload type number.
     pub payload_type: u8,
+    /// The name of the encoding.
     pub encoding_name: String, // leave as-is; case-insensitive in SDP
+    /// The clock rate of the encoding.
     pub clock_rate: u32,
+    /// The encoding parameters, e.g., number of channels for audio.
     pub encoding_params: Option<u16>, // usually channels for audio
 }
 
+/// An error that can occur while parsing an `rtpmap` attribute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RtpMapParseError {
+    /// The `rtpmap` attribute is missing required parts.
     MissingParts,
+    /// The payload type is invalid.
     InvalidPayloadType,
+    /// The clock rate is invalid.
     InvalidClockRate,
+    /// The payload type is out of the valid range [0, 127].
     PayloadTypeOutOfRange,
+    /// The `rtpmap` attribute has unexpected trailing tokens.
     TrailingGarbage,
 }
 
@@ -97,10 +108,10 @@ impl FromStr for RtpMap {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_opus() {
         let rm: RtpMap = "96 opus/48000/2".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -110,7 +121,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_pcmu_no_params() {
         let rm: RtpMap = "0 PCMU/8000".parse().unwrap();
         assert_eq!(rm.payload_type, 0);
@@ -120,7 +130,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn parses_vp8_video() {
         let rm: RtpMap = "96 VP8/90000".parse().unwrap();
         assert_eq!(rm.payload_type, 96);
@@ -130,7 +139,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn multiple_spaces_and_tabs() {
         let rm: RtpMap = "  101\ttelephone-event/8000  ".parse().unwrap();
         assert_eq!(rm.payload_type, 101);
@@ -140,7 +148,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn channels_over_255_ok() {
         let rm: RtpMap = "97 L16/44100/10".parse().unwrap();
         assert_eq!(rm.payload_type, 97);
@@ -174,7 +181,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn zero_channels_becomes_none() {
         let rm: RtpMap = "98 opus/48000/0".parse().unwrap();
         assert_eq!(rm.encoding_params, None);

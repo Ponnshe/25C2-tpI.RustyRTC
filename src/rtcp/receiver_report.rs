@@ -1,8 +1,8 @@
 use crate::rtcp::packet_type::PT_RR;
 
 use super::{
-    common_header::CommonHeader, packet_type::RtcpPacketType, report_block::ReportBlock,
-    rtcp::RtcpPacket, rtcp_error::RtcpError,
+    RtcpPacket, common_header::CommonHeader, packet_type::RtcpPacketType,
+    report_block::ReportBlock, rtcp_error::RtcpError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -25,7 +25,7 @@ impl RtcpPacketType for ReceiverReport {
 
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
@@ -38,7 +38,7 @@ impl RtcpPacketType for ReceiverReport {
         if payload.len() < 4 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let mut idx = 4usize;
 
         let rc = hdr.rc_or_fmt() as usize;

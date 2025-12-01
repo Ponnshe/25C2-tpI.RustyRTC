@@ -5,19 +5,37 @@ edition = "2024"
 
 [dependencies]
 rand = "0.8"
+sha2 = "0.10"
 eframe = { version = "0.28", features = ["wgpu"] }
 egui = "0.28"
 openh264 = "0.9"
 opencv = "0.97"
+rustls = { version = "0.23", features = ["std"]}
+rustls-pemfile = "2.2.0"
+bytemuck = "1.24.0"
+wgpu = "27.0.1"
+openssl = "0.10"
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+sha1 = "0.10"
+byteorder = "1.5"
 
 [features]
-default = []
-test-support = []
+default = ["log-info"] # Default to Info, Warn, Error
+log-trace = ["log-debug"]       # Trace implies Debug
+log-debug = ["log-info"]        # Debug implies Info
+log-info  = ["log-warn"]        # Info implies Warn
+log-warn  = ["log-error"]       # Warn implies Error
+log-error = []
 
 
 [lints.clippy]
-all         = { level = "deny", priority = -1 }
-pedantic    = { level = "deny", priority = -1 }
-nursery     = { level = "warn", priority = -1 }
+# Standard lints: Warn is usually sufficient for "all"
+all = { level = "warn", priority = -1 }
+# Pedantic: Useful to see, annoying to be forced into. Keep as warn.
+# pedantic = { level = "warn", priority = -1 }
+# The "Must Haves" for reliability
 unwrap_used = "deny"
-expect_used = "deny"
+# Optional: Allow 'expect' because it adds context, or keep 'deny' for strict libraries
+expect_used = "warn"

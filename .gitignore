@@ -73,3 +73,6 @@ TAGS
 # pkg/             # wasm-pack output
 # wasm-pack.log
 # *.wasm
+
+*.db
+src/target_tmp

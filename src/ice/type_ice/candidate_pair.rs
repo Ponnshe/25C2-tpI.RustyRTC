@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::ice_agent::IceRole;
-use crate::{app::log_sink::LogSink, ice::type_ice::candidate::Candidate, sink_debug};
+use crate::{ice::type_ice::candidate::Candidate, log::log_sink::LogSink, sink_debug};
 
 /// Constants used in the pair priority formula (RFC 8445 §6.1.2.3)
 // 2^32 multiplier
@@ -30,10 +30,15 @@ pub enum CandidatePairState {
 /// Also a priority, to sort candidates.
 #[derive(Debug)]
 pub struct CandidatePair {
+    /// The local candidate in the pair.
     pub local: Candidate,
+    /// The remote candidate in the pair.
     pub remote: Candidate,
+    /// The calculated priority of the candidate pair.
     pub priority: u64,
+    /// The current state of the connectivity check for this pair.
     pub state: CandidatePairState,
+    /// Indicates if this pair has been nominated.
     pub is_nominated: bool,
 }
 
@@ -49,7 +54,7 @@ pub struct CandidatePair {
 impl CandidatePair {
     #[must_use]
     pub const fn new(local: Candidate, remote: Candidate, priority: u64) -> Self {
-        Self{
+        Self {
             local,
             remote,
             priority,
@@ -62,7 +67,7 @@ impl CandidatePair {
     #[must_use]
     /// Lightweight clone: copies metadata but drops socket references.
     pub fn clone_light(&self) -> Self {
-        Self{
+        Self {
             local: self.local.clone_light(),
             remote: self.remote.clone_light(),
             priority: self.priority,

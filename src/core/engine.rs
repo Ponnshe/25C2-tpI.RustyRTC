@@ -1,87 +1,113 @@
 use std::{
     net::SocketAddr,
-    sync::Arc,
-    sync::mpsc::{self, Receiver, Sender},
-    time::Duration,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use crate::{
-    app::log_sink::LogSink,
+    config::Config,
+    congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
-    media_agent::media_agent::MediaAgent,
-};
-use crate::{
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
+    dtls::{self, DtlsRole},
+    ice::type_ice::ice_agent::IceRole,
+    log::log_sink::LogSink,
     media_agent::video_frame::VideoFrame,
+    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
+    sink_debug, sink_info, sink_trace,
 };
 
-/// The `Engine` is the core component of the WebRTC implementation.
+use super::constants::{MAX_BITRATE, MIN_BITRATE};
+use crate::connection_manager::ice_and_sdp::ICEAndSDP;
+
+/// The central orchestrator for a WebRTC peer connection.
 ///
-/// It orchestrates the entire lifecycle of a WebRTC session, from signaling and
-/// ICE negotiation to media transport and session management. The `Engine` integrates
-/// several key modules:
-///
-/// - `ConnectionManager`: Manages the SDP offer/answer exchange and ICE candidate
-///   gathering and connectivity checks.
-/// - `Session`: Implements the application-level handshake (`SYN`, `SYN-ACK`, `ACK`)
-///   and manages the established connection.
-/// - `MediaAgent`: Handles media processing, including encoding and decoding video frames.
-///
-/// The `Engine` communicates with the application's UI layer through a system of
-/// `EngineEvent`s, allowing for an event-driven architecture. The `poll` method
-/// should be called periodically by the application to drive the engine's state machine.
+/// Manages ICE, SDP negotiation, DTLS handshake, and media transport.
 pub struct Engine {
     logger_sink: Arc<dyn LogSink>,
     cm: ConnectionManager,
-    session: Option<Session>,
+    session: Arc<Mutex<Option<Session>>>,
     event_tx: Sender<EngineEvent>,
-    event_rx: Receiver<EngineEvent>,
-    media_agent: MediaAgent,
+    ui_rx: Receiver<EngineEvent>,
+    media_transport: MediaTransport,
+    congestion_controller: CongestionController,
+    config: Arc<Config>,
 }
 
 impl Engine {
     /// Creates a new `Engine` instance.
-    ///
-    /// Initializes the `ConnectionManager`, `MediaAgent`, and the event channel
-    /// used for internal communication.
-    ///
-    /// # Arguments
-    ///
-    /// * `logger_sink` - A thread-safe sink for logging messages.
-    pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
+    pub fn new(logger_sink: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
+        let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        let media_agent = MediaAgent::new(event_tx.clone(), logger_sink.clone());
+        let media_transport =
+            MediaTransport::new(event_tx.clone(), logger_sink.clone(), config.clone());
+        let initial_bitrate = crate::media_agent::constants::BITRATE;
+        let max_bitrate = config
+            .get("Media", "max_bitrate")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MAX_BITRATE);
+
+        let min_bitrate = config
+            .get("Media", "min_bitrate")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MIN_BITRATE);
+        let congestion_controller = CongestionController::new(
+            initial_bitrate,
+            min_bitrate,
+            max_bitrate,
+            logger_sink.clone(),
+            event_tx.clone(),
+        );
+
+        let logger = logger_sink.clone();
+
+        let media_tx = media_transport.media_transport_event_tx();
+        std::thread::spawn(move || {
+            while let Ok(ev) = event_rx.recv() {
+                match &ev {
+                    EngineEvent::RtpIn(pkt) => {
+                        sink_trace!(
+                            logger,
+                            "[Engine] Sending RTP Packet to MediaTransport::RtpIn"
+                        );
+                        sink_trace!(logger, "[Engine] ssrc: {} seq: {}", pkt.ssrc, pkt.seq);
+                        if let Some(tx) = &media_tx {
+                            let _ = tx.send(MediaTransportEvent::RtpIn(pkt.clone()));
+                        }
+                    }
+                    _ => {
+                        let _ = ui_tx.send(ev.clone());
+                    }
+                }
+            }
+        });
+
         Self {
-            cm: ConnectionManager::new(logger_sink.clone()),
+            cm: ConnectionManager::new(logger_sink.clone(), config.clone()),
             logger_sink,
-            session: None,
+            session: Arc::new(Mutex::new(None)),
             event_tx,
-            event_rx,
-            media_agent,
+            media_transport,
+            congestion_controller,
+            ui_rx,
+            config,
         }
     }
 
-    /// Initiates or continues the SDP negotiation process.
-    ///
-    /// This method drives the `ConnectionManager` to produce an SDP offer or answer.
-    /// It ensures that the local RTP codecs from the `MediaAgent` are included in
-    /// the negotiation.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Some(String))` - If an SDP offer or answer was successfully generated.
-    /// * `Ok(None)` - If the negotiation is complete and no further SDP message is needed.
+    /// Initiates an SDP negotiation as an offerer.
     ///
     /// # Errors
     ///
-    /// This function will return an error if the underlying `ConnectionManager` fails
-    /// to generate or process an SDP message.
+    /// Returns `ConnectionError` if the negotiation fails.
     pub fn negotiate(&mut self) -> Result<Option<String>, ConnectionError> {
         self.cm
-            .set_local_rtp_codecs(self.media_agent.codec_descriptors());
+            .set_local_rtp_codecs(self.media_transport.codec_descriptors());
         match self.cm.negotiate()? {
             OutboundSdp::Offer(o) => Ok(Some(o.encode())),
             OutboundSdp::Answer(a) => Ok(Some(a.encode())),
@@ -89,30 +115,17 @@ impl Engine {
         }
     }
 
-    /// Applies a remote SDP received from the peer.
-    ///
-    /// This method passes the peer's SDP to the `ConnectionManager` to advance the
-    /// negotiation state. It may result in the generation of a local SDP answer.
-    ///
-    /// # Arguments
-    ///
-    /// * `remote_sdp` - The SDP string received from the remote peer.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Some(String))` - If an SDP answer was generated in response.
-    /// * `Ok(None)` - If no SDP response is required.
+    /// Applies a remote SDP (offer or answer) received from the peer.
     ///
     /// # Errors
     ///
-    /// This function will return an error if the remote SDP is invalid or an
-    /// error occurs while processing it.
+    /// Returns `ConnectionError` if applying the remote SDP fails.
     pub fn apply_remote_sdp(
         &mut self,
         remote_sdp: &str,
     ) -> Result<Option<String>, ConnectionError> {
         self.cm
-            .set_local_rtp_codecs(self.media_agent.codec_descriptors());
+            .set_local_rtp_codecs(self.media_transport.codec_descriptors());
         match self.cm.apply_remote_sdp(remote_sdp)? {
             OutboundSdp::Answer(a) => Ok(Some(a.encode())),
             OutboundSdp::Offer(o) => Ok(Some(o.encode())),
@@ -120,56 +133,77 @@ impl Engine {
         }
     }
 
-    /// Starts the application-level session handshake.
-    ///
-    /// This should be called after ICE negotiation has nominated a candidate pair.
-    /// It activates the `Session` to begin the `SYN/ACK` handshake.
+    /// Applies a remote ICE candidate.
     ///
     /// # Errors
     ///
-    /// Returns an error if no session is available to start (e.g., ICE not complete).
+    /// Returns `ConnectionError` if applying the candidate fails.
+    pub fn apply_remote_candidate(&mut self, candidate_line: &str) -> Result<(), ConnectionError> {
+        self.cm.apply_remote_trickle_candidate(candidate_line)
+    }
+
+    /// Returns local ICE candidates encoded as SDP attribute lines (`candidate:...`).
+    pub fn local_candidates_as_sdp_lines(&self) -> Vec<String> {
+        self.cm
+            .ice_agent
+            .local_candidates
+            .iter()
+            .map(|c| ICEAndSDP::new(c.clone()).to_string())
+            .collect()
+    }
+
+    /// Starts the WebRTC session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` error if no nominated ICE pair is available.
+    #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), String> {
-        if self.session.is_none() {
-            return Err("no nominated pair yet".into());
-        }
-        if let Some(sess) = &mut self.session {
+        let mut guard = self.session.lock().expect("session lock poisoned");
+        if let Some(sess) = guard.as_mut() {
             sess.start();
+        } else {
+            return Err("no nominated pair yet".into());
         }
         Ok(())
     }
 
-    /// Requests a graceful shutdown of the session.
-    ///
-    /// This initiates the `FIN` message sequence to terminate the connection cleanly.
+    /// Stops the WebRTC session.
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
-        if let Some(sess) = &mut self.session {
+        if let Some(sess) = self.session.lock().expect("session lock poisoned").as_mut() {
             sess.request_close();
         }
+        self.media_transport.stop();
+    }
+    /// Closes the WebRTC session and resets the connection manager.
+    #[allow(clippy::expect_used)]
+    pub fn close_session(&mut self) {
+        let mut guard = self.session.lock().expect("session lock poisoned");
+        *guard = None;
+        // This ensures cm.ice_agent.get_data_channel_socket() returns Err/None
+        // in the next poll() loop, preventing the zombie DTLS handshake.
+        self.cm.reset();
+        sink_debug!(
+            self.logger_sink,
+            "[Engine] Session closed and ConnectionManager reset."
+        );
     }
 
-    /// Polls the engine to drive its internal state and process events.
-    ///
-    /// This method should be called periodically by the application (e.g., on every
-    /// UI frame). It performs several key tasks:
-    ///
-    /// 1. Drains ICE events from the `ConnectionManager`.
-    /// 2. Checks for ICE nomination and creates a `Session` if a data channel is ready.
-    /// 3. Receives and processes internal `EngineEvent`s from the event channel.
-    /// 4. Ticks the `MediaAgent` to handle media processing.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<EngineEvent>` containing all events that occurred during the poll,
-    /// which the UI can use to update its state.
+    /// Polls for `EngineEvent`s and processes them.
+    /// This method is called repeatedly to drive the engine's state.
+    #[allow(clippy::expect_used)]
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
         self.cm.drain_ice_events();
 
-        if let (None, Ok((sock, peer))) = (
-            self.session.as_ref(),
-            self.cm.ice_agent.get_data_channel_socket(),
-        ) {
-            // connect, then create session (but do NOT start until UI says so)
+        if self
+            .session
+            .lock()
+            .expect("session lock poisoned")
+            .is_none()
+            && let Ok((sock, peer)) = self.cm.ice_agent.get_data_channel_socket()
+        {
             if let Err(e) = sock.connect(peer) {
                 let _ = self
                     .event_tx
@@ -182,6 +216,39 @@ impl Engine {
                     local,
                     remote: peer,
                 });
+
+                // Matar al worker de ICE antes de DTLS ---
+                // Esto asegura que nadie más esté leyendo del socket.
+                self.cm.stop_ice_worker();
+
+                // --- IceRole -> DtlsRole ---
+                let dtls_role = match self.cm.ice_agent.role {
+                    IceRole::Controlling => DtlsRole::Server,
+                    IceRole::Controlled => DtlsRole::Client,
+                };
+
+                // Retrieve the remote fingerprint stored in CM
+                let remote_fp = self.cm.remote_fingerprint.clone();
+
+                // --- blocking DTLS handshake ---
+                let srtp_cfg = match dtls::run_dtls_handshake(
+                    Arc::clone(&sock),
+                    peer,
+                    dtls_role,
+                    self.logger_sink.clone(),
+                    Duration::from_secs_f32(5.0),
+                    remote_fp,
+                    self.config.clone(),
+                ) {
+                    Ok(cfg) => Some(cfg),
+                    Err(e) => {
+                        let _ = self
+                            .event_tx
+                            .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
+                        None // podrías también hacer `continue` para no crear sesión
+                    }
+                };
+
                 let sess = Session::new(
                     Arc::clone(&sock),
                     peer,
@@ -194,50 +261,68 @@ impl Engine {
                         close_timeout: Duration::from_secs(5),
                         close_resend_every: Duration::from_millis(250),
                     },
+                    srtp_cfg,
                 );
-                self.session = Some(sess);
+                *self.session.lock().expect("session lock poisoned") = Some(sess);
             }
         }
 
         let mut out = Vec::new();
-
-        // --- NEW: bounded draining of events
-        use std::time::{Duration, Instant};
         let start = Instant::now();
-        let max_events = 500; // tune: 200–1000 is typical
-        let max_time = Duration::from_millis(4); // or 2–6 ms
+        let max_events = 500;
+        let max_time = Duration::from_millis(4);
 
         let mut processed = 0;
         loop {
             if processed >= max_events || start.elapsed() >= max_time {
                 break;
             }
-            match self.event_rx.try_recv() {
-                Ok(ev) => {
-                    self.media_agent
-                        .handle_engine_event(&ev, self.session.as_ref());
-                    out.push(ev);
-                    processed += 1;
-                }
+            match self.ui_rx.try_recv() {
+                Ok(ev) => match &ev {
+                    EngineEvent::NetworkMetrics(m) => {
+                        self.congestion_controller.on_network_metrics(m.clone());
+                        processed += 1;
+                        out.push(EngineEvent::NetworkMetrics(m.clone()));
+                    }
+
+                    EngineEvent::UpdateBitrate(br) => {
+                        if let Some(media_transport_tx) =
+                            self.media_transport.media_transport_event_tx()
+                        {
+                            let _ =
+                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
+                        }
+                        processed += 1;
+                        out.push(EngineEvent::UpdateBitrate(*br));
+                    }
+
+                    _ => {
+                        processed += 1;
+                        out.push(ev);
+                    }
+                },
                 Err(_) => break,
             }
         }
-        // --- END NEW
 
-        self.media_agent.tick(self.session.as_ref());
         out
     }
 
-    /// Retrieves the most recent video frames for local and remote feeds.
-    ///
-    /// This is used by the UI to get the latest video data for rendering.
-    ///
-    /// # Returns
-    ///
-    /// A tuple `(Option<VideoFrame>, Option<VideoFrame>)` where the first element
-    /// is the local video frame (from the camera) and the second is the remote
-    /// video frame (from the peer).
+    /// Returns a snapshot of the local and remote video frames.
+    #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
-        self.media_agent.snapshot_frames()
+        self.media_transport.snapshot_frames()
+    }
+
+    /// Starts the media transport event loops.
+    pub fn start_media_transport(&mut self) {
+        self.media_transport.start_event_loops(self.session.clone());
+        sink_info!(
+            self.logger_sink,
+            "[Engine] Sending Established Event to Media Transport"
+        );
+        if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx() {
+            let _ = media_transport_event_tx.send(MediaTransportEvent::Established);
+        }
     }
 }

@@ -1,3 +1,4 @@
+//! Manages the connection lifecycle, including ICE, SDP, and DTLS negotiation.
 pub mod config;
 #[allow(clippy::module_inception)]
 pub mod connection_manager;

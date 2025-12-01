@@ -2,15 +2,24 @@ use crate::sdp::sdp_error::SdpError;
 use std::fmt;
 use std::io::Error;
 
+/// Represents an error that can occur in the connection manager.
 #[derive(Debug)]
 pub enum ConnectionError {
+    /// Invalid media specification.
     MediaSpec,
+    /// A network error.
     Network(String),
+    /// A socket error.
     Socket(Error),
+    /// An ICE agent error.
     IceAgent,
+    /// A negotiation error.
     Negotiation(String),
+    /// An SDP parsing or encoding error.
     Sdp(SdpError),
+    /// A closing protocol error.
     ClosingProt(String),
+    /// An error related to RTP map.
     RtpMap(String),
 }
 

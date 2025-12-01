@@ -11,6 +11,7 @@ use std::{
 
 use crate::ice::type_ice::ice_agent::{BINDING_REQUEST, IceAgent};
 
+/// A worker that handles ICE connectivity checks in a background thread.
 pub struct IceWorker {
     run: Arc<AtomicBool>,
     rx: Receiver<(Vec<u8>, SocketAddr)>,
@@ -18,6 +19,7 @@ pub struct IceWorker {
 }
 
 impl IceWorker {
+    /// Spawns a new `IceWorker` thread.
     #[must_use]
     pub fn spawn(agent: &IceAgent) -> Self {
         let run = Arc::new(AtomicBool::new(true));
@@ -33,9 +35,10 @@ impl IceWorker {
         // Snapshot send targets per socket index
         let mut targets_per_sock: Vec<Vec<SocketAddr>> = vec![Vec::new(); sockets.len()];
         for pair in &agent.candidate_pairs {
-            if let Some(ls) = &pair.local.socket && 
-                let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls)) {
-                    targets_per_sock[idx].push(pair.remote.address);
+            if let Some(ls) = &pair.local.socket
+                && let Some(idx) = sockets.iter().position(|s| Arc::ptr_eq(s, ls))
+            {
+                targets_per_sock[idx].push(pair.remote.address);
             }
         }
 
@@ -86,11 +89,13 @@ impl IceWorker {
         }
     }
 
+    /// Tries to receive a packet from the worker thread without blocking.
     #[must_use]
     pub fn try_recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
         self.rx.try_recv().ok()
     }
 
+    /// Stops the worker thread.
     pub fn stop(&mut self) {
         self.run.store(false, Ordering::SeqCst);
         if let Some(h) = self.handle.take() {

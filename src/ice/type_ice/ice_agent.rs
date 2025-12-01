@@ -1,13 +1,16 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
-use crate::app::log_sink::{LogSink, NoopLogSink};
+use crate::config::Config;
+use crate::ice::type_ice::candidate_type::CandidateType::ServerReflexive;
 use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
+use crate::log::log_sink::LogSink;
 use crate::{sink_debug, sink_error, sink_info, sink_warn};
 use rand::{Rng, rngs::OsRng};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
-use std::{io::Error, net::SocketAddr, net::UdpSocket, time::Duration};
+use std::{io::Error, time::Duration};
 
 const NOMINATION_REQUEST: &[u8] = b"NOMINATE-BINDING-REQUEST";
 
@@ -20,8 +23,10 @@ const QUOTE: &str = "\"";
 pub const BINDING_REQUEST: &[u8] = b"BINDING-REQUEST";
 pub const BINDING_RESPONSE: &[u8] = b"BINDING-RESPONSE";
 
-/// Configuration constants
-const MAX_PAIR_LIMIT: usize = 100; // reasonable upper bound to avoid combinatorial explosion
+/// Default configuration constants
+const DEFAULT_STUN_SERVER: &str = "stun.l.google.com:19302";
+const DEFAULT_STUN_REQUEST_TIMEOUT_SECS: u64 = 2;
+const DEFAULT_MAX_CANDIDATE_PAIRS: usize = 100;
 const MIN_PRIORITY_THRESHOLD: u64 = 1; // pairs below this value are ignored
 
 /// Helper to format error messages consistently
@@ -29,52 +34,77 @@ fn error_message(msg: &str) -> String {
     format!("{ERROR_MSG}{WHITESPACE}{QUOTE}{msg}{QUOTE}")
 }
 
-///Role for an agent
+/// Represents the ICE role of an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IceRole {
-    /// It's the role in which the final decision is made on which candidate pair will be used for the connection.
+    /// The agent that makes the final decision on which candidate pair will be used for the connection.
     Controlling,
-    /// It's the role that accepts the nominated pair.
+    /// The agent that accepts the nominated pair.
     Controlled,
 }
 
 /// It's responsible for orchestrating the flow of gathering, checks, nomination, etc.
 pub struct IceAgent {
-    /// logger handle
+    /// Logger handle.
     logger: Arc<dyn LogSink>,
-    /// set of local candidates.
+    /// STUN server address and port.
+    stun_server: String,
+    /// Timeout for STUN requests.
+    stun_request_timeout: Duration,
+    /// Maximum number of candidate pairs to form.
+    max_candidate_pairs: usize,
+    /// Set of local candidates.
     pub local_candidates: Vec<Candidate>,
-    /// set of remote candidates.
+    /// Set of remote candidates.
     pub remote_candidates: Vec<Candidate>,
-    /// set of pairs of candidates.
+    /// Set of pairs of candidates.
     pub candidate_pairs: Vec<CandidatePair>,
-    /// role for the agent.
+    /// Role for the agent.
     pub role: IceRole,
     ufrag: String,
     pwd: String,
     remote_ufrag: String,
     remote_pwd: String,
+    /// The currently nominated candidate pair.
     pub nominated_pair: Option<CandidatePair>,
 }
 
 impl IceAgent {
     #[must_use]
-    /// Create a valid ice agent.
+    /// Creates a new `IceAgent` with the specified role, logger, and configuration.
     ///
-    /// # Arguments
-    /// Same properties of ice agent.
-    ///
-    /// # Return
-    /// A new ice agent.
+    /// The `IceAgent` is responsible for orchestrating the flow of gathering,
+    /// checks, and nomination of ICE candidates.
     /// Default used by unit tests: no-op logging.
-    pub fn new(role: IceRole) -> Self {
-        Self::with_logger(role, Arc::new(NoopLogSink))
+    pub fn new(role: IceRole, logger: Arc<dyn LogSink>, config: &Config) -> Self {
+        Self::with_logger(role, logger, config)
     }
-    /// Production/integration: inject your real logger (or a test logger).
-    pub fn with_logger(role: IceRole, logger: Arc<dyn LogSink>) -> Self {
+    /// Creates a new `IceAgent` with the specified role, logger, and configuration.
+    ///
+    /// This is the primary constructor, allowing for custom logging and configuration
+    /// for production and integration environments.
+    pub fn with_logger(role: IceRole, logger: Arc<dyn LogSink>, config: &Config) -> Self {
         let (ufrag, pwd) = Self::fresh_credentials();
+
+        let stun_server = config
+            .get_non_empty_or_default("ICE", "stun_server", DEFAULT_STUN_SERVER)
+            .to_string();
+
+        let stun_request_timeout_secs = config
+            .get("ICE", "stun_request_timeout_secs")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_STUN_REQUEST_TIMEOUT_SECS);
+
+        let max_candidate_pairs = config
+            .get("ICE", "max_candidate_pairs")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MAX_CANDIDATE_PAIRS);
+
         Self {
             logger,
+            stun_server,
+            stun_request_timeout: Duration::from_secs(stun_request_timeout_secs),
+            max_candidate_pairs,
             local_candidates: vec![],
             remote_candidates: vec![],
             candidate_pairs: vec![],
@@ -87,19 +117,23 @@ impl IceAgent {
         }
     }
 
-    /// Start the ICE data channel simulating a local P2P communication.
+    /// Starts the ICE data channel, simulating a local P2P communication.
     ///
-    /// Flow:
-    /// 1. Verifies that a nominated pair (`nominated_pair`) exists.
-    /// 2. Opens the local socket with `open_udp_channel()`.
-    /// 3. Sends a test message "BINDING-DATA hello ICE".
-    /// 4. Waits for a "BINDING-ACK" response.
+    /// The flow involves:
+    /// 1. Verifying that a nominated pair (`nominated_pair`) exists.
+    /// 2. Opening the local socket.
+    /// 3. Sending a test message "BINDING-DATA hello ICE".
+    /// 4. Waiting for a "BINDING-ACK" response.
     ///
     /// # Returns
-    /// Ok(()) - sucessful message if all the flow was correct
+    /// `Ok(())` if the data channel is established successfully.
     ///
     /// # Errors
-    /// Err(String) - If any error occurs in any of the steps
+    /// Returns an `Err(String)` if:
+    /// - No nominated pair is available.
+    /// - Opening or connecting the UDP channel fails.
+    /// - Sending the test message fails.
+    /// - An unexpected message is received instead of "BINDING-ACK".
     pub fn start_data_channel(&mut self) -> Result<(), String> {
         sink_info!(self.logger, "🔹 Starting ICE data channel...");
 
@@ -123,14 +157,12 @@ impl IceAgent {
                 sink_info!(self.logger, "ICE Data Channel established successfully!");
                 Ok(())
             }
-            Ok(msg) => Err(format!(
-                "Unexpected message received instead of ACK: {msg}"
-            )),
+            Ok(msg) => Err(format!("Unexpected message received instead of ACK: {msg}")),
             Err(e) => Err(format!("Failed to receive ACK: {e}")),
         }
     }
 
-    /// Sends a test message (e.g. "BINDING-DATA hola ICE") to the remote candidate.
+    /// Sends a test message (e.g., "BINDING-DATA hello ICE") to the remote candidate.
     ///
     /// # Arguments
     /// * `socket` - Reference to a bound UDP socket.
@@ -140,12 +172,12 @@ impl IceAgent {
     /// * `Ok(())` if the message was sent successfully.
     ///
     /// # Errors
-    /// * `Err(String)` if there was no nominated pair or sending failed.
+    /// * `Err(String)` if there was no nominated pair or sending to the socket failed.
     pub fn send_test_message(&self, socket: &UdpSocket, msg: &str) -> Result<(), String> {
         let Some(pair) = &self.nominated_pair else {
-                return Err(String::from(
-                    "Cannot send message: no nominated pair available",
-                ));
+            return Err(String::from(
+                "Cannot send message: no nominated pair available",
+            ));
         };
 
         let remote_addr = pair.remote.address;
@@ -162,9 +194,7 @@ impl IceAgent {
                 );
                 Ok(())
             }
-            Err(e) => Err(format!(
-                "Failed to send UDP message to {remote_addr}: {e}"
-            )),
+            Err(e) => Err(format!("Failed to send UDP message to {remote_addr}: {e}")),
         }
     }
 
@@ -196,23 +226,23 @@ impl IceAgent {
                     "Timeout or error while receiving UDP message: {}",
                     e
                 );
-                Err(format!(
-                    "Timeout or error while receiving UDP message: {e}"
-                ))
+                Err(format!("Timeout or error while receiving UDP message: {e}"))
             }
         }
     }
-    /// Returns a clone of the Arc'd UDP socket associated with the local candidate of the nominated pair.
-    /// # Description
+    /// Returns a clone of the `Arc`'d UDP socket associated with the local candidate of the nominated pair.
+    ///
     /// This function provides access to the already bound UDP socket intended for the data channel.
     /// It does NOT bind a new socket.
     ///
     /// # Returns
-    /// * `Ok(Arc<UdpSocket>)` — A clone of the socket Arc from the nominated local candidate.
+    /// * `Ok((Arc<UdpSocket>, SocketAddr))` — A clone of the socket `Arc` from the nominated local candidate
+    ///   and the remote peer's address.
     ///
     /// # Errors
-    /// * `Err(String)` — If no nominated pair exists, the pair is not 'Succeeded', or the local candidate lacks a socket.
-    // in impl IceAgent
+    /// * `Err(String)` — If no nominated pair exists, the pair is not in a 'Succeeded' state,
+    ///   the nominated pair cannot be found in the agent's candidate pairs,
+    ///   or the local candidate lacks an associated socket.
     pub fn get_data_channel_socket(&self) -> Result<(Arc<UdpSocket>, SocketAddr), String> {
         // 1) Must have a nominated pair recorded
         let np = self
@@ -284,15 +314,18 @@ impl IceAgent {
     }
 
     /// Selects the valid (nominated) pair based on ICE role and priority.
+    ///
     /// - Finds the `Succeeded` pair with the highest priority.
-    /// - If role is Controlling → marks it as nominated.
-    /// - Stores it in `self.nominated_pair` for later use.
+    /// - If the agent's role is `Controlling`, it marks the selected pair as nominated.
+    /// - Stores the selected pair in `self.nominated_pair` for later use.
     ///
     /// # Returns
-    /// the nominated pair, if found.
+    /// An `Option` containing a reference to the nominated `CandidatePair` if one is found and nominated, otherwise `None`.
     ///
-    /// #Errors
-    ///
+    /// # Errors
+    /// This function currently does not return any explicit errors. It logs warnings if no
+    /// succeeded pairs are available for nomination and errors if the nominated pair index
+    /// cannot be determined due to an internal logic error.
     pub fn select_valid_pair(&mut self) -> Option<&CandidatePair> {
         let succeeded_indices: Vec<usize> = self
             .candidate_pairs
@@ -329,42 +362,163 @@ impl IceAgent {
             });
 
             self.candidate_pairs.get(idx)
-        }else{
+        } else {
             sink_error!(self.logger, "Could not determine nominated pair index.");
             None
         }
     }
+    /// Adds a local candidate to the agent's list of local candidates.
+    ///
+    /// # Arguments
+    /// * `candidate` - The `Candidate` to add.
     pub fn add_local_candidate(&mut self, candidate: Candidate) {
         self.local_candidates.push(candidate);
     }
 
+    /// Adds a remote candidate to the agent's list of remote candidates.
+    ///
+    /// # Arguments
+    /// * `candidate` - The `Candidate` to add.
     pub fn add_remote_candidate(&mut self, candidate: Candidate) {
         self.remote_candidates.push(candidate);
     }
 
-    /// Gathers local ICE candidates and adds them to the agent.
+    /// Gathers local ICE candidates (host and STUN).
     ///
-    /// This method collects the local host candidates available on the system and
-    /// registers them in the agent's local candidate list. Currently synchronous,
-    /// but will be asynchronous in the future.
+    /// This method calls `gather_host_candidates` to find host candidates
+    /// and `gather_stun_candidates` to find server reflexive candidates.
     ///
     /// # Returns
-    ///
-    /// * `Ok(&Vec<Candidate>)` - Reference to the updated list of local candidates.
+    /// A `Result` containing a reference to the vector of local candidates if successful.
     ///
     /// # Errors
-    ///
-    /// * Returns an `Error` if candidate gathering fails. Currently, this is a placeholder
-    ///   for future scenarios where gathering may fail asynchronously or due to network/system issues.
+    /// Returns an `Error` if candidate gathering fails (e.g., STUN server issues).
     pub fn gather_candidates(&mut self) -> Result<&Vec<Candidate>, Error> {
-        let candidates = gather_host_candidates();
+        let mut candidates = gather_host_candidates();
+        match self.gather_stun_candidates(&self.stun_server) {
+            Ok(srflx) => candidates.extend(srflx),
+            Err(e) => sink_warn!(self.logger, "STUN gathering failed: {}", e),
+        }
         for c in candidates {
             self.add_local_candidate(c);
         }
         Ok(&self.local_candidates)
     }
 
+    // RFC 5389 constants
+    const STUN_BINDING_REQUEST: u16 = 0x0001;
+    const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
+    const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+    const FAMILY_IPV4: u8 = 0x01;
+    /// Gathers Server Reflexive (srflx) candidates using a public STUN server.
+    ///
+    /// This method discovers the public (NAT-translated) address of the local socket,
+    /// and returns a `Candidate` of type `ServerReflexive`.
+    ///
+    /// It follows RFC 5389, sending a Binding Request and parsing the XOR-MAPPED-ADDRESS.
+    ///
+    /// # Arguments
+    /// * `stun_server` - STUN server (domain:port), e.g. "stun.l.google.com:19302"
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Candidate>)` with one `ServerReflexive` candidate
+    /// * `Err(String)` if no reflexive address could be retrieved
+    pub fn gather_stun_candidates(&self, stun_server: &str) -> Result<Vec<Candidate>, String> {
+        // Resolver STUN server
+        let server_addr = stun_server
+            .to_socket_addrs()
+            .map_err(|_| format!("Cannot resolve STUN server: {stun_server}"))?
+            .next()
+            .ok_or_else(|| format!("No valid address found for STUN server: {stun_server}"))?;
+
+        // Bind UDP socket localmente (0.0.0.0:0 → cualquier puerto libre)
+        let socket =
+            UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Failed to bind UDP socket: {e}"))?;
+        socket
+            .set_read_timeout(Some(self.stun_request_timeout))
+            .map_err(|e| format!("Failed to set socket timeout: {e}"))?;
+
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| format!("Could not get local address: {e}"))?;
+
+        // Construir un STUN Binding Request minimal
+        let transaction_id: [u8; 12] = rand::random();
+        let mut request = Vec::with_capacity(20);
+        request.extend_from_slice(&Self::STUN_BINDING_REQUEST.to_be_bytes()); // type
+        request.extend_from_slice(&0u16.to_be_bytes()); // message length
+        request.extend_from_slice(&Self::STUN_MAGIC_COOKIE.to_be_bytes());
+        request.extend_from_slice(&transaction_id);
+
+        //  Enviar el request al STUN server
+        socket
+            .send_to(&request, server_addr)
+            .map_err(|e| format!("Failed to send STUN request: {e}"))?;
+
+        //  Esperar respuesta (Binding Response)
+        let mut buf = [0u8; 512];
+        let (len, _) = socket
+            .recv_from(&mut buf)
+            .map_err(|e| format!("No STUN response received: {e}"))?;
+
+        if len < 20 {
+            return Err("Invalid STUN response (too short)".into());
+        }
+
+        // Parsear XOR-MAPPED-ADDRESS
+        let mut offset = 20;
+        let mut reflexive_addr: Option<SocketAddr> = None;
+
+        while offset + 4 <= len {
+            let attr_type = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+            let attr_len = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
+            offset += 4;
+
+            if attr_type == Self::ATTR_XOR_MAPPED_ADDRESS && attr_len >= 8 {
+                let family = buf[offset + 1];
+                if family == Self::FAMILY_IPV4 {
+                    let port = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]])
+                        ^ ((Self::STUN_MAGIC_COOKIE >> 16) as u16);
+                    let ip = [
+                        buf[offset + 4] ^ ((Self::STUN_MAGIC_COOKIE >> 24) as u8),
+                        buf[offset + 5] ^ ((Self::STUN_MAGIC_COOKIE >> 16) as u8),
+                        buf[offset + 6] ^ ((Self::STUN_MAGIC_COOKIE >> 8) as u8),
+                        buf[offset + 7] ^ (Self::STUN_MAGIC_COOKIE as u8),
+                    ];
+                    reflexive_addr = Some(SocketAddr::from((ip, port)));
+                    break;
+                }
+            }
+
+            offset += attr_len + (attr_len % 4);
+        }
+
+        let public_addr = reflexive_addr.ok_or("XOR-MAPPED-ADDRESS not found in STUN response")?;
+
+        sink_info!(
+            self.logger,
+            "[STUN] Reflexive address discovered: {} => public {}",
+            local_addr,
+            public_addr
+        );
+
+        // Create candidate of type ServerReflexive
+        let candidate = Candidate::new(
+            String::new(), // calculate foundation by default
+            1,
+            "udp",
+            0, // calculate priority by default
+            public_addr,
+            ServerReflexive,
+            Some(local_addr),
+            Some(Arc::new(socket)),
+        );
+        sink_info!(self.logger, "STUN candidate gathered: {}", candidate);
+        Ok(vec![candidate])
+    }
+
     /// Builds all possible candidate pairs between local and remote candidates.
+    ///
     /// According to RFC 8445 §6.1.2.3:
     /// - Each local candidate is paired with each remote candidate.
     /// - The pair’s priority is calculated based on the agent's role (controlling or controlled).
@@ -372,18 +526,19 @@ impl IceAgent {
     /// - The resulting list is sorted by descending priority.
     ///
     /// # Arguments
-    /// * `self` - Self entity.
+    /// * `self` - The `IceAgent` instance.
     ///
     /// # Returns
     /// The number of valid pairs generated.
     ///
     /// # Errors
-    ///
+    /// This function logs warnings for ignored pairs (e.g., due to invalid priority or exceeding max limit)
+    /// and errors for incompatible address families or transport protocols.
     pub fn form_candidate_pairs(&mut self) -> usize {
         let mut pairs = Vec::new();
 
         for local in &self.local_candidates {
-            if pairs.len() >= MAX_PAIR_LIMIT {
+            if pairs.len() >= self.max_candidate_pairs {
                 break;
             }
             for remote in &self.remote_candidates {
@@ -426,11 +581,11 @@ impl IceAgent {
 
                 pairs.push(CandidatePair::new(local.clone(), remote.clone(), priority));
 
-                if pairs.len() >= MAX_PAIR_LIMIT {
+                if pairs.len() >= self.max_candidate_pairs {
                     sink_warn!(
                         self.logger,
                         "Límite máximo de pares alcanzado ({}). Truncando lista.",
-                        MAX_PAIR_LIMIT
+                        self.max_candidate_pairs
                     );
                     break;
                 }
@@ -444,9 +599,10 @@ impl IceAgent {
         count
     }
 
-    /// Inicia los 'connectivity checks' para todos los pares en estado 'Waiting'.
-    /// Envía un BINDING-REQUEST para cada par pero NO espera respuesta.
-    /// Cambia el estado de los pares a `InProgress`.
+    /// Initiates connectivity checks for all `Waiting` pairs.
+    ///
+    /// This method sends a BINDING-REQUEST for each pair but does not await a response.
+    /// It changes the state of the pairs to `InProgress`.
     pub fn start_checks(&mut self) {
         sink_info!(self.logger, "ICE: Starting connectivity checks...");
         for pair in &mut self.candidate_pairs {
@@ -479,12 +635,12 @@ impl IceAgent {
         }
     }
 
-    /// Maneja un paquete UDP entrante recibido por el `ConnectionManager`.
-    /// Esta función es el corazón del ICE reactivo.
+    /// Handles an incoming UDP packet received by the `ConnectionManager`.
+    /// This function is the core of reactive ICE.
     ///
     /// # Arguments
-    /// * `packet` - Los bytes del paquete recibido.
-    /// * `from_addr` - El `SocketAddr` de donde vino el paquete.
+    /// * `packet` - The bytes of the received packet.
+    /// * `from_addr` - The `SocketAddr` from which the packet originated.
     pub fn handle_incoming_packet(&mut self, packet: &[u8], from_addr: SocketAddr) {
         let Some(pair) = self
             .candidate_pairs
@@ -563,7 +719,7 @@ impl IceAgent {
                     "[ICE] Received NOMINATION_REQUEST from {}",
                     from_addr
                 );
-                if self.nominated_pair.as_ref().map_or(true, |np| {
+                if self.nominated_pair.as_ref().is_none_or(|np| {
                     np.local.address != pair.local.address
                         || np.remote.address != pair.remote.address
                 }) {
@@ -635,7 +791,11 @@ impl IceAgent {
         (Self::gen_token(8), Self::gen_token(24))
     }
 
-    //print every state of candidates pair
+    /// Prints the state of all candidate pairs for debugging.
+    ///
+    /// This method iterates through all `candidate_pairs` and logs their local and remote
+    /// addresses, priority, current state, and nomination status. If no candidate
+    /// pairs are available, a warning is logged.
     pub fn print_pair_states(&self) {
         if self.candidate_pairs.is_empty() {
             sink_warn!(self.logger, "No candidate pairs available.");
@@ -669,7 +829,9 @@ impl IceAgent {
             sink_warn!(self.logger, "[ICE] Invalid pair index: {}", pair_index);
         }
     }
-    /// Returns all successfully validated candidate pairs.
+    /// Returns a vector containing references to all successfully validated (Succeeded) candidate pairs.
+    ///
+    /// This is useful for retrieving pairs that have passed connectivity checks.
     pub fn get_valid_pairs(&self) -> Vec<&CandidatePair> {
         self.candidate_pairs
             .iter()
@@ -677,10 +839,18 @@ impl IceAgent {
             .collect()
     }
 
+    /// Sets the remote ICE username fragment (ufrag).
+    ///
+    /// # Arguments
+    /// * `remote_ufrag` - The remote username fragment string.
     pub fn set_remote_ufrag(&mut self, remote_ufrag: String) {
         self.remote_ufrag = remote_ufrag;
     }
 
+    /// Sets the remote ICE password (pwd).
+    ///
+    /// # Arguments
+    /// * `remote_pwd` - The remote password string.
     pub fn set_remote_pwd(&mut self, remote_pwd: String) {
         self.remote_pwd = remote_pwd;
     }
@@ -689,8 +859,9 @@ impl IceAgent {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
-    use crate::ice::type_ice::candidate_type::CandidateType;
+    use crate::{ice::type_ice::candidate_type::CandidateType, log::NoopLogSink};
     use std::{
         net::{SocketAddr, UdpSocket},
         sync::Arc,
@@ -708,6 +879,10 @@ mod tests {
             None,
             None,
         )
+    }
+
+    fn mock_logger() -> Arc<NoopLogSink> {
+        Arc::new(NoopLogSink)
     }
 
     fn mock_candidate_with_address(addr_str: &str) -> Candidate {
@@ -769,7 +944,7 @@ mod tests {
         let ip_address = "127.0.0.1:0";
         let msg = "hola ICE";
 
-        let agent = IceAgent::new(IceRole::Controlling);
+        let agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let socket = UdpSocket::bind(ip_address).unwrap();
 
         let result = agent.send_test_message(&socket, msg);
@@ -803,7 +978,7 @@ mod tests {
             }
         });
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let pair = CandidatePair {
             local: Candidate::new(
                 "f1".into(),
@@ -879,7 +1054,7 @@ mod tests {
     fn test_get_data_channel_socket_without_nominated_pair_error() {
         const EXPECTED_ERROR_MSG: &str = "Should return error when no nominated pair exists";
 
-        let agent = IceAgent::new(IceRole::Controlling);
+        let agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let result = agent.get_data_channel_socket();
 
@@ -891,7 +1066,7 @@ mod tests {
         const EXPECTED_ERROR_MSG: &str =
             "Should not allow binding if pair is not in Succeeded state";
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let mut pair = mock_pair_with_state(CandidatePairState::Failed);
         pair.is_nominated = true;
         agent.nominated_pair = Some(pair);
@@ -909,7 +1084,7 @@ mod tests {
     #[test]
     fn test_agent_with_role_controlling_selects_nominated_pair_ok() {
         const EXPECTED_ERROR_MSG: &str = "There must be a nominated pair in Controlling mode";
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let mut pair = mock_pair_with_states(CandidatePairState::Succeeded);
 
         pair.priority = 77;
@@ -922,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_nominate_valid_pair_with_highest_priority_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let mut p1 = mock_pair_with_state(CandidatePairState::Succeeded);
         p1.priority = 50;
@@ -946,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_empty_valid_pair_returns_none_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let result = agent.select_valid_pair();
 
@@ -962,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_all_pairs_failed_returns_none_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let mut p1 = mock_pair_with_state(CandidatePairState::Failed);
         p1.priority = 100;
@@ -982,7 +1157,7 @@ mod tests {
 
     #[test]
     fn test_valid_pair_with_equal_priorities_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let mut p1 = mock_pair_with_state(CandidatePairState::Succeeded);
         p1.priority = 42;
@@ -1006,7 +1181,7 @@ mod tests {
     fn test_update_pair_state_with_valid_index_ok() {
         const EXPECTED_ERROR_MSG: &str = "The pair status was not updated correctly";
         let index = 0;
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let pair = mock_pair_with_state(CandidatePairState::Waiting);
         agent.candidate_pairs.push(pair);
 
@@ -1027,7 +1202,7 @@ mod tests {
         const EXPECTED_WARNING_MSG2: &str = "The size of candidate_pairs should not be altered.";
         let invalid_index = 99;
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let pair = mock_pair_with_state(CandidatePairState::Waiting);
         agent.candidate_pairs.push(pair);
 
@@ -1044,7 +1219,7 @@ mod tests {
     #[test]
     fn test_update_empty_pair_state_error() {
         let index = 99;
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         agent.update_pair_state(index, CandidatePairState::Failed);
 
         assert!(agent.candidate_pairs.is_empty());
@@ -1054,7 +1229,7 @@ mod tests {
     fn test_should_return_only_succeeded_valid_pair_ok() {
         const EXPECTED_ERROR_MSG1: &str = "There should only be one Succeeded pair";
         const EXPECTED_ERROR_MSG2: &str = "The returned pair is not in the Succeeded state";
-        let mut agent = IceAgent::new(IceRole::Controlled);
+        let mut agent = IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
 
         agent.candidate_pairs = vec![
             mock_pair_with_state(CandidatePairState::Succeeded),
@@ -1077,7 +1252,7 @@ mod tests {
         let ip_address_remote = "127.0.0.1";
         let port = 0;
 
-        let mut agent = IceAgent::new(IceRole::Controlled);
+        let mut agent = IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
 
         let local_addr: SocketAddr = ip_address.parse().unwrap();
         let remote = mock_candidate_with_socket(ip_address_remote, port);
@@ -1110,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_form_candidate_pairs_skips_different_transports() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         let local = mock_candidate(100, "192.168.1.1", 5000);
         let mut remote = mock_candidate(100, "192.168.1.2", 5001);
@@ -1125,7 +1300,7 @@ mod tests {
 
     #[test]
     fn test_skips_incompatible_ip_families_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         // IPv4 local
         let local = mock_candidate(100, "192.168.1.1", 5000);
@@ -1152,7 +1327,7 @@ mod tests {
 
     #[test]
     fn test_creates_valid_pairs_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
 
         agent.local_candidates = vec![mock_candidate(100, "10.0.0.1", 5000)];
         agent.remote_candidates = vec![
@@ -1168,7 +1343,7 @@ mod tests {
 
     #[test]
     fn test_skip_candidates_with_zero_priority_pairs() {
-        let mut agent = IceAgent::new(IceRole::Controlled);
+        let mut agent = IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
 
         let mut local = mock_candidate(1, "192.168.1.1", 5000);
         let mut remote = mock_candidate(1, "192.168.1.2", 5001);
@@ -1189,7 +1364,7 @@ mod tests {
 
     #[test]
     fn test_candidate_pairs_with_max_limit_ok() {
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         agent.local_candidates = (0..10)
             .map(|i| mock_candidate(100 + i, "10.0.0.1", 5000 + i as u16))
             .collect();
@@ -1198,7 +1373,10 @@ mod tests {
             .collect();
 
         let count = agent.form_candidate_pairs();
-        assert!(count <= MAX_PAIR_LIMIT, "Debe respetar el límite máximo");
+        assert!(
+            count <= DEFAULT_MAX_CANDIDATE_PAIRS,
+            "Debe respetar el límite máximo"
+        );
     }
 
     #[test]
@@ -1226,7 +1404,7 @@ mod tests {
         let address = "192.168.0.10:5000";
         let protocol = "UDP";
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let addr: SocketAddr = address.parse().unwrap();
         let c = Candidate::new(
             "1".into(),
@@ -1247,7 +1425,7 @@ mod tests {
         let address = "192.168.0.10:5000";
         let protocol = "UDP";
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let addr: SocketAddr = address.parse().unwrap();
         let c = Candidate::new(
             "1".into(),
@@ -1270,7 +1448,7 @@ mod tests {
         let ip_address = "127.0.0.1";
         let port = 0;
 
-        let mut agent = IceAgent::new(IceRole::Controlling);
+        let mut agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
         let local = mock_candidate_with_socket(ip_address, port);
         let remote = mock_candidate_with_socket(ip_address, port);
 
@@ -1321,8 +1499,10 @@ mod tests {
         let ip_address = "127.0.0.1";
         let port = 0;
 
-        let mut controlling_agent = IceAgent::new(IceRole::Controlling);
-        let mut controlled_agent = IceAgent::new(IceRole::Controlled);
+        let mut controlling_agent =
+            IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
+        let mut controlled_agent =
+            IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
 
         let controlling_local = mock_candidate_with_socket(ip_address, port);
         let controlled_remote_candidate = controlling_local.clone_light();

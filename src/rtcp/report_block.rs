@@ -18,7 +18,7 @@ impl ReportBlock {
         if buf.len() < 24 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(buf[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let fraction_lost = buf[4];
         // 24-bit signed
         let cl_raw = ((buf[5] as u32) << 16) | ((buf[6] as u32) << 8) | (buf[7] as u32);
@@ -28,10 +28,12 @@ impl ReportBlock {
         } else {
             cl_raw as i32
         };
-        let highest_seq_no_received = u32::from_be_bytes(buf[8..12].try_into().unwrap());
-        let interarrival_jitter = u32::from_be_bytes(buf[12..16].try_into().unwrap());
-        let lsr = u32::from_be_bytes(buf[16..20].try_into().unwrap());
-        let dlsr = u32::from_be_bytes(buf[20..24].try_into().unwrap());
+        let highest_seq_no_received =
+            u32::from_be_bytes(buf[8..12].try_into().map_err(|_| RtcpError::TooShort)?);
+        let interarrival_jitter =
+            u32::from_be_bytes(buf[12..16].try_into().map_err(|_| RtcpError::TooShort)?);
+        let lsr = u32::from_be_bytes(buf[16..20].try_into().map_err(|_| RtcpError::TooShort)?);
+        let dlsr = u32::from_be_bytes(buf[20..24].try_into().map_err(|_| RtcpError::TooShort)?);
 
         Ok((
             Self {
@@ -52,7 +54,7 @@ impl ReportBlock {
         out.push(self.fraction_lost);
         // 24-bit signed
         let cl = self.cumulative_lost.clamp(-8_388_608, 8_388_607);
-        let cl_u = cl as i32 as u32 & 0x00FF_FFFF;
+        let cl_u = cl as u32 & 0x00FF_FFFF;
         out.push(((cl_u >> 16) & 0xFF) as u8);
         out.push(((cl_u >> 8) & 0xFF) as u8);
         out.push((cl_u & 0xFF) as u8);

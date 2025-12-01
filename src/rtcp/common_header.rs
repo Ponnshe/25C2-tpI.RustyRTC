@@ -40,7 +40,8 @@ impl CommonHeader {
         let padding = ((vprc >> 5) & 1) != 0;
         let rc_or_fmt = vprc & 0x1F;
         let pt = buf[1];
-        let length_words = u16::from_be_bytes(buf[2..4].try_into().unwrap());
+        let length_words =
+            u16::from_be_bytes(buf[2..4].try_into().map_err(|_| RtcpError::TooShort)?);
 
         let total_bytes = ((length_words as usize) + 1) * 4;
         if buf.len() < total_bytes {

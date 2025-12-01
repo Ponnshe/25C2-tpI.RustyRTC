@@ -1,0 +1,412 @@
+use std::{
+    io::{self, Read, Write},
+    net::TcpStream,
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use crate::{
+    log::log_sink::LogSink,
+    signaling::protocol::{self, FrameError, SignalingMsg},
+    signaling_client::{
+        signaling_client_error::SignalingClientError, signaling_command::SignalingCommand,
+        signaling_event::SignalingEvent,
+    },
+    sink_debug, sink_error, sink_info, sink_trace, sink_warn,
+};
+
+use crate::signaling::tls::build_signaling_client_config;
+use rustls::{ClientConfig, ClientConnection, StreamOwned, pki_types::ServerName};
+
+/// Thin client responsible for sending/receiving signaling messages.
+///
+/// - Only the background thread touches the underlying stream (`TcpStream`,
+///   TLS stream, etc.).
+/// - The GUI sends `SignalingCommand`s in, and receives `SignalingEvent`s out.
+pub struct SignalingClient {
+    cmd_tx: Sender<SignalingCommand>,
+    events: Receiver<SignalingEvent>,
+}
+
+impl SignalingClient {
+    const CLIENT_VERSION: &'static str = "rustyrtc-gui-0.1";
+
+    const PING_INTERVAL_SECS: u64 = 5;
+    const TIMEOUT_SECS: u64 = 15;
+
+    /// Build a rustls `ClientConfig` using the pinned mkcert CA.
+    ///
+    /// This trusts *only* the private CA we shipped with the app.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the root CA certificate file cannot be read or parsed.
+    pub fn default_tls_config() -> io::Result<Arc<ClientConfig>> {
+        build_signaling_client_config()
+    }
+
+    /// Connects to the signaling server over plain TCP and starts the
+    /// background network thread.
+    ///
+    /// This returns `Ok` as soon as the TCP connection is established and the
+    /// network thread is spawned. Any later protocol/IO errors are reported via
+    /// `SignalingEvent::Error` + `SignalingEvent::Disconnected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the initial TCP connection to the server fails.
+    pub fn connect(addr: &str, log: Arc<dyn LogSink>) -> io::Result<Self> {
+        let stream = TcpStream::connect(addr)?;
+
+        // Configure TCP specifics here (before we might wrap it in TLS in other ctors).
+        if let Err(e) = stream.set_nodelay(true) {
+            sink_warn!(
+                log,
+                "[signaling_client] set_nodelay failed for {}: {e:?}",
+                addr
+            );
+        }
+        if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(200))) {
+            sink_warn!(
+                log,
+                "[signaling_client] set_read_timeout failed for {}: {e:?}",
+                addr
+            );
+        }
+
+        let (cmd_tx, cmd_rx) = mpsc::channel::<SignalingCommand>();
+        let (ev_tx, ev_rx) = mpsc::channel::<SignalingEvent>();
+
+        // Hand the raw TcpStream to the generic network thread.
+        Self::spawn_network_thread(addr.to_string(), stream, cmd_rx, ev_tx, log);
+
+        Ok(Self {
+            cmd_tx,
+            events: ev_rx,
+        })
+    }
+
+    /// TLS-enabled constructor (using `rustls`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the TCP connection fails, if the provided `domain`
+    /// is not a valid DNS name, or if the TLS session cannot be established.
+    pub fn connect_tls(
+        addr: &str,
+        // DNS name used for TLS SNI / certificate verification
+        domain: &str,
+        tls_config: Arc<ClientConfig>,
+        log: Arc<dyn LogSink>,
+    ) -> io::Result<Self> {
+        // 1) Establish and configure the underlying TCP socket.
+        let tcp = TcpStream::connect(addr)?;
+        if let Err(e) = tcp.set_nodelay(true) {
+            sink_warn!(
+                log,
+                "[signaling_client] (tls) set_nodelay failed for {}: {e:?}",
+                addr
+            );
+        }
+        if let Err(e) = tcp.set_read_timeout(Some(Duration::from_millis(200))) {
+            sink_warn!(
+                log,
+                "[signaling_client] (tls) set_read_timeout failed for {}: {e:?}",
+                addr
+            );
+        }
+
+        // 2) Build the rustls client connection.
+        let server_name = ServerName::try_from(domain.to_owned())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid DNS name"))?;
+
+        let conn = ClientConnection::new(tls_config, server_name)
+            .map_err(|e| io::Error::other(format!("TLS error: {e}")))?;
+
+        // 3) Wrap TCP + TLS into a single stream that implements Read + Write.
+        let tls_stream = StreamOwned::new(conn, tcp);
+
+        let (cmd_tx, cmd_rx) = mpsc::channel::<SignalingCommand>();
+        let (ev_tx, ev_rx) = mpsc::channel::<SignalingEvent>();
+
+        // 4) Reuse the same generic network thread.
+        Self::spawn_network_thread(format!("tls://{addr}"), tls_stream, cmd_rx, ev_tx, log);
+
+        Ok(Self {
+            cmd_tx,
+            events: ev_rx,
+        })
+    }
+
+    /// Background network thread: owns the stream (TCP or TLS), handles:
+    /// - Hello
+    /// - Reads incoming messages
+    /// - Processes commands (Send/Disconnect)
+    /// - Sends periodic Ping and enforces heartbeat timeout
+    #[allow(clippy::too_many_lines)]
+    fn spawn_network_thread<S>(
+        addr: String,
+        mut stream: S,
+        cmd_rx: Receiver<SignalingCommand>,
+        ev_tx: Sender<SignalingEvent>,
+        log: Arc<dyn LogSink>,
+    ) where
+        S: Read + Write + Send + 'static,
+    {
+        thread::spawn(move || {
+            // Initial Hello
+            sink_debug!(log, "[signaling_client] sending Hello to {}", addr);
+            if let Err(err) = protocol::write_msg(
+                &mut stream,
+                &SignalingMsg::Hello {
+                    client_version: Self::CLIENT_VERSION.to_string(),
+                },
+            ) {
+                sink_error!(
+                    log,
+                    "[signaling_client] hello failed to {}: {:?}",
+                    addr,
+                    err
+                );
+                let _ = ev_tx.send(SignalingEvent::Error(format!("hello failed: {err:?}")));
+                let _ = ev_tx.send(SignalingEvent::Disconnected);
+                return;
+            }
+
+            sink_info!(log, "[signaling_client] connected to {}", addr);
+            let _ = ev_tx.send(SignalingEvent::Connected);
+
+            // Heartbeat state
+            let ping_interval = Duration::from_secs(Self::PING_INTERVAL_SECS);
+            let timeout = Duration::from_secs(Self::TIMEOUT_SECS);
+            let mut last_seen = Instant::now();
+            let mut next_ping = Instant::now() + ping_interval;
+            let mut nonce: u64 = 1;
+
+            loop {
+                // 1) Drain commands from the GUI.
+                let mut disconnect_requested = false;
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(SignalingCommand::Send(msg)) => {
+                            sink_debug!(log, "[signaling_client] send {:?}", msg_name(&msg));
+                            if let Err(e) = protocol::write_msg(&mut stream, &msg) {
+                                match e {
+                                    FrameError::Io(ioe) => {
+                                        sink_error!(
+                                            log,
+                                            "[signaling_client] IO error while sending to {}: {:?} ({:?})",
+                                            addr,
+                                            ioe,
+                                            ioe.kind()
+                                        );
+                                        let _ = ev_tx.send(SignalingEvent::Error(ioe.to_string()));
+                                    }
+                                    FrameError::Proto(err) => {
+                                        sink_error!(
+                                            log,
+                                            "[signaling_client] protocol error while sending to {}: {:?}",
+                                            addr,
+                                            err
+                                        );
+                                        let _ = ev_tx.send(SignalingEvent::Error(format!(
+                                            "protocol error: {err:?}"
+                                        )));
+                                    }
+                                }
+                                disconnect_requested = true;
+                                break;
+                            }
+                        }
+                        Ok(SignalingCommand::Disconnect) => {
+                            sink_info!(log, "[signaling_client] disconnect requested by client");
+                            disconnect_requested = true;
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            sink_info!(
+                                log,
+                                "[signaling_client] command channel closed, shutting down"
+                            );
+                            disconnect_requested = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnect_requested {
+                    break;
+                }
+
+                // 2) Try to read a message.
+                //
+                // For TCP we rely on `set_read_timeout` configured by the constructor.
+                // For TLS, the underlying TCP's timeout still applies to `read()`.
+                match protocol::read_msg(&mut stream) {
+                    Ok(msg) => {
+                        last_seen = Instant::now();
+                        sink_debug!(log, "[signaling_client] recv {:?}", msg_name(&msg));
+                        if ev_tx.send(SignalingEvent::ServerMsg(msg)).is_err() {
+                            sink_warn!(
+                                log,
+                                "[signaling_client] events receiver dropped, shutting down"
+                            );
+                            break;
+                        }
+                    }
+                    Err(FrameError::Io(ref e))
+                        if e.kind() == io::ErrorKind::TimedOut
+                            || e.kind() == io::ErrorKind::WouldBlock
+                            || e.kind() == io::ErrorKind::Interrupted =>
+                    {
+                        // Timed out waiting for data → not fatal, just continue.
+                    }
+                    Err(FrameError::Io(e)) => {
+                        sink_error!(
+                            log,
+                            "[signaling_client] IO error from {}: {:?} ({:?})",
+                            addr,
+                            e,
+                            e.kind()
+                        );
+                        let _ = ev_tx.send(SignalingEvent::Error(e.to_string()));
+                        break;
+                    }
+                    Err(FrameError::Proto(err)) => {
+                        sink_error!(
+                            log,
+                            "[signaling_client] protocol error from {}: {:?}",
+                            addr,
+                            err
+                        );
+                        let _ =
+                            ev_tx.send(SignalingEvent::Error(format!("protocol error: {err:?}")));
+                        break;
+                    }
+                }
+
+                // 3) Heartbeat / Ping.
+                let now = Instant::now();
+                let idle = now.duration_since(last_seen);
+
+                if idle > timeout {
+                    sink_error!(
+                        log,
+                        "[signaling_client] heartbeat timed out after {:?} to {}",
+                        idle,
+                        addr
+                    );
+                    let _ = ev_tx.send(SignalingEvent::Error("signaling heartbeat timeout".into()));
+                    break;
+                }
+
+                if now >= next_ping {
+                    let ping_msg = SignalingMsg::Ping { nonce };
+                    if let Err(e) = protocol::write_msg(&mut stream, &ping_msg) {
+                        match e {
+                            FrameError::Io(ioe) => {
+                                sink_error!(
+                                    log,
+                                    "[signaling_client] failed to send Ping to {}: {:?} ({:?})",
+                                    addr,
+                                    ioe,
+                                    ioe.kind()
+                                );
+                                let _ = ev_tx.send(SignalingEvent::Error(ioe.to_string()));
+                            }
+                            FrameError::Proto(err) => {
+                                sink_error!(
+                                    log,
+                                    "[signaling_client] protocol error while sending Ping to {}: {:?}",
+                                    addr,
+                                    err
+                                );
+                                let _ = ev_tx.send(SignalingEvent::Error(format!(
+                                    "protocol error: {err:?}"
+                                )));
+                            }
+                        }
+                        break;
+                    }
+                    sink_trace!(
+                        log,
+                        "[signaling_client] sent Ping {} to {} (idle {:?})",
+                        nonce,
+                        addr,
+                        idle
+                    );
+                    nonce = nonce.wrapping_add(1);
+                    next_ping = now + ping_interval;
+                }
+
+                // 4) Small sleep to avoid busy-spinning when idle.
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            // Dropping `stream` closes the underlying connection (TCP or TLS).
+            let _ = ev_tx.send(SignalingEvent::Disconnected);
+        });
+    }
+
+    /// Attempts to send a message to the server (enqueue on the command channel).
+    ///
+    /// Note: actual IO happens in the network thread; any IO/protocol errors
+    /// will be reported asynchronously as `SignalingEvent::Error`. From here we
+    /// can only tell if the client is already disconnected.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SignalingClientError::Disconnected` if the command channel to the
+    /// network thread is closed.
+    pub fn send(&self, msg: SignalingMsg) -> Result<(), SignalingClientError> {
+        self.cmd_tx
+            .send(SignalingCommand::Send(msg))
+            .map_err(|_| SignalingClientError::Disconnected)
+    }
+
+    /// Gracefully closes the connection.
+    ///
+    /// If the network thread is already gone, this will just fail silently.
+    pub fn disconnect(&self) {
+        let _ = self.cmd_tx.send(SignalingCommand::Disconnect);
+    }
+
+    /// Polls the next pending event from the background thread.
+    #[must_use]
+    pub fn try_recv(&self) -> Option<SignalingEvent> {
+        self.events.try_recv().ok()
+    }
+}
+
+const fn msg_name(msg: &SignalingMsg) -> &'static str {
+    match msg {
+        SignalingMsg::Hello { .. } => "Hello",
+        SignalingMsg::Login { .. } => "Login",
+        SignalingMsg::LoginOk { .. } => "LoginOk",
+        SignalingMsg::LoginErr { .. } => "LoginErr",
+        SignalingMsg::Register { .. } => "Register",
+        SignalingMsg::RegisterOk { .. } => "RegisterOk",
+        SignalingMsg::RegisterErr { .. } => "RegisterErr",
+        SignalingMsg::ListPeers => "ListPeers",
+        SignalingMsg::PeersOnline { .. } => "PeersOnline",
+        SignalingMsg::CreateSession { .. } => "CreateSession",
+        SignalingMsg::Created { .. } => "Created",
+        SignalingMsg::Join { .. } => "Join",
+        SignalingMsg::JoinOk { .. } => "JoinOk",
+        SignalingMsg::JoinErr { .. } => "JoinErr",
+        SignalingMsg::PeerJoined { .. } => "PeerJoined",
+        SignalingMsg::PeerLeft { .. } => "PeerLeft",
+        SignalingMsg::Offer { .. } => "Offer",
+        SignalingMsg::Answer { .. } => "Answer",
+        SignalingMsg::Candidate { .. } => "Candidate",
+        SignalingMsg::Ack { .. } => "Ack",
+        SignalingMsg::Bye { .. } => "Bye",
+        SignalingMsg::Ping { .. } => "Ping",
+        SignalingMsg::Pong { .. } => "Pong",
+    }
+}

@@ -1,12 +1,11 @@
-pub mod h264_depacketizer;
-pub mod h264_packetizer;
-pub mod rtp_payload_chunk;
 #[cfg(test)]
 mod roundtrip_tests {
-    use super::h264_depacketizer::{AccessUnit, H264Depacketizer};
-    use super::h264_packetizer::H264Packetizer;
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use crate::media_transport::depacketizer::h264_depacketizer::H264Depacketizer;
+    use crate::media_transport::payload::h264_packetizer::H264Packetizer;
 
     // ---------- helpers ----------
+    #[allow(clippy::cast_possible_truncation)]
     fn mk_nalu(ntype: u8, nri: u8, payload_len: usize) -> Vec<u8> {
         assert!((1..=23).contains(&ntype));
         let header = (nri & 0x60) | (ntype & 0x1F); // F=0
@@ -27,9 +26,9 @@ mod roundtrip_tests {
         out
     }
 
-    fn roundtrip_once(mtu: usize, nalus: Vec<Vec<u8>>, ts: u32, seq_start: u16) -> AccessUnit {
+    fn roundtrip_once(mtu: usize, nalus: &[Vec<u8>], ts: u32, seq_start: u16) -> Vec<u8> {
         let p = H264Packetizer::new(mtu);
-        let annexb = to_annexb(&nalus);
+        let annexb = to_annexb(nalus);
         let chunks = p.packetize_annexb_to_payloads(&annexb);
 
         assert!(
@@ -53,11 +52,9 @@ mod roundtrip_tests {
             }
         }
 
-        let au = out.expect("depacketizer must emit an AU on marker=true");
-        assert_eq!(au.timestamp_90khz, ts);
-        // IMPORTANT: returned nalus must match originals exactly
-        assert_eq!(au.nalus, nalus);
-        au
+        let frame = out.expect("depacketizer must emit a frame on marker=true");
+        assert_eq!(frame, annexb);
+        frame
     }
 
     // ---------- tests ----------
@@ -73,7 +70,7 @@ mod roundtrip_tests {
         let nalus = vec![sps, pps, idr];
 
         let ts = 90_000;
-        let _au = roundtrip_once(mtu, nalus, ts, 1000);
+        let _au = roundtrip_once(mtu, &nalus, ts, 1000);
     }
 
     #[test]
@@ -84,7 +81,7 @@ mod roundtrip_tests {
         let nalus = vec![idr];
 
         let ts = 90_000 * 2;
-        let _au = roundtrip_once(mtu, nalus, ts, 2000);
+        let _au = roundtrip_once(mtu, &nalus, ts, 2000);
     }
 
     #[test]
@@ -97,7 +94,7 @@ mod roundtrip_tests {
         let nalus = vec![sps, pps, sei, idr];
 
         let ts = 90_000 * 3;
-        let _au = roundtrip_once(mtu, nalus, ts, 3000);
+        let _au = roundtrip_once(mtu, &nalus, ts, 3000);
     }
 
     #[test]
@@ -111,14 +108,14 @@ mod roundtrip_tests {
             mk_nalu(5, 0x40, 900), // IDR, fragmented
         ];
         let ts1 = 10_000;
-        let au1 = roundtrip_once(mtu, f1.clone(), ts1, 4000);
-        assert_eq!(au1.nalus, f1);
+        let au1 = roundtrip_once(mtu, &f1, ts1, 4000);
+        assert_eq!(au1, to_annexb(&f1));
 
         // Frame 2
         let f2 = vec![mk_nalu(1, 0x20, 300)]; // P-frame
         let ts2 = 20_000;
-        let au2 = roundtrip_once(mtu, f2.clone(), ts2, 5000);
-        assert_eq!(au2.nalus, f2);
+        let au2 = roundtrip_once(mtu, &f2, ts2, 5000);
+        assert_eq!(au2, to_annexb(&f2));
     }
 
     #[test]
@@ -129,19 +126,20 @@ mod roundtrip_tests {
 
         let ts = 33_000;
         // Start near the end to force wraparound internally in roundtrip_once loop
-        let _au = roundtrip_once(mtu, nalus, ts, u16::MAX - 5);
+        let _au = roundtrip_once(mtu, &nalus, ts, u16::MAX - 5);
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn rt_many_randomized_cases() {
         // Deterministic-ish: simple LCG for randomness, no external deps.
         fn rand(mut s: u64) -> impl FnMut() -> u32 {
             move || {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 (s >> 33) as u32
             }
         }
-        let mut r = rand(0xC0FFEE);
+        let mut r = rand(0x00C0_FFEE);
 
         for i in 0..50 {
             let mtu = 500 + (r() % 1000) as usize; // 500..1499
@@ -161,7 +159,7 @@ mod roundtrip_tests {
             }
 
             let ts = 1000 * i;
-            let _au = roundtrip_once(mtu, nalus, ts, (10_000 + i) as u16);
+            let _au = roundtrip_once(mtu, &nalus, ts, (10_000 + i) as u16);
         }
     }
 }
