@@ -7,6 +7,7 @@ pub(crate) struct ReplayWindow {
 }
 
 impl ReplayWindow {
+    #![allow(dead_code)]
     pub(crate) const fn new() -> Self {
         Self {
             max_index: 0,
