@@ -77,6 +77,8 @@ fn convert_bt709_limited(y: u8, u: u8, v: u8) -> Rgb {
     }
 }
 
+
+/// Prints a debug table of YUV to RGB conversion results using different standards.
 pub fn debug_yuv_to_rgb(y: u8, u: u8, v: u8) {
     println!("=== YUV→RGB Debug ===");
     println!("Input YUV: Y={} U={} V={}", y, u, v);

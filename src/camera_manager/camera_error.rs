@@ -1,14 +1,22 @@
 use opencv::Error as CvError;
 use std::fmt;
 
+/// Represents an error that can occur while using the camera manager.
 #[derive(Debug)]
 pub enum CameraError {
+    /// Failed to initialize the camera.
     InitializationFailed(String),
+    /// Failed to open the camera with the given device ID.
     OpenFailed(i32),
+    /// Failed to capture a frame from the camera.
     CaptureFailed(String),
+    /// An error from the underlying OpenCV library.
     OpenCvError(CvError),
+    /// No frame was available from the camera.
     NotFrame,
+    /// The camera is not initialized.
     CameraOff,
+    /// The provided device ID is invalid.
     InvalidDeviceId(i32),
 }
 

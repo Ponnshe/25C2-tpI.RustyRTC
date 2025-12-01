@@ -29,8 +29,18 @@ const FLUSH_BATCH_SIZE: u32 = 1_000;
 
 // -----------------------------------------------------------------------------
 
-/// Bounded, non-blocking logger that writes to a per-process log file,
-/// and provides a sampled "UI tap" channel for lightweight UI display.
+/// Bounded, non-blocking logger that writes to a per-process log file.
+///
+/// This struct manages a background worker thread that consumes log messages from a
+/// bounded channel and writes them to a file. It also provides a secondary "sampled"
+/// channel (`ui_log_rx`) to feed a subset of logs to a UI without overwhelming it.
+///
+/// # Architecture
+///
+/// 1. **Producers**: Application threads call `try_log`.
+/// 2. **Queue**: A bounded `mpsc` channel buffers messages.
+/// 3. **Consumer**: A dedicated background thread writes to disk and flushes periodically.
+/// 4. **Sampler**: The background thread forwards a sample of logs to the UI channel.
 pub struct Logger {
     handle: LoggerHandle,
     ui_log_rx: std::sync::mpsc::Receiver<String>,
@@ -40,6 +50,9 @@ pub struct Logger {
 }
 
 impl Logger {
+    /// Initializes the logger for a client application context.
+    ///
+    /// Reads configuration from `Config` using client-specific keys ("client_log_filename").
     #[must_use]
     pub fn start_client(cap: usize, ui_cap: usize, sample_every: u32, config: Arc<Config>) -> Self {
         Self::start(
@@ -52,6 +65,9 @@ impl Logger {
         )
     }
 
+    /// Initializes the logger for a server application context.
+    ///
+    /// Reads configuration from `Config` using server-specific keys ("server_log_filename").
     #[must_use]
     pub fn start_server(cap: usize, ui_cap: usize, sample_every: u32, config: Arc<Config>) -> Self {
         Self::start(
@@ -64,6 +80,7 @@ impl Logger {
         )
     }
 
+    /// Internal helper to resolve configuration and start the logger.
     #[must_use]
     fn start(
         fn_key: &str,
@@ -83,9 +100,11 @@ impl Logger {
         }
     }
 
+    /// Creates a `logs/` directory next to the executable and starts the logger there.
+    ///
+    /// # Example Filename
+    /// `target/debug/logs/roomrtc-20251102_023045-pid1234.log`
     #[must_use]
-    /// Create logs/ directory next to the executable and start the logger there.
-    /// Example: target/debug/logs/roomrtc-20251102_023045-pid1234.log
     pub fn start_default(
         app_name: Option<&str>,
         cap: usize,
@@ -96,8 +115,20 @@ impl Logger {
         Self::start_in_dir(base, app_name, cap, ui_cap, sample_every)
     }
 
-    /// Start the logger in a specific directory.
-    /// Creates the directory if missing and chooses a timestamped, per-PID file name.
+    /// Starts the logger in a specific directory.
+    ///
+    /// This function:
+    /// 1. Creates the target directory if it is missing.
+    /// 2. Generates a unique filename based on the timestamp and process ID (PID).
+    /// 3. Spawns the background worker thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - The directory where the log file will be created.
+    /// * `app_name` - Optional prefix for the log filename.
+    /// * `cap` - Capacity of the main log channel (backpressure buffer).
+    /// * `ui_cap` - Capacity of the UI sampling channel.
+    /// * `sample_every` - Only 1 out of every N info/debug messages is sent to the UI.
     pub fn start_in_dir<D: AsRef<Path>>(
         dir: D,
         app_name: Option<&str>,
@@ -111,16 +142,14 @@ impl Logger {
         // Avoid potential modulo-by-zero later.
         let _sample_every = sample_every.max(1);
 
-        // Calculamos esto una sola vez para no repetir código
+        // Calculated once to avoid code repetition.
         let ts = timestamp_for_filename();
         let pid = std::process::id();
 
-        // fname recibe el valor retornado por el bloque if/else
+        // Determine filename based on whether app_name is provided.
         let fname = if let Some(name) = app_name {
-            // Si app_name tiene valor (Some), usamos 'name'
             format!("{}-{}-pid{}.log", name, ts, pid)
         } else {
-            // Si es None
             format!("{}-pid{}.log", ts, pid)
         };
 
@@ -161,10 +190,14 @@ impl Logger {
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
                     lines_written = lines_written.wrapping_add(1);
+                    
+                    // Flush periodically to ensure data persists on crash.
                     if lines_written.is_multiple_of(FLUSH_BATCH_SIZE) {
                         let _ = out.flush();
                     }
 
+                    // Determine if this message should be forwarded to the UI.
+                    // Warn/Error are always forwarded; others are sampled.
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);
                         n.is_multiple_of(sample_every)
@@ -178,6 +211,7 @@ impl Logger {
                         dropped_to_ui += 1;
                     }
 
+                    // Report dropped UI messages if the queue is backing up.
                     if dropped_to_ui >= 10 {
                         let _ = ui_tx.try_send(format!(
                             "(logger) UI log queue dropped {dropped_to_ui} lines"
@@ -209,31 +243,19 @@ impl Logger {
     /// # Parameters
     /// - `level`: The severity level of the message (e.g. `Info`, `Warn`, `Error`).
     /// - `text`: Any type convertible into a `String`, containing the log message.
+    /// - `target`: The static module path where the log originated.
     ///
     /// # Returns
     /// Returns `Ok(())` if the message was successfully enqueued for logging.
     /// Otherwise, returns a [`TrySendError<LogMsg>`] indicating that the internal
     /// queue was full and the message was **not sent**.
     ///
-    /// # Errors
-    /// Returns `Err(TrySendError::Full)` if the logger’s internal bounded queue
-    /// has reached its capacity.
-    /// This error means the message was **dropped** — no retry is performed.
+    /// # Example
     ///
-    /// # Examples
-    /// ```ignore
-    /// use rustyrtc::app::logger::{Logger, LogLevel};
-    ///
-    /// let logger = Logger::start_in_dir("logs", "app", 100, 10, 1);
-    /// let _ = logger.try_log(LogLevel::Info, "Background task started", module_path!());
+    /// ```rust,ignore
+    /// // Assuming logger is initialized
+    /// let _ = logger.try_log(LogLevel::Info, "Processing started", module_path!());
     /// ```
-    ///
-    /// # See also
-    /// - [`std::sync::mpsc::SyncSender::try_send`]
-    /// - [`Self::log`] for the blocking variant
-    ///
-    /// # Panics
-    /// This function never panics.
     pub fn try_log<S: Into<String>>(
         &self,
         level: LogLevel,
@@ -243,26 +265,34 @@ impl Logger {
         self.handle.try_log(level, text, target)
     }
 
-    /// Give modules a cloneable sink they can keep.
+    /// Returns a cloneable handle to the logger sink.
+    ///
+    /// Useful for passing the logging capability to other modules or threads
+    /// without transferring ownership of the main `Logger` struct.
     #[must_use]
     pub fn handle(&self) -> LoggerHandle {
         self.handle.clone()
     }
 
-    /// Pull one sampled UI line (if any).
+    /// Attempts to retrieve one sampled log line for UI display.
+    ///
+    /// Returns `None` if the UI channel is empty.
     #[must_use]
     pub fn try_recv_ui(&self) -> Option<String> {
         self.ui_log_rx.try_recv().ok()
     }
 
-    /// Optional: expose the chosen file path (nice for debugging).
+    /// Returns the path of the active log file.
+    ///
+    /// Useful for debugging or displaying the log location to the user.
     #[must_use]
     pub fn file_path(&self) -> &Path {
         &self.file_path
     }
 }
 
-/// logs next to the executable (target/{debug,release}), or current dir on error.
+/// Locates the `logs` directory next to the executable (target/{debug,release}),
+/// or falls back to the current working directory on error.
 fn exe_dir_fallback_cwd() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -270,8 +300,9 @@ fn exe_dir_fallback_cwd() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
-/// Human-ish timestamp for filenames without extra deps.
-/// Example: `20251102_023045`
+/// Generates a human-readable timestamp for filenames without external dependencies.
+///
+/// Output Format: `YYYYMMDD_HHMMSS` (e.g., `20251102_023045`)
 fn timestamp_for_filename() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -306,8 +337,19 @@ enum UtcConvError {
     Day,
 }
 
-/// Minimal UTC conversion (no leap seconds).
+/// Minimal UTC conversion (Civl Time) to avoid importing `chrono`.
+///
+/// Implements the algorithm to convert UNIX timestamp to a Gregorian date.
 /// Note: not a `const fn` because it uses `Result/try_from`.
+///
+/// # Errors
+///
+/// Returns a [`UtcConvError`] if the calculated components generally overflow or
+/// cannot be represented in standard integer types:
+///
+/// * [`UtcConvError::Year`] - If the calculated year does not fit in an `i32`.
+/// * [`UtcConvError::Month`] - If the month cannot be converted to `u32` (unlikely by algorithm design).
+/// * [`UtcConvError::Day`] - If the day cannot be converted to `u32` (unlikely by algorithm design).
 #[allow(clippy::missing_const_for_fn, clippy::many_single_char_names)]
 fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     use std::convert::TryFrom;
@@ -319,7 +361,7 @@ fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     let hour = (s % 24) as u32;
     s /= 24;
 
-    // Cálculo en i128 para evitar wrap.
+    // Use i128 to prevent overflow during intermediate calculations.
     let z: i128 = i128::from(s) + 719_468;
 
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
@@ -347,6 +389,7 @@ fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     })
 }
 
+/// Expands tilde (`~`) in file paths to the user's home directory.
 fn expand_path(path_str: &str) -> PathBuf {
     if path_str.starts_with("~") {
         let home = std::env::var("HOME")

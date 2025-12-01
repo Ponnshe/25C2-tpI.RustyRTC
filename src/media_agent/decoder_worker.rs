@@ -18,8 +18,40 @@ use crate::{
     sink_debug, sink_info,
 };
 
+/// Target pixel format for the decoder output.
+/// Currently fixed to YUV420 as it is the standard for most WebRTC/Video pipelines.
 const FRAME_FORMAT: FrameFormat = FrameFormat::Yuv420;
 
+/// Spawns a dedicated background thread for video decoding.
+///
+/// This worker listens for encoded video chunks (H.264 Annex B) on the `ma_decoder_event_rx` channel,
+/// feeds them into the `H264Decoder`, and forwards successfully decoded frames to the
+/// `media_agent_event_tx` channel.
+///
+/// # Architecture
+///
+/// 1. **Input**: Receives `DecoderEvent::AnnexBFrameReady` containing NAL units.
+/// 2. **Process**:
+///    - Inspects NAL headers for diagnostic logging (identifying Keyframes/IDR, SPS, PPS).
+///    - Feeds data to the underlying decoder (e.g., OpenH264 or FFmpeg wrapper).
+/// 3. **Output**: Sends `MediaAgentEvent::DecodedVideoFrame` containing the raw YUV image.
+///
+/// # Lifecycle
+///
+/// The thread runs a continuous loop that checks the `running` atomic flag.
+/// It uses a timeout on the receiver (`CHANNELS_TIMEOUT`) to ensure the thread can
+/// verify the `running` flag and exit cleanly even if no data is arriving.
+///
+/// # Arguments
+///
+/// * `logger` - Shared logger instance for diagnostic output.
+/// * `ma_decoder_event_rx` - Channel receiver for incoming encoded data packets.
+/// * `media_agent_event_tx` - Channel sender for outgoing decoded video frames.
+/// * `running` - Atomic flag to control the shutdown of the worker thread.
+///
+/// # Panics
+///
+/// This function panics if the OS fails to create the new thread (`thread::spawn`).
 #[allow(clippy::expect_used)]
 pub fn spawn_decoder_worker(
     logger: Arc<dyn LogSink>,
@@ -38,6 +70,7 @@ pub fn spawn_decoder_worker(
                     Ok(event) => {
                         match event {
                             DecoderEvent::AnnexBFrameReady { codec_spec, bytes } => {
+                                // --- Diagnostic Logging (NAL Inspection) ---
                                 if bytes.len() > 4 {
                                     let nal_type = bytes[4] & 0x1F;
                                     logger_debug!(
@@ -67,6 +100,8 @@ pub fn spawn_decoder_worker(
                                         logger_debug!(logger, "[Decoder] Got SPS/PPS NAL type={}", nal_type);
                                     }
                                 }
+
+                                // --- Decoding Logic ---
                                 match codec_spec {
                                     CodecSpec::H264 => {
                                         logger_debug!(
@@ -76,6 +111,7 @@ pub fn spawn_decoder_worker(
                                             &bytes[..bytes.len().min(12)]
                                         );
                                         let t0 = std::time::Instant::now();
+                                        
                                         match h264_decoder.decode_frame(&bytes, FRAME_FORMAT) {
                                             Ok(Some(frame)) => {
                                                 let took = t0.elapsed();
@@ -92,6 +128,7 @@ pub fn spawn_decoder_worker(
                                                     .send(MediaAgentEvent::DecodedVideoFrame(Box::new(frame)));
                                             }
                                             Ok(None) => {
+                                                // Decoder needs more data (e.g. buffered frames or missing SPS/PPS)
                                                 logger_debug!(
                                                     logger,
                                                     "[Decoder] Incomplete AU after NAL type={} (need SPS/PPS/IDR?)",
@@ -113,6 +150,7 @@ pub fn spawn_decoder_worker(
                         }
                     },
                     Err(RecvTimeoutError::Timeout) => {
+                        // Timeout is expected; it allows the loop to check `running` flag.
                         #[cfg(debug_assertions)]
                         logger_debug!(
                             logger,
@@ -126,6 +164,8 @@ pub fn spawn_decoder_worker(
                             logger,
                             "[MediaAgent Decoder] The channel has been disconnected"
                         );
+                        // Optional: break loop here if channel death implies worker death
+                        // break; 
                     },
                 }
             }

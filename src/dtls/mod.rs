@@ -1,3 +1,5 @@
+//! This module provides a DTLS implementation for WebRTC, including handshake
+//! procedures, error handling, and role management.
 pub mod buffered_udp_channel;
 pub mod dtls_error;
 pub mod dtls_role;

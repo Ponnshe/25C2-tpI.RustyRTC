@@ -29,23 +29,50 @@ use std::{
     time::Duration,
 };
 
+/// The central orchestrator of the media pipeline.
+///
+/// `MediaAgent` is responsible for managing the lifecycle of all media-related subsystems:
+/// 1. **Capture**: Spawns and manages the `CameraWorker`.
+/// 2. **Encoding**: Spawns the `EncoderWorker` to compress local video.
+/// 3. **Decoding**: Spawns the `DecoderWorker` to decompress remote video.
+/// 4. **Routing**: Runs a central `Listener` thread that routes messages between workers and the `MediaTransport`.
+///
+/// # Shared State
+/// It holds shared `Mutex` protected references to the latest `local_frame` and `remote_frame`,
+/// allowing the UI layer to poll for the most recent images to render without blocking the processing pipeline.
 pub struct MediaAgent {
     logger: Arc<dyn LogSink>,
+    /// The most recent frame captured from the local camera (for UI preview).
     local_frame: Arc<Mutex<Option<VideoFrame>>>,
+    /// The most recent frame decoded from the remote peer (for UI display).
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
+    /// List of supported codecs and media types.
     supported_media: Vec<MediaSpec>,
+    
+    // --- Thread Handles ---
     decoder_handle: Option<JoinHandle<()>>,
     encoder_handle: Option<JoinHandle<()>>,
     listener_handle: Option<JoinHandle<()>>,
     camera_handle: Option<JoinHandle<()>>,
+    
+    /// Flag to track if we have successfully sent at least one keyframe.
     sent_any_frame: Arc<AtomicBool>,
+    
+    // --- Channels ---
+    /// Channel to send events back to the listener loop from outside.
     media_agent_event_tx: Option<Sender<MediaAgentEvent>>,
+    /// Channel to send instructions to the encoder worker.
     ma_encoder_event_tx: Option<Sender<EncoderInstruction>>,
+    
     running: Arc<AtomicBool>,
     config: Arc<Config>,
 }
 
 impl MediaAgent {
+    /// Creates a new `MediaAgent` instance.
+    ///
+    /// This only initializes the data structures. To start the processing threads,
+    /// call [`start`](Self::start).
     pub fn new(logger: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let sent_any_frame = Arc::new(AtomicBool::new(false));
 
@@ -70,6 +97,20 @@ impl MediaAgent {
             config,
         }
     }
+
+    /// Bootstraps the media pipeline.
+    ///
+    /// Spawns the Camera, Encoder, Decoder, and Listener threads.
+    /// It also reads configuration values (FPS, Camera ID) from `Config`.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_tx` - Channel to send status updates back to the main Engine.
+    /// * `media_transport_event_tx` - Channel to send encoded packets to the network layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MediaAgentError` if any worker thread fails to spawn.
     pub fn start(
         &mut self,
         event_tx: Sender<EngineEvent>,
@@ -77,6 +118,7 @@ impl MediaAgent {
     ) -> Result<(), MediaAgentError> {
         let logger = self.logger.clone();
         sink_debug!(logger, "[MediaAgent] Starting MediaAgent");
+        
         self.running.store(true, Ordering::SeqCst);
         let logger = self.logger.clone();
         let running = self.running.clone();
@@ -89,7 +131,7 @@ impl MediaAgent {
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_CAMERA_ID);
 
-        //Start camera worker
+        // --- 1. Start Camera Worker ---
         let camera_id = discover_camera_id().unwrap_or(default_camera_id);
         sink_debug!(logger.clone(), "[MediaAgent] Starting Camera Worker...");
 
@@ -102,17 +144,19 @@ impl MediaAgent {
         let (local_frame_rx, status, handle) =
             spawn_camera_worker(target_fps, logger.clone(), camera_id, running.clone());
         sink_debug!(logger.clone(), "[MediaAgent] Camera Worker Started");
+        
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
         self.camera_handle = handle;
 
+        // Setup internal channels
         let (ma_decoder_event_tx, ma_decoder_event_rx) = mpsc::channel::<DecoderEvent>();
         let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel::<MediaAgentEvent>();
         let media_agent_event_tx_clone = media_agent_event_tx.clone();
         self.media_agent_event_tx = Some(media_agent_event_tx_clone);
 
-        // Start decoder worker
+        // --- 2. Start Decoder Worker ---
         sink_debug!(logger.clone(), "[MediaAgent] Starting Decoder Worker...");
         let decoder_handle = Some(spawn_decoder_worker(
             logger.clone(),
@@ -123,10 +167,11 @@ impl MediaAgent {
         self.decoder_handle = decoder_handle;
         sink_debug!(logger.clone(), "[MediaAgent] Decoder Worker Started");
 
-        // Start encoder worker
+        // --- 3. Start Encoder Worker ---
         let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
         let ma_encoder_event_tx_clone = ma_encoder_event_tx.clone();
         self.ma_encoder_event_tx = Some(ma_encoder_event_tx_clone);
+        
         sink_debug!(logger.clone(), "[MediaAgent] Starting Encoder Worker...");
         let encoder_handle = spawn_encoder_worker(
             logger.clone(),
@@ -139,7 +184,7 @@ impl MediaAgent {
         self.encoder_handle = Some(encoder_handle);
         sink_debug!(logger.clone(), "[MediaAgent] Encoder Worker Started");
 
-        // Start listener
+        // --- 4. Start Central Listener ---
         sink_debug!(logger.clone(), "[MediaAgent] Starting Listener...");
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
@@ -160,6 +205,9 @@ impl MediaAgent {
         Ok(())
     }
 
+    /// Stops all worker threads and cleans up resources.
+    ///
+    /// Signals the `running` atomic flag to false and joins all threads.
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
 
@@ -200,6 +248,7 @@ impl MediaAgent {
         &self.supported_media
     }
 
+    /// Enqueues an event into the MediaAgent's internal processing loop.
     pub fn post_event(&self, event: MediaAgentEvent) {
         if let Some(media_agent_event_tx) = self.media_agent_event_tx.clone()
             && let Err(err) = media_agent_event_tx.send(event)
@@ -216,6 +265,9 @@ impl MediaAgent {
         self.media_agent_event_tx.clone()
     }
 
+    /// Returns a snapshot of the current local and remote frames.
+    ///
+    /// Used by the UI layer to render the latest available video.
     #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         let local = self
@@ -230,6 +282,7 @@ impl MediaAgent {
             .and_then(|guard| guard.as_ref().cloned());
         (local, remote)
     }
+
     #[allow(clippy::too_many_arguments)]
     fn spawn_listener_thread(
         logger: Arc<dyn LogSink>,
@@ -264,6 +317,12 @@ impl MediaAgent {
             })
             .ok()
     }
+
+    /// The main event loop of the MediaAgent.
+    ///
+    /// It performs two main tasks repeatedly:
+    /// 1. Drains incoming camera frames and sends them to the encoder.
+    /// 2. Processes system events (decoded frames, network packets, config changes).
     #[allow(clippy::too_many_arguments)]
     fn listener_loop(
         logger: Arc<dyn LogSink>,
@@ -279,6 +338,7 @@ impl MediaAgent {
         config: Arc<Config>,
     ) {
         while running.load(Ordering::Relaxed) {
+            // Prioritize clearing the camera buffer to avoid latency build-up
             Self::drain_camera_frames(
                 &logger,
                 &local_frame_rx,
@@ -287,6 +347,7 @@ impl MediaAgent {
                 &sent_any_frame,
             );
 
+            // Poll for other events with a short timeout to keep the loop responsive
             match media_agent_event_rx.recv_timeout(Duration::from_millis(5)) {
                 Ok(event) => {
                     Self::handle_media_agent_event(
@@ -312,6 +373,10 @@ impl MediaAgent {
         sink_debug!(logger, "[MediaAgent Listener] Thread closing gracefully");
     }
 
+    /// Consumes all available frames from the camera channel.
+    ///
+    /// This ensures we always process the latest frame and don't lag behind
+    /// if the camera produces frames faster than we process events.
     fn drain_camera_frames(
         logger: &Arc<dyn LogSink>,
         local_frame_rx: &Receiver<VideoFrame>,
@@ -339,6 +404,7 @@ impl MediaAgent {
         }
     }
 
+    /// Updates the local frame state and forwards the frame to the encoder.
     fn handle_local_frame(
         logger: &Arc<dyn LogSink>,
         frame: VideoFrame,
@@ -346,16 +412,19 @@ impl MediaAgent {
         local_frame: &Arc<Mutex<Option<VideoFrame>>>,
         sent_any_frame: &Arc<AtomicBool>,
     ) {
+        // Update the UI snapshot
         if let Ok(mut guard) = local_frame.lock() {
             *guard = Some(frame.clone());
         } else {
             sink_warn!(logger, "[MediaAgent] failed to lock local frame for update");
         }
 
+        // Check if we need to force a keyframe (e.g., first frame sent)
         let force_keyframe = !sent_any_frame.swap(true, Ordering::SeqCst);
 
         let ts = frame.timestamp_ms;
         let instruction = EncoderInstruction::Encode(frame, force_keyframe);
+        
         if ma_encoder_event_tx.send(instruction).is_err() {
             sink_error!(
                 logger,
@@ -371,6 +440,7 @@ impl MediaAgent {
         }
     }
 
+    /// Routes system events to their appropriate destinations.
     fn handle_media_agent_event(
         logger: &Arc<dyn LogSink>,
         event: MediaAgentEvent,
@@ -385,6 +455,8 @@ impl MediaAgent {
                 sink_info!(logger, "[MediaAgent] Received DecodedVideoFrame");
                 let frame = *frame;
                 let ts = frame.timestamp_ms;
+                
+                // Update remote UI snapshot
                 if let Ok(mut guard) = remote_frame.lock() {
                     *guard = Some(frame);
                 } else {
@@ -409,6 +481,7 @@ impl MediaAgent {
                     logger,
                     "[MediaAgent] Received EncodedVideoFrame from Encoder. Now sending SendEncodedFrame to Media Transport"
                 );
+                // Forward to network layer
                 if media_transport_event_tx
                     .send(MediaTransportEvent::SendEncodedFrame {
                         annexb_frame,
@@ -429,6 +502,7 @@ impl MediaAgent {
                     "[MediaAgent] forwarding AnnexB payload to decoder ({:?})",
                     codec_spec
                 );
+                // Forward to decoder worker
                 if ma_decoder_event_tx
                     .send(DecoderEvent::AnnexBFrameReady { codec_spec, bytes })
                     .is_err()
@@ -448,6 +522,7 @@ impl MediaAgent {
                     .get("Media", "keyframe_interval")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(KEYINT);
+                    
                 let instruction = EncoderInstruction::SetConfig {
                     fps,
                     bitrate: b,
