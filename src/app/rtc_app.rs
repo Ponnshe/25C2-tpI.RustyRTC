@@ -112,11 +112,11 @@ impl RtcApp {
 
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, config: Arc<Config>) -> Self {
-        let logger = Logger::start_default("roomrtc", 4096, 256, 50);
+        let logger = Logger::start_client(4096, 256, 50, config.clone());
         let logger_handle = Arc::new(logger.handle());
 
         let server_addr_input = config
-            .get_or_default("Signaling", "server_address", Self::SERVER_ADDR)
+            .get_non_empty_or_default("Signaling", "server_address", Self::SERVER_ADDR)
             .to_string();
 
         let (local_yuv_renderer, remote_yuv_renderer) = cc.wgpu_render_state.as_ref().map_or_else(
@@ -236,9 +236,9 @@ impl RtcApp {
         // TLS SNI / certificate name.
         // This MUST match the mkcert-generated certificate (signal.internal).
         // We keep it fixed for now, even if the user types 127.0.0.1:6000.
-        let domain = self
-            .config
-            .get_or_default("Signaling", "tls_domain", "signal.internal");
+        let domain =
+            self.config
+                .get_non_empty_or_default("Signaling", "tls_domain", "signal.internal");
 
         // Build TLS config + connect over TLS, handling errors explicitly (no `?`).
         let res: io::Result<SignalingClient> =
@@ -1025,9 +1025,10 @@ impl App for RtcApp {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
         let ui_fps = self
             .config
-            .get_or_default("UI", "fps", "60")
-            .parse()
+            .get("UI", "fps")
+            .and_then(|s| s.parse().ok())
             .unwrap_or(60);
+
         let time = 1 / ui_fps;
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {

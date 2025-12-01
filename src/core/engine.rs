@@ -44,10 +44,19 @@ impl Engine {
         let media_transport =
             MediaTransport::new(event_tx.clone(), logger_sink.clone(), config.clone());
         let initial_bitrate = crate::media_agent::constants::BITRATE;
+        let max_bitrate = config
+            .get("Media", "max_bitrate")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MAX_BITRATE);
+
+        let min_bitrate = config
+            .get("Media", "min_bitrate")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MIN_BITRATE);
         let congestion_controller = CongestionController::new(
             initial_bitrate,
-            MIN_BITRATE,
-            MAX_BITRATE,
+            min_bitrate,
+            max_bitrate,
             logger_sink.clone(),
             event_tx.clone(),
         );

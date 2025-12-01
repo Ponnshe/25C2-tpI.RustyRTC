@@ -43,6 +43,7 @@ pub const DEFAULT_FINGERPRINT: &str =
 // ----------------- ConnectionManager --------------------
 pub struct ConnectionManager {
     pub logger_handle: Arc<dyn LogSink>,
+    config: Arc<Config>,
     pub ice_agent: IceAgent,
     /// Current signaling state of the connection (`Stable`, `HaveLocalOffer`, etc.)
     signaling: SignalingState,
@@ -69,13 +70,15 @@ impl ConnectionManager {
     /// The ICE agent is initialized in the `Controlling` role.
     #[must_use]
     pub fn new(logger_handle: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
-        let ice_agent = IceAgent::with_logger(IceRole::Controlling, logger_handle.clone());
-        let local_fingerprint = get_local_fingerprint_sha256(config).unwrap_or_else(|e| {
+        let ice_agent =
+            IceAgent::with_logger(IceRole::Controlling, logger_handle.clone(), config.as_ref());
+        let local_fingerprint = get_local_fingerprint_sha256(config.clone()).unwrap_or_else(|e| {
             eprintln!("Failed to get local fingerprint: {}", e);
             DEFAULT_FINGERPRINT.to_string()
         });
         Self {
             logger_handle,
+            config,
             ice_agent,
             signaling: SignalingState::Stable,
             local_description: None,
@@ -547,7 +550,8 @@ impl ConnectionManager {
         self.stop_ice_worker();
 
         // Re-initialize the ICE agent (clears candidates, nominated pairs, etc.)
-        self.ice_agent = IceAgent::with_logger(IceRole::Controlling, self.logger_handle.clone());
+        self.ice_agent =
+            IceAgent::with_logger(IceRole::Controlling, self.logger_handle.clone(), &self.config);
 
         // Reset state flags
         self.signaling = SignalingState::Stable;
