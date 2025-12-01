@@ -21,9 +21,9 @@ use crate::{
 };
 use std::{
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
-        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -85,8 +85,8 @@ impl MediaAgent {
 
         let default_camera_id = self
             .config
-            .get_or_default("Media", "default_camera", "0")
-            .parse()
+            .get("Media", "default_camera")
+            .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_CAMERA_ID);
 
         //Start camera worker
@@ -95,8 +95,8 @@ impl MediaAgent {
 
         let target_fps = self
             .config
-            .get_or_default("Media", "fps", "30")
-            .parse()
+            .get("Media", "fps")
+            .and_then(|s| s.parse().ok())
             .unwrap_or(TARGET_FPS);
 
         let (local_frame_rx, status, handle) =
@@ -133,6 +133,7 @@ impl MediaAgent {
             ma_encoder_event_rx,
             media_agent_event_tx,
             running.clone(),
+            self.config.clone(),
         )
         .map_err(|e| MediaAgentError::EncoderSpawn(e.to_string()))?;
         self.encoder_handle = Some(encoder_handle);
@@ -440,12 +441,12 @@ impl MediaAgent {
             }
             MediaAgentEvent::UpdateBitrate(b) => {
                 let fps = config
-                    .get_or_default("Media", "fps", "30")
-                    .parse()
+                    .get("Media", "fps")
+                    .and_then(|s| s.parse().ok())
                     .unwrap_or(TARGET_FPS);
                 let keyint = config
-                    .get_or_default("Media", "keyframe_interval", "90")
-                    .parse()
+                    .get("Media", "keyframe_interval")
+                    .and_then(|s| s.parse().ok())
                     .unwrap_or(KEYINT);
                 let instruction = EncoderInstruction::SetConfig {
                     fps,

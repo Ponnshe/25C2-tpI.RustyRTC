@@ -1,72 +1,70 @@
-//! GPU YUV420 -> RGB renderer using wgpu + egui_wgpu_backend.
+//! GPU-accelerated YUV420 to RGB renderer using `wgpu`.
 //!
-//! Usage (resumen):
-//!  - crea GpuYuvRenderer en la inicialización con device/queue/target_format.
-//!  - por cada frame YUV: call update_frame(queue, &video_frame).
-//!  - obtener egui::TextureId con `egui_texture_id(&mut render_pass, device, queue)`
-//!  - dibujar en UI con `ui.image(texture_id, size)`
+//! This module provides a `GpuYuvRenderer` that handles the GPU-side conversion
+//! of YUV420 planar video frames into a final RGB texture that can be displayed
+//! using `egui` and `egui_wgpu`.
 //!
-//! Nota: requiere las crates:
-//!  - wgpu
-//!  - egui_wgpu_backend (o egui_wgpu)
-//!  - egui
-//!    Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
-/// (Y_plane, U_plane, V_plane, y_stride, u_stride, v_stride)
-///
+//! # Usage
+//!
+//! 1. Create a `GpuYuvRenderer` instance during initialization, providing the `wgpu::Device`
+//!    and the target texture format.
+//! 2. For each new `VideoFrame`, call `update_frame()` to upload the Y, U, and V planes
+//!    to the GPU and run the conversion shader.
+//! 3. The resulting RGB texture can be obtained via `output_texture()` and then
+//!    registered with `egui` to be displayed in the UI.
+//!
 use crate::{
     log::log_sink::LogSink,
     media_agent::video_frame::{VideoFrame, VideoFrameData},
     sink_debug,
 };
-use eframe::wgpu::{self, PipelineCompilationOptions, util::DeviceExt};
+use eframe::wgpu::{self, util::DeviceExt, PipelineCompilationOptions};
 use std::sync::Arc;
 
+/// Manages GPU resources and the rendering pipeline for YUV-to-RGB conversion.
 pub struct GpuYuvRenderer {
-    // pipeline / layout
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 
-    // textures for Y, U, V
+    // Textures for Y, U, V planes
     tex_y: Option<wgpu::Texture>,
     tex_u: Option<wgpu::Texture>,
     tex_v: Option<wgpu::Texture>,
 
-    // sampler and bindgroup
     sampler: wgpu::Sampler,
     bind_group: Option<wgpu::BindGroup>,
 
-    // output (RGBA) texture where shader renders RGB result
+    /// The final RGBA texture where the shader renders the conversion result.
     output_texture: Option<wgpu::Texture>,
     output_view: Option<wgpu::TextureView>,
 
-    // quad vertex buffer (full screen)
+    /// Vertex buffer for drawing a full-screen quad.
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
 
-    // tracked sizes
+    // Tracked texture sizes to detect dimension changes.
     y_size: (u32, u32),
     uv_size: (u32, u32),
 
-    // formats and config
     output_format: wgpu::TextureFormat,
 
     #[allow(dead_code)]
     logger: Arc<dyn LogSink>,
 
-    // dentro de GpuYuvRenderer
+    /// Uniform buffer for passing stride information to the shader.
     u_info_buffer: wgpu::Buffer,
 }
 
 impl GpuYuvRenderer {
-    /// Create a new renderer.
-    /// `output_format` should be the swapchain/target format for egui backend; Rgba8UnormSrgb is fine.
+    /// Creates a new renderer instance.
+    ///
+    /// `output_format` should match the swapchain/target format for the `egui` backend.
     pub fn new(
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
         logger: Arc<dyn LogSink>,
     ) -> Self {
-        // simple full-screen triangle vertices (pos, uv)
-        // we'll use two triangles as a quad (pos.xy, uv.xy)
+        // A full-screen triangle is used to render a quad. (pos.xy, uv.xy)
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct Vertex {
@@ -74,7 +72,6 @@ impl GpuYuvRenderer {
             uv: [f32; 2],
         }
         let vertices: &[Vertex] = &[
-            // triangle 1
             Vertex {
                 pos: [-1.0, -1.0],
                 uv: [0.0, 1.0],
@@ -82,7 +79,7 @@ impl GpuYuvRenderer {
             Vertex {
                 pos: [3.0, -1.0],
                 uv: [2.0, 1.0],
-            }, // trick: full-screen triangle variant
+            },
             Vertex {
                 pos: [-1.0, 3.0],
                 uv: [0.0, -1.0],
@@ -95,7 +92,6 @@ impl GpuYuvRenderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        // sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("yuv-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -105,7 +101,6 @@ impl GpuYuvRenderer {
             ..Default::default()
         });
 
-        // bind group layout: Y(0), U(1), V(2), sampler(3)
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("yuv-bind-group-layout"),
             entries: &[
@@ -142,13 +137,14 @@ impl GpuYuvRenderer {
                     },
                     count: None,
                 },
-                // sampler
+                // Sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Uniform info buffer
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -162,21 +158,18 @@ impl GpuYuvRenderer {
             ],
         });
 
-        // WGSL shader: vertex passthrough + fragment YUV->RGB
         let shader_src = include_str!("shaders/yuv_to_rgb.wgsl");
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yuv_to_rgb_shader"),
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
 
-        // pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("yuv-pipeline-layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        // create render pipeline
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("yuv-render-pipeline"),
             layout: Some(&pipeline_layout),
@@ -215,10 +208,6 @@ impl GpuYuvRenderer {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
                 ..Default::default()
             },
             depth_stencil: None,
@@ -253,9 +242,15 @@ impl GpuYuvRenderer {
         }
     }
 
-    /// Update with a new YUV frame. This uploads Y/U/V planes to GPU, re-create textures if sizes changed,
-    /// runs a render pass to the output texture, but DOES NOT register the texture with egui.
-    /// After calling this, call `egui_texture_id(...)` to register the output texture for egui.
+    /// Updates the renderer with a new YUV video frame.
+    ///
+    /// This method uploads the Y, U, and V planes to their respective GPU textures,
+    /// re-creating them if the frame dimensions have changed. It then executes a
+    /// render pass to convert the YUV data to RGB, storing the result in an
+    /// internal output texture.
+    ///
+    /// To display the result, obtain the output texture via `output_texture()` and
+    /// register it with `egui`.
     #[allow(clippy::expect_used)]
     pub fn update_frame(
         &mut self,
@@ -286,12 +281,12 @@ impl GpuYuvRenderer {
                 _ => return,
             };
 
-        // UV planes: size = ceil(width/2), ceil(height/2)
         let y_w = width;
         let y_h = height;
         let uv_w = (width).div_ceil(2);
         let uv_h = (height).div_ceil(2);
 
+        // Recreate textures if frame dimensions have changed
         if self.y_size != (y_w, y_h) || self.tex_y.is_none() {
             self.tex_y = Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("y-plane"),
@@ -312,16 +307,13 @@ impl GpuYuvRenderer {
             self.y_size = (y_w, y_h);
         }
 
-        if self.uv_size != (uv_w as u32, uv_h as u32)
-            || self.tex_u.is_none()
-            || self.tex_v.is_none()
-        {
+        if self.uv_size != (uv_w, uv_h) || self.tex_u.is_none() || self.tex_v.is_none() {
             let create_uv = |label: &str| {
                 device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
-                        width: uv_w as u32,
-                        height: uv_h as u32,
+                        width: uv_w,
+                        height: uv_h,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -337,7 +329,7 @@ impl GpuYuvRenderer {
             self.uv_size = (uv_w, uv_h);
         }
 
-        // Output texture (RGBA) Same size as Y
+        // Recreate output texture if size has changed
         if self.output_texture.is_none() || self.output_view.is_none() || self.y_size.0 != y_w {
             let out = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("yuv-rgb-output"),
@@ -358,11 +350,10 @@ impl GpuYuvRenderer {
             self.output_texture = Some(out);
         }
 
+        // Upload plane data to GPU textures
         upload_plane(
             logger.clone(),
-            self.tex_y
-                .as_ref()
-                .expect("Y-plane texture not initialized"),
+            self.tex_y.as_ref().expect("Y-plane texture missing"),
             &y_plane,
             y_w,
             y_h,
@@ -371,9 +362,7 @@ impl GpuYuvRenderer {
         );
         upload_plane(
             logger.clone(),
-            self.tex_u
-                .as_ref()
-                .expect("U-plane texture not initialized"),
+            self.tex_u.as_ref().expect("U-plane texture missing"),
             &u_plane,
             uv_w,
             uv_h,
@@ -381,17 +370,16 @@ impl GpuYuvRenderer {
             queue,
         );
         upload_plane(
-            logger.clone(),
-            self.tex_v
-                .as_ref()
-                .expect("V-plane texture not initialized"),
+            logger,
+            self.tex_v.as_ref().expect("V-plane texture missing"),
             &v_plane,
             uv_w,
             uv_h,
             v_stride,
             queue,
         );
-        // Bind group
+
+        // Create the bind group for the shader
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("yuv-bind-group"),
             layout: &self.bind_group_layout,
@@ -438,7 +426,7 @@ impl GpuYuvRenderer {
         });
         self.bind_group = Some(bind_group);
 
-        // Render pass
+        // Execute the render pass to perform the YUV-to-RGB conversion
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("yuv-render-encoder"),
         });
@@ -475,11 +463,25 @@ impl GpuYuvRenderer {
         queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// Returns a reference to the final RGB output texture.
+    ///
+    /// This texture contains the result of the YUV-to-RGB conversion and can be
+    /// registered with `egui` for rendering. Returns `None` if `update_frame` has
+    /// not yet been called.
     pub fn output_texture(&self) -> Option<&wgpu::Texture> {
         self.output_texture.as_ref()
     }
 }
 
+/// Uploads a single Y, U, or V plane to a `wgpu` texture, handling stride alignment.
+///
+/// `wgpu` requires that the `bytes_per_row` in `write_texture` be a multiple of 256.
+/// Video decoders often produce frames with a different stride (bytes per row).
+///
+/// This function checks if the source `stride` matches the required alignment. If not,
+/// it creates a temporary, correctly aligned buffer and copies the image data into it
+/// row-by-row before uploading to the GPU. This avoids an expensive copy when the
+/// strides already match.
 fn upload_plane(
     logger: Arc<dyn LogSink>,
     tex: &wgpu::Texture,
@@ -493,7 +495,7 @@ fn upload_plane(
     let h = height as usize;
 
     // wgpu requires texture row alignment to be a multiple of 256 bytes.
-    let aligned_bpr = ((w as u32 + 255) / 256) * 256;
+    let aligned_bpr = ((w as u32).div_ceil(256)) * 256;
 
     sink_debug!(
         logger,
@@ -538,7 +540,7 @@ fn upload_plane(
             if valid_len > 0 {
                 aligned_data.extend_from_slice(&data[src_start..src_start + valid_len]);
             }
-            aligned_data.extend(std::iter::repeat(0).take(w - valid_len));
+            aligned_data.extend(std::iter::repeat_n(0, w - valid_len));
         } else {
             // Copy the actual pixel data for the row.
             aligned_data.extend_from_slice(&data[src_start..src_end]);
@@ -546,7 +548,7 @@ fn upload_plane(
 
         // Add padding to the end of the row to meet wgpu's alignment requirement.
         let padding = aligned_bpr as usize - w;
-        aligned_data.extend(std::iter::repeat(0).take(padding));
+        aligned_data.extend(std::iter::repeat_n(0, padding));
     }
 
     queue.write_texture(

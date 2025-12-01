@@ -1,8 +1,6 @@
 use crate::{
     config::Config,
-    tls_utils::{
-        load_signaling_certs, load_signaling_private_key, SIGNALING_CA_PEM,
-    },
+    tls_utils::{SIGNALING_CA_PEM, load_signaling_certs, load_signaling_private_key},
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer};
 use rustls_pemfile::certs;

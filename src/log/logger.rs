@@ -1,10 +1,16 @@
-use crate::log::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle};
+use crate::{
+    config::Config,
+    log::{log_level::LogLevel, log_msg::LogMsg, logger_handle::LoggerHandle},
+};
 
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, TrySendError},
+    sync::{
+        Arc,
+        mpsc::{self, TrySendError},
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -35,9 +41,57 @@ pub struct Logger {
 
 impl Logger {
     #[must_use]
+    pub fn start_client(cap: usize, ui_cap: usize, sample_every: u32, config: Arc<Config>) -> Self {
+        Self::start(
+            "client_log_filename",
+            "client_log_path",
+            cap,
+            ui_cap,
+            sample_every,
+            config,
+        )
+    }
+
+    #[must_use]
+    pub fn start_server(cap: usize, ui_cap: usize, sample_every: u32, config: Arc<Config>) -> Self {
+        Self::start(
+            "server_log_filename",
+            "server_log_path",
+            cap,
+            ui_cap,
+            sample_every,
+            config,
+        )
+    }
+
+    #[must_use]
+    fn start(
+        fn_key: &str,
+        path_key: &str,
+        cap: usize,
+        ui_cap: usize,
+        sample_every: u32,
+        config: Arc<Config>,
+    ) -> Self {
+        let app_name = config.get_non_empty("Loggin", fn_key);
+
+        if let Some(dir_str) = config.get_non_empty("Logging", path_key) {
+            let dir = expand_path(dir_str);
+            Self::start_in_dir(dir, app_name, cap, ui_cap, sample_every)
+        } else {
+            Self::start_default(app_name, cap, ui_cap, sample_every)
+        }
+    }
+
+    #[must_use]
     /// Create logs/ directory next to the executable and start the logger there.
     /// Example: target/debug/logs/roomrtc-20251102_023045-pid1234.log
-    pub fn start_default(app_name: &str, cap: usize, ui_cap: usize, sample_every: u32) -> Self {
+    pub fn start_default(
+        app_name: Option<&str>,
+        cap: usize,
+        ui_cap: usize,
+        sample_every: u32,
+    ) -> Self {
         let base = exe_dir_fallback_cwd().join("logs");
         Self::start_in_dir(base, app_name, cap, ui_cap, sample_every)
     }
@@ -46,7 +100,7 @@ impl Logger {
     /// Creates the directory if missing and chooses a timestamped, per-PID file name.
     pub fn start_in_dir<D: AsRef<Path>>(
         dir: D,
-        app_name: &str,
+        app_name: Option<&str>,
         cap: usize,
         ui_cap: usize,
         sample_every: u32,
@@ -57,12 +111,19 @@ impl Logger {
         // Avoid potential modulo-by-zero later.
         let _sample_every = sample_every.max(1);
 
-        let fname = format!(
-            "{}-{}-pid{}.log",
-            app_name,
-            timestamp_for_filename(), // e.g., 20251102_023045
-            std::process::id()
-        );
+        // Calculamos esto una sola vez para no repetir código
+        let ts = timestamp_for_filename();
+        let pid = std::process::id();
+
+        // fname recibe el valor retornado por el bloque if/else
+        let fname = if let Some(name) = app_name {
+            // Si app_name tiene valor (Some), usamos 'name'
+            format!("{}-{}-pid{}.log", name, ts, pid)
+        } else {
+            // Si es None
+            format!("{}-pid{}.log", ts, pid)
+        };
+
         let file_path = dir.join(&fname);
 
         let (tx, rx) = mpsc::sync_channel::<LogMsg>(cap);
@@ -100,13 +161,13 @@ impl Logger {
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
                     lines_written = lines_written.wrapping_add(1);
-                    if lines_written % FLUSH_BATCH_SIZE == 0 {
+                    if lines_written.is_multiple_of(FLUSH_BATCH_SIZE) {
                         let _ = out.flush();
                     }
 
                     let forward = matches!(m.level, LogLevel::Warn | LogLevel::Error) || {
                         n = n.wrapping_add(1);
-                        n % sample_every == 0
+                        n.is_multiple_of(sample_every)
                     };
 
                     if forward
@@ -284,4 +345,24 @@ fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
         min,
         sec,
     })
+}
+
+fn expand_path(path_str: &str) -> PathBuf {
+    if path_str.starts_with("~") {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()
+            .map(PathBuf::from);
+
+        if let Some(mut home_path) = home {
+            if path_str == "~" {
+                return home_path;
+            }
+            if path_str.starts_with("~/") || path_str.starts_with("~\\") {
+                home_path.push(&path_str[2..]);
+                return home_path;
+            }
+        }
+    }
+    PathBuf::from(path_str)
 }

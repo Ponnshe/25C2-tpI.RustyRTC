@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    config::Config,
     log::log_sink::LogSink,
     logger_debug, logger_error,
     media_agent::{
@@ -26,12 +27,28 @@ pub fn spawn_encoder_worker(
     ma_encoder_event_rx: Receiver<EncoderInstruction>,
     media_agent_event_tx: Sender<MediaAgentEvent>,
     running: Arc<AtomicBool>,
+    config: Arc<Config>,
 ) -> Result<JoinHandle<()>, Error> {
     sink_debug!(logger.clone(), "[Encoder] Starting...");
     thread::Builder::new()
         .name("media-agent-encoder".into())
         .spawn(move || {
-            let mut h264_encoder = H264Encoder::new(TARGET_FPS, BITRATE, KEYINT);
+            let target_fps = config
+                .get("Media", "fps")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(TARGET_FPS);
+
+            let bitrate = config
+                .get("Media", "bitrate")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(BITRATE);
+
+            let keyint = config
+                .get("Media", "keyint")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(KEYINT);
+
+            let mut h264_encoder = H264Encoder::new(target_fps, bitrate, keyint);
 
             while running.load(Ordering::Relaxed) {
                 match ma_encoder_event_rx.recv_timeout(Duration::from_millis(CHANNELS_TIMEOUT)) {

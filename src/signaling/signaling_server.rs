@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::log::log_sink::LogSink;
 use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::auth::{AuthBackend, FileUserStore};
 use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;
@@ -12,7 +12,7 @@ use crate::{sink_info, sink_warn};
 use rustls::{ServerConnection, StreamOwned};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 

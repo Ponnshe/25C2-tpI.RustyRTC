@@ -1,5 +1,6 @@
 pub mod app;
 pub mod camera_manager;
+pub mod config;
 pub mod congestion_controller;
 pub mod connection_manager;
 pub mod core;
@@ -16,4 +17,3 @@ pub mod signaling;
 pub mod signaling_client;
 pub mod srtp;
 pub mod tls_utils;
-pub mod config;
