@@ -14,19 +14,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y llvm-dev libclang-dev clang
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            python3 python3-pip python3-setuptools \
+            llvm-dev libclang-dev clang
 
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
-    - name: Build
-      run: cargo build --all-targets --all-features --verbose
+      - name: Build (OpenCV 4.12.0)
+        env:
+          OPENCV_VERSION: "4.12.0"
+          OPENCV_FORCE_REBUILD: "1"
+        run: cargo build --all-targets --all-features --verbose
 
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Run tests
+        run: cargo test --verbose
 
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features
