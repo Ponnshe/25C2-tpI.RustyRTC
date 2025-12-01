@@ -52,8 +52,8 @@ impl MediaTransport {
     ) -> Self {
         let media_agent = MediaAgent::new(logger.clone(), config.clone());
         let target_fps = config
-            .get_or_default("Media", "fps", "30")
-            .parse()
+            .get("Media", "fps")
+            .and_then(|s| s.parse().ok())
             .unwrap_or(TARGET_FPS);
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
 

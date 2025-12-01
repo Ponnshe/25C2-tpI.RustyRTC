@@ -1,8 +1,6 @@
 use crate::{
     config::Config,
-    tls_utils::{
-        load_signaling_certs, load_signaling_private_key, SIGNALING_CA_PEM,
-    },
+    tls_utils::{SIGNALING_CA_PEM, load_signaling_certs, load_signaling_private_key},
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer};
 use rustls_pemfile::certs;
@@ -11,7 +9,11 @@ use std::{
     sync::Arc,
 };
 
-/// Build a RootCertStore that trusts ONLY the pinned mkcert CA.
+/// Build a `RootCertStore` that trusts ONLY the pinned mkcert CA.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the PEM-encoded root CA is invalid or contains no certificates.
 fn build_pinned_root_store() -> io::Result<RootCertStore> {
     let mut root_store = RootCertStore::empty();
 
@@ -37,9 +39,13 @@ fn build_pinned_root_store() -> io::Result<RootCertStore> {
     Ok(root_store)
 }
 
-/// ClientConfig for the signaling client, using ONLY the pinned mkcert CA.
+/// `ClientConfig` for the signaling client, using ONLY the pinned mkcert CA.
 ///
 /// This is what we'll pass to `SignalingClient::connect_tls`.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the root CA certificate file cannot be read or parsed.
 pub fn build_signaling_client_config() -> io::Result<Arc<ClientConfig>> {
     let root_store = build_pinned_root_store()?;
 
@@ -50,13 +56,17 @@ pub fn build_signaling_client_config() -> io::Result<Arc<ClientConfig>> {
     Ok(Arc::new(config))
 }
 
-/// ServerConfig for the signaling server, using *no* client auth, with our mkcert-issued cert.
+/// `ServerConfig` for the signaling server, using *no* client auth, with our mkcert-issued cert.
 ///
-/// We’ll call this once at startup, then re-use the Arc<ServerConfig>
+/// We’ll call this once at startup, then re-use the `Arc<ServerConfig>`
 /// for each accepted TCP connection (wrapping in `ServerConnection` / `StreamOwned` later).
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the certificate or private key cannot be loaded or are invalid.
 pub fn build_signaling_server_config(config: Arc<Config>) -> io::Result<Arc<ServerConfig>> {
-    let certs = load_signaling_certs(config.clone())?;
-    let key = load_signaling_private_key(config)?;
+    let certs = load_signaling_certs(config.as_ref())?;
+    let key = load_signaling_private_key(config.as_ref())?;
 
     let config = ServerConfig::builder()
         .with_no_client_auth()

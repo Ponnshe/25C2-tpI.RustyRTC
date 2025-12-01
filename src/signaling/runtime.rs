@@ -8,15 +8,14 @@ use crate::signaling::router::Router;
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
 use crate::{sink_debug, sink_info, sink_warn};
-/// Central server loop: owns Router + maps client_id -> Sender<Msg>.
-pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<ServerEvent>) {
-    use ServerEvent::*;
 
+/// Central server loop: owns `Router` + maps `client_id` -> `Sender<Msg>`.
+pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<ServerEvent>) {
     let mut clients: HashMap<ClientId, Sender<SignalingMsg>> = HashMap::new();
 
     while let Ok(ev) = rx.recv() {
         match ev {
-            RegisterClient {
+            ServerEvent::RegisterClient {
                 client_id,
                 to_client,
             } => {
@@ -32,7 +31,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
                 );
             }
 
-            MsgFromClient { client_id, msg } => {
+            ServerEvent::MsgFromClient { client_id, msg } => {
                 sink_debug!(log, "MsgFromClient: client_id={} msg={:?}", client_id, msg);
 
                 // Let Router+Server handle it
@@ -56,7 +55,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
                 }
             }
 
-            Disconnected { client_id } => {
+            ServerEvent::Disconnected { client_id } => {
                 sink_info!(log, "Disconnected: client_id={}", client_id);
                 router.unregister_client(client_id);
                 clients.remove(&client_id);
@@ -73,32 +72,31 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
 /// Helper: short variant name for logging.
 /// We avoid logging full SDP/candidates here.
 #[allow(dead_code)]
-fn msg_name(msg: &SignalingMsg) -> &'static str {
-    use SignalingMsg::*;
+const fn msg_name(msg: &SignalingMsg) -> &'static str {
     match msg {
-        Hello { .. } => "Hello",
-        Login { .. } => "Login",
-        LoginOk { .. } => "LoginOk",
-        LoginErr { .. } => "LoginErr",
-        Register { .. } => "Register",
-        RegisterOk { .. } => "RegisterOk",
-        RegisterErr { .. } => "RegisterErr",
-        ListPeers => "ListPeers",
-        PeersOnline { .. } => "PeersOnline",
-        CreateSession { .. } => "CreateSession",
-        Created { .. } => "Created",
-        Join { .. } => "Join",
-        JoinOk { .. } => "JoinOk",
-        JoinErr { .. } => "JoinErr",
-        PeerJoined { .. } => "PeerJoined",
-        PeerLeft { .. } => "PeerLeft",
-        Offer { .. } => "Offer",
-        Answer { .. } => "Answer",
-        Candidate { .. } => "Candidate",
-        Ack { .. } => "Ack",
-        Bye { .. } => "Bye",
-        Ping { .. } => "Ping",
-        Pong { .. } => "Pong",
+        SignalingMsg::Hello { .. } => "Hello",
+        SignalingMsg::Login { .. } => "Login",
+        SignalingMsg::LoginOk { .. } => "LoginOk",
+        SignalingMsg::LoginErr { .. } => "LoginErr",
+        SignalingMsg::Register { .. } => "Register",
+        SignalingMsg::RegisterOk { .. } => "RegisterOk",
+        SignalingMsg::RegisterErr { .. } => "RegisterErr",
+        SignalingMsg::ListPeers => "ListPeers",
+        SignalingMsg::PeersOnline { .. } => "PeersOnline",
+        SignalingMsg::CreateSession { .. } => "CreateSession",
+        SignalingMsg::Created { .. } => "Created",
+        SignalingMsg::Join { .. } => "Join",
+        SignalingMsg::JoinOk { .. } => "JoinOk",
+        SignalingMsg::JoinErr { .. } => "JoinErr",
+        SignalingMsg::PeerJoined { .. } => "PeerJoined",
+        SignalingMsg::PeerLeft { .. } => "PeerLeft",
+        SignalingMsg::Offer { .. } => "Offer",
+        SignalingMsg::Answer { .. } => "Answer",
+        SignalingMsg::Candidate { .. } => "Candidate",
+        SignalingMsg::Ack { .. } => "Ack",
+        SignalingMsg::Bye { .. } => "Bye",
+        SignalingMsg::Ping { .. } => "Ping",
+        SignalingMsg::Pong { .. } => "Pong",
     }
 }
 #[cfg(test)]
@@ -155,7 +153,7 @@ mod tests {
 
         match msg {
             SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
-            other => panic!("expected LoginOk, got {:?}", other),
+            other => panic!("expected LoginOk, got {other:?}"),
         }
 
         // Optional: drop the event sender so the server loop can exit cleanly

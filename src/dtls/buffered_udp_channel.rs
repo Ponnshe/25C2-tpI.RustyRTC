@@ -50,12 +50,7 @@ impl Read for BufferedUdpChannel {
         loop {
             match self.sock.recv_from(&mut self.recv_buf) {
                 Ok((n, from)) => {
-                    if from == self.peer {
-                        sink_trace!(&self.logger, "[DTLS IO] Read {} bytes from {}", n, from);
-                        // reusar parte del recv_buf sin alocar extra
-                        self.reader = Cursor::new(self.recv_buf[..n].to_vec());
-                        return self.reader.read(buf);
-                    } else {
+                    if from != self.peer {
                         sink_warn!(
                             &self.logger,
                             "[DTLS IO] Ignored packet from unknown peer: {} (expected {})",
@@ -64,6 +59,10 @@ impl Read for BufferedUdpChannel {
                         );
                         continue;
                     }
+
+                    sink_trace!(&self.logger, "[DTLS IO] Read {} bytes from {}", n, from);
+                    self.reader = Cursor::new(self.recv_buf[..n].to_vec());
+                    return self.reader.read(buf);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     return Err(io::Error::from(io::ErrorKind::WouldBlock));

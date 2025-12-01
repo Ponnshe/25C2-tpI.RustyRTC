@@ -38,9 +38,13 @@ impl SignalingClient {
     const PING_INTERVAL_SECS: u64 = 5;
     const TIMEOUT_SECS: u64 = 15;
 
-    /// Build a rustls ClientConfig using the pinned mkcert CA.
+    /// Build a rustls `ClientConfig` using the pinned mkcert CA.
     ///
     /// This trusts *only* the private CA we shipped with the app.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the root CA certificate file cannot be read or parsed.
     pub fn default_tls_config() -> io::Result<Arc<ClientConfig>> {
         build_signaling_client_config()
     }
@@ -51,6 +55,10 @@ impl SignalingClient {
     /// This returns `Ok` as soon as the TCP connection is established and the
     /// network thread is spawned. Any later protocol/IO errors are reported via
     /// `SignalingEvent::Error` + `SignalingEvent::Disconnected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the initial TCP connection to the server fails.
     pub fn connect(addr: &str, log: Arc<dyn LogSink>) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
 
@@ -83,6 +91,11 @@ impl SignalingClient {
     }
 
     /// TLS-enabled constructor (using `rustls`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the TCP connection fails, if the provided `domain`
+    /// is not a valid DNS name, or if the TLS session cannot be established.
     pub fn connect_tls(
         addr: &str,
         // DNS name used for TLS SNI / certificate verification
@@ -121,7 +134,7 @@ impl SignalingClient {
         let (ev_tx, ev_rx) = mpsc::channel::<SignalingEvent>();
 
         // 4) Reuse the same generic network thread.
-        Self::spawn_network_thread(format!("tls://{}", addr), tls_stream, cmd_rx, ev_tx, log);
+        Self::spawn_network_thread(format!("tls://{addr}"), tls_stream, cmd_rx, ev_tx, log);
 
         Ok(Self {
             cmd_tx,
@@ -134,6 +147,7 @@ impl SignalingClient {
     /// - Reads incoming messages
     /// - Processes commands (Send/Disconnect)
     /// - Sends periodic Ping and enforces heartbeat timeout
+    #[allow(clippy::too_many_lines)]
     fn spawn_network_thread<S>(
         addr: String,
         mut stream: S,
@@ -158,7 +172,7 @@ impl SignalingClient {
                     addr,
                     err
                 );
-                let _ = ev_tx.send(SignalingEvent::Error(format!("hello failed: {:?}", err)));
+                let _ = ev_tx.send(SignalingEvent::Error(format!("hello failed: {err:?}")));
                 let _ = ev_tx.send(SignalingEvent::Disconnected);
                 return;
             }
@@ -200,8 +214,7 @@ impl SignalingClient {
                                             err
                                         );
                                         let _ = ev_tx.send(SignalingEvent::Error(format!(
-                                            "protocol error: {:?}",
-                                            err
+                                            "protocol error: {err:?}"
                                         )));
                                     }
                                 }
@@ -272,7 +285,7 @@ impl SignalingClient {
                             err
                         );
                         let _ =
-                            ev_tx.send(SignalingEvent::Error(format!("protocol error: {:?}", err)));
+                            ev_tx.send(SignalingEvent::Error(format!("protocol error: {err:?}")));
                         break;
                     }
                 }
@@ -314,21 +327,19 @@ impl SignalingClient {
                                     err
                                 );
                                 let _ = ev_tx.send(SignalingEvent::Error(format!(
-                                    "protocol error: {:?}",
-                                    err
+                                    "protocol error: {err:?}"
                                 )));
                             }
                         }
                         break;
-                    } else {
-                        sink_trace!(
-                            log,
-                            "[signaling_client] sent Ping {} to {} (idle {:?})",
-                            nonce,
-                            addr,
-                            idle
-                        );
                     }
+                    sink_trace!(
+                        log,
+                        "[signaling_client] sent Ping {} to {} (idle {:?})",
+                        nonce,
+                        addr,
+                        idle
+                    );
                     nonce = nonce.wrapping_add(1);
                     next_ping = now + ping_interval;
                 }
@@ -347,6 +358,11 @@ impl SignalingClient {
     /// Note: actual IO happens in the network thread; any IO/protocol errors
     /// will be reported asynchronously as `SignalingEvent::Error`. From here we
     /// can only tell if the client is already disconnected.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SignalingClientError::Disconnected` if the command channel to the
+    /// network thread is closed.
     pub fn send(&self, msg: SignalingMsg) -> Result<(), SignalingClientError> {
         self.cmd_tx
             .send(SignalingCommand::Send(msg))
@@ -361,36 +377,36 @@ impl SignalingClient {
     }
 
     /// Polls the next pending event from the background thread.
+    #[must_use]
     pub fn try_recv(&self) -> Option<SignalingEvent> {
         self.events.try_recv().ok()
     }
 }
 
-fn msg_name(msg: &SignalingMsg) -> &'static str {
-    use SignalingMsg::*;
+const fn msg_name(msg: &SignalingMsg) -> &'static str {
     match msg {
-        Hello { .. } => "Hello",
-        Login { .. } => "Login",
-        LoginOk { .. } => "LoginOk",
-        LoginErr { .. } => "LoginErr",
-        Register { .. } => "Register",
-        RegisterOk { .. } => "RegisterOk",
-        RegisterErr { .. } => "RegisterErr",
-        ListPeers => "ListPeers",
-        PeersOnline { .. } => "PeersOnline",
-        CreateSession { .. } => "CreateSession",
-        Created { .. } => "Created",
-        Join { .. } => "Join",
-        JoinOk { .. } => "JoinOk",
-        JoinErr { .. } => "JoinErr",
-        PeerJoined { .. } => "PeerJoined",
-        PeerLeft { .. } => "PeerLeft",
-        Offer { .. } => "Offer",
-        Answer { .. } => "Answer",
-        Candidate { .. } => "Candidate",
-        Ack { .. } => "Ack",
-        Bye { .. } => "Bye",
-        Ping { .. } => "Ping",
-        Pong { .. } => "Pong",
+        SignalingMsg::Hello { .. } => "Hello",
+        SignalingMsg::Login { .. } => "Login",
+        SignalingMsg::LoginOk { .. } => "LoginOk",
+        SignalingMsg::LoginErr { .. } => "LoginErr",
+        SignalingMsg::Register { .. } => "Register",
+        SignalingMsg::RegisterOk { .. } => "RegisterOk",
+        SignalingMsg::RegisterErr { .. } => "RegisterErr",
+        SignalingMsg::ListPeers => "ListPeers",
+        SignalingMsg::PeersOnline { .. } => "PeersOnline",
+        SignalingMsg::CreateSession { .. } => "CreateSession",
+        SignalingMsg::Created { .. } => "Created",
+        SignalingMsg::Join { .. } => "Join",
+        SignalingMsg::JoinOk { .. } => "JoinOk",
+        SignalingMsg::JoinErr { .. } => "JoinErr",
+        SignalingMsg::PeerJoined { .. } => "PeerJoined",
+        SignalingMsg::PeerLeft { .. } => "PeerLeft",
+        SignalingMsg::Offer { .. } => "Offer",
+        SignalingMsg::Answer { .. } => "Answer",
+        SignalingMsg::Candidate { .. } => "Candidate",
+        SignalingMsg::Ack { .. } => "Ack",
+        SignalingMsg::Bye { .. } => "Bye",
+        SignalingMsg::Ping { .. } => "Ping",
+        SignalingMsg::Pong { .. } => "Pong",
     }
 }

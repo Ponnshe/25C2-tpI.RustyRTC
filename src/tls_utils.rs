@@ -1,13 +1,12 @@
 use crate::config::Config;
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
     RootCertStore,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
-use rustls_pemfile::{certs, read_one, Item};
+use rustls_pemfile::{Item, certs, read_one};
 use std::{
     fs::File,
     io::{self, BufReader, Cursor},
-    sync::Arc,
 };
 
 use openssl::hash::MessageDigest;
@@ -16,20 +15,24 @@ use openssl::x509::X509;
 // ----------------------------------------------------------------------
 // ROOT STORE AND CONSTANTS
 // ----------------------------------------------------------------------
-// --- CONSTANTES SIGNALING (Rustls / mkcert) ---
+// --- Signaling Constants (Rustls / mkcert) ---
 pub const SIGNALING_CA_PEM: &[u8] = include_bytes!("../certs/signaling/rootCA.pem");
 pub const SIGNALING_CERT_PATH: &str = "certs/signaling/cert.pem";
 pub const SIGNALING_KEY_PATH: &str = "certs/signaling/key.pem";
 pub const SIGNALING_DOMAIN: &str = "signal.internal";
 
-// --- CONSTANTES DTLS (OpenSSL / Self-signed) ---
+// --- DTLS Constants (OpenSSL / Self-signed) ---
 pub const DTLS_CERT_PATH: &str = "certs/dtls/cert.pem";
 pub const DTLS_KEY_PATH: &str = "certs/dtls/key.pem";
-// Para DTLS pinning, usamos el certificado del peer como si fuera la CA
+// For DTLS pinning, we use the peer's certificate as if it were the CA
 pub const DTLS_CA_PATH: &str = "certs/dtls/cert.pem";
 pub const DTLS_DOMAIN: &str = "dtls.internal";
 
-/// Construye un RootCertStore que confía ÚNICAMENTE en la CA interna.
+/// Builds a `RootCertStore` that trusts ONLY the internal CA.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the PEM-encoded root CA is invalid or contains no certificates.
 pub fn build_pinned_root_store() -> io::Result<RootCertStore> {
     let mut root_store = RootCertStore::empty();
     let mut cursor = Cursor::new(SIGNALING_CA_PEM);
@@ -55,10 +58,14 @@ pub fn build_pinned_root_store() -> io::Result<RootCertStore> {
 }
 
 // ----------------------------------------------------------------------
-// CARGA DE CERTIFICADOS Y LLAVES (Lógica robusta)
+// CERTIFICATE AND KEY LOADING (Robust Logic)
 // ----------------------------------------------------------------------
 
-/// Carga la cadena de certificados del servidor desde un archivo PEM.
+/// Loads a certificate chain from a PEM file.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the file cannot be opened or if the PEM content is invalid.
 pub fn load_certs(path: &str) -> io::Result<Vec<CertificateDer<'static>>> {
     let file = File::open(path)
         .map_err(|e| io::Error::new(e.kind(), format!("opening cert {path}: {e}")))?;
@@ -78,21 +85,26 @@ pub fn load_certs(path: &str) -> io::Result<Vec<CertificateDer<'static>>> {
     Ok(certs)
 }
 
-/// Carga la clave privada desde un archivo PEM.
-/// Soporta PKCS1, PKCS8 y Sec1 (EC).
+/// Loads a private key from a PEM file.
+/// Supports PKCS1, PKCS8, and Sec1 (EC) formats.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the file cannot be opened, is malformed,
+/// or does not contain a valid private key.
 pub fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
     let file = File::open(path)
         .map_err(|e| io::Error::new(e.kind(), format!("opening key {path}: {e}")))?;
     let mut reader = BufReader::new(file);
 
-    // Iteramos sobre los items del PEM hasta encontrar una llave válida.
+    // Iterate through PEM items until a valid key is found.
     loop {
         match read_one(&mut reader) {
             Ok(Some(Item::Pkcs1Key(key))) => return Ok(key.into()),
             Ok(Some(Item::Pkcs8Key(key))) => return Ok(key.into()),
             Ok(Some(Item::Sec1Key(key))) => return Ok(key.into()),
-            Ok(None) => break,       // Fin del archivo
-            Ok(Some(_)) => continue, // Es un certificado u otro item, ignorar
+            Ok(None) => break, // End of file
+            Ok(Some(_)) => {}  // It's a certificate or other item, ignore
             Err(e) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -108,55 +120,63 @@ pub fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
     ))
 }
 
-pub fn load_signaling_certs(config: Arc<Config>) -> io::Result<Vec<CertificateDer<'static>>> {
-    let path = config.get_or_default(
-        "TLS",
-        "signaling_cert",
-        "certs/signaling/cert.pem",
-    );
+/// # Errors
+///
+/// Returns `io::Error` if the certificate file path is invalid or the file cannot be read.
+pub fn load_signaling_certs(config: &Config) -> io::Result<Vec<CertificateDer<'static>>> {
+    let path = config.get_non_empty_or_default("TLS", "signaling_cert", "certs/signaling/cert.pem");
     load_certs(path)
 }
 
-pub fn load_signaling_private_key(config: Arc<Config>) -> io::Result<PrivateKeyDer<'static>> {
-    let path = config.get_or_default(
-        "TLS",
-        "signaling_key",
-        "certs/signaling/key.pem",
-    );
+/// # Errors
+///
+/// Returns `io::Error` if the key file path is invalid or the file cannot be read.
+pub fn load_signaling_private_key(config: &Config) -> io::Result<PrivateKeyDer<'static>> {
+    let path = config.get_non_empty_or_default("TLS", "signaling_key", "certs/signaling/key.pem");
     load_private_key(path)
 }
 
-pub fn load_dtls_certs(config: Arc<Config>) -> io::Result<Vec<CertificateDer<'static>>> {
-    let path = config.get_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
+/// # Errors
+///
+/// Returns `io::Error` if the certificate file path is invalid or the file cannot be read.
+pub fn load_dtls_certs(config: &Config) -> io::Result<Vec<CertificateDer<'static>>> {
+    let path = config.get_non_empty_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
     load_certs(path)
 }
 
-pub fn load_dtls_private_key(config: Arc<Config>) -> io::Result<PrivateKeyDer<'static>> {
-    let path = config.get_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
+/// # Errors
+///
+/// Returns `io::Error` if the key file path is invalid or the file cannot be read.
+pub fn load_dtls_private_key(config: &Config) -> io::Result<PrivateKeyDer<'static>> {
+    let path = config.get_non_empty_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
     load_private_key(path)
 }
 
-/// Calcula el fingerprint SHA-256 del certificado local para ponerlo en el SDP.
-/// Formato: "XX:YY:ZZ:..." (mayúsculas)
-pub fn get_local_fingerprint_sha256(config: Arc<Config>) -> std::io::Result<String> {
-    // Reusamos CN_PATH o la ruta hardcoded
+/// Calculates the SHA-256 fingerprint of the local DTLS certificate for use in SDP.
+/// Format: "XX:YY:ZZ:..." (uppercase)
+///
+/// # Errors
+///
+/// Returns `io::Error` if the certificate cannot be loaded, parsed, or if the
+/// hashing operation fails.
+pub fn get_local_fingerprint_sha256(config: &Config) -> std::io::Result<String> {
     let certs_der = load_dtls_certs(config)?;
 
     if certs_der.is_empty() {
         return Err(io::Error::other("No certs found"));
     }
 
-    // Parsear con OpenSSL
+    // Parse with OpenSSL
     let x509 = X509::from_der(&certs_der[0])
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    // Calcular Digest SHA256
+    // Calculate SHA256 Digest
     let digest = x509
         .digest(MessageDigest::sha256())
         .map_err(io::Error::other)?;
 
-    // Formatear a Hex separado por colons
-    let hex: Vec<String> = digest.iter().map(|b| format!("{:02X}", b)).collect();
+    // Format to Hex separated by colons
+    let hex: Vec<String> = digest.iter().map(|b| format!("{b:02X}")).collect();
 
     Ok(hex.join(":"))
 }

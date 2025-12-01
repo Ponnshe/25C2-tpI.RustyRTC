@@ -22,8 +22,8 @@ pub struct SrtpContext {
 }
 
 impl SrtpContext {
-    pub fn new(logger: Arc<dyn LogSink>, master_keys: SrtpEndpointKeys) -> Self {
-        let session_keys = derive_session_keys(&master_keys);
+    pub fn new(logger: Arc<dyn LogSink>, master_keys: &SrtpEndpointKeys) -> Self {
+        let session_keys = derive_session_keys(master_keys);
 
         // --- DEBUG LOGGING: KEYS ---
         sink_debug!(
@@ -43,6 +43,8 @@ impl SrtpContext {
         }
     }
 
+    /// # Errors
+    /// Returns an error string if the packet is too short or other processing fails.
     pub fn protect(&mut self, ssrc: u32, packet: &mut Vec<u8>) -> Result<(), String> {
         if packet.len() < 12 {
             return Err("Packet too short for RTP header".into());
@@ -50,7 +52,7 @@ impl SrtpContext {
 
         let seq = BigEndian::read_u16(&packet[2..4]);
         let roc = self.get_or_create_roc(ssrc, seq);
-        let index = ((roc as u64) << 16) | (seq as u64);
+        let index = (u64::from(roc) << 16) | u64::from(seq);
 
         let header_len = get_rtp_header_len(packet)?;
 
@@ -88,6 +90,9 @@ impl SrtpContext {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error string if the packet is too short, if authentication fails,
+    /// or if a replay attack is detected.
     pub fn unprotect(&mut self, packet: &mut Vec<u8>) -> Result<(), String> {
         if packet.len() < 12 + AUTH_TAG_LEN {
             return Err("Packet too short for SRTP".into());
@@ -105,13 +110,10 @@ impl SrtpContext {
         let ssrc = BigEndian::read_u32(&content[8..12]);
 
         let roc = self.estimate_roc(ssrc, seq);
-        let index = ((roc as u64) << 16) | (seq as u64);
+        let index = (u64::from(roc) << 16) | u64::from(seq);
 
         // 3. Replay Check
-        let window = self
-            .replay_windows
-            .entry(ssrc)
-            .or_insert_with(ReplayWindow::new);
+        let window = self.replay_windows.entry(ssrc).or_default();
 
         if window.is_replay(index) {
             sink_warn!(
@@ -121,7 +123,7 @@ impl SrtpContext {
                 seq,
                 index
             );
-            return Err(format!("Replay detected: ssrc={:#x} seq={}", ssrc, seq));
+            return Err(format!("Replay detected: ssrc={ssrc:#x} seq={seq}"));
         }
 
         // 4. Verify HMAC
@@ -139,12 +141,7 @@ impl SrtpContext {
         if !constant_time_eq(computed_tag, received_tag) {
             sink_error!(
                 self.logger,
-                "[SRTP] Auth Fail details:\n\tSSRC: {:#x}\n\tSeq: {}\n\tROC: {}\n\tExpected Tag: {:02X?}\n\tReceived Tag: {:02X?}",
-                ssrc,
-                seq,
-                roc,
-                computed_tag,
-                received_tag
+                "[SRTP] Auth Fail details:\n\tSSRC: {ssrc:#x}\n\tSeq: {seq}\n\tROC: {roc}\n\tExpected Tag: {computed_tag:02X?}\n\tReceived Tag: {received_tag:02X?}",
             );
             return Err("SRTP Auth Tag Mismatch".into());
         }
@@ -184,7 +181,7 @@ impl SrtpContext {
         let mut roc = *self.rocs.get(&ssrc).unwrap_or(&0);
 
         if seq < last_seq {
-            let diff = (last_seq as u32).wrapping_sub(seq as u32);
+            let diff = u32::from(last_seq).wrapping_sub(u32::from(seq));
             if diff > 1000 {
                 roc = roc.wrapping_add(1);
             }
@@ -196,13 +193,12 @@ impl SrtpContext {
     }
 
     fn estimate_roc(&self, ssrc: u32, seq: u16) -> u32 {
-        let last_seq = match self.last_seqs.get(&ssrc) {
-            Some(&s) => s,
-            None => return 0,
+        let Some(&last_seq) = self.last_seqs.get(&ssrc) else {
+            return 0;
         };
         let last_roc = *self.rocs.get(&ssrc).unwrap_or(&0);
 
-        let delta = (seq as i32) - (last_seq as i32);
+        let delta = i32::from(seq) - i32::from(last_seq);
 
         if delta <= -32768 {
             return last_roc.wrapping_add(1);

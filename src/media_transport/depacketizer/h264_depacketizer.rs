@@ -22,6 +22,7 @@ pub struct H264Depacketizer {
 }
 
 impl H264Depacketizer {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -120,25 +121,25 @@ impl H264Depacketizer {
     }
 
     fn push_slice_if_new(&mut self, nalu: &[u8]) {
-        let is_dup = self
+        if self
             .nalus
             .last()
-            .map(|prev| prev.as_slice() == nalu)
-            .unwrap_or(false);
-        if !is_dup {
-            self.nalus.push(nalu.to_vec());
+            .is_some_and(|prev| prev.as_slice() == nalu)
+        {
+            return;
         }
+        self.nalus.push(nalu.to_vec());
     }
 
     fn push_vec_if_new(&mut self, nalu: Vec<u8>) {
-        let is_dup = self
+        if self
             .nalus
             .last()
-            .map(|prev| prev.as_slice() == nalu.as_slice())
-            .unwrap_or(false);
-        if !is_dup {
-            self.nalus.push(nalu);
+            .is_some_and(|prev| prev.as_slice() == nalu.as_slice())
+        {
+            return;
         }
+        self.nalus.push(nalu);
     }
 
     fn finish_if_marker(&mut self, marker: bool) -> Option<Vec<u8>> {
@@ -181,7 +182,7 @@ mod tests {
     use super::*;
 
     // ---------- helpers ----------
-
+    #[allow(clippy::cast_possible_truncation)]
     fn mk_nalu(ntype: u8, nri: u8, payload_len: usize) -> Vec<u8> {
         assert!((1..=23).contains(&ntype));
         let header = (nri & 0x60) | (ntype & 0x1F); // F=0
@@ -206,7 +207,7 @@ mod tests {
         assert_eq!(splits.iter().sum::<usize>(), payload.len());
 
         let mut out = Vec::with_capacity(splits.len());
-        let mut off = 0usize;
+        let mut off = 0_usize;
         for (i, &sz) in splits.iter().enumerate() {
             let s = if i == 0 { 0x80 } else { 0x00 };
             let e = if i + 1 == splits.len() { 0x40 } else { 0x00 };

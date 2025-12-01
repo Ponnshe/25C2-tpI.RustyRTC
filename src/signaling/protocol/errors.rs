@@ -20,12 +20,12 @@ pub enum FrameError {
 
 impl From<io::Error> for FrameError {
     fn from(e: io::Error) -> Self {
-        FrameError::Io(e)
+        Self::Io(e)
     }
 }
 
 impl From<ProtoError> for FrameError {
     fn from(e: ProtoError) -> Self {
-        FrameError::Proto(e)
+        Self::Proto(e)
     }
 }

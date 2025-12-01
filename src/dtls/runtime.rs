@@ -7,7 +7,7 @@ use crate::{
     log::log_sink::LogSink,
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
     srtp::{SrtpEndpointKeys, SrtpProfile, SrtpSessionConfig},
-    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH, load_dtls_certs, load_dtls_private_key},
+    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH},
 };
 use openssl::ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream};
 use std::{
@@ -104,8 +104,8 @@ fn dtls_connect_openssl(
     let mut builder =
         create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
 
-    let cert_path = config.get_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
-    let key_path = config.get_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
+    let cert_path = config.get_non_empty_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
+    let key_path = config.get_non_empty_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
 
     sink_debug!(
         &logger,
@@ -145,8 +145,8 @@ fn dtls_accept_openssl(
     let mut builder =
         create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
 
-    let cert_path = config.get_or_default("TLS", "dtls_cert", DTLS_CERT_PATH);
-    let key_path = config.get_or_default("TLS", "dtls_key", DTLS_KEY_PATH);
+    let cert_path = config.get_non_empty_or_default("TLS", "dtls_cert", DTLS_CERT_PATH);
+    let key_path = config.get_non_empty_or_default("TLS", "dtls_key", DTLS_KEY_PATH);
 
     sink_debug!(
         &logger,

@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::log::log_sink::LogSink;
 use crate::log::NoopLogSink;
+use crate::log::log_sink::LogSink;
 use crate::signaling::auth::{AuthBackend, FileUserStore};
 use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;
@@ -10,18 +10,19 @@ use crate::signaling::transport::spawn_tls_connection_thread;
 use crate::signaling::types::ClientId;
 use crate::{sink_info, sink_warn};
 use rustls::{ServerConnection, StreamOwned};
+use std::io;
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Duration;
-use std::{io, thread};
 
 /// Top-level runtime object for the signaling service.
 ///
 /// This owns:
 /// - bind address
 /// - logging sink
-/// - auth backend (e.g. FileUserStore)
+/// - auth backend (e.g. `FileUserStore`)
 ///   and knows how to spin up the central Router+Server loop plus per-connection threads.
 pub struct SignalingServer {
     bind_addr: String,
@@ -53,7 +54,11 @@ impl SignalingServer {
         }
     }
 
-    /// Construct a server that uses a FileUserStore at `users_path`.
+    /// Construct a server that uses a `FileUserStore` at `users_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the user store file cannot be opened.
     pub fn with_file_store<S>(
         bind_addr: S,
         log: Arc<dyn LogSink>,
@@ -73,7 +78,11 @@ impl SignalingServer {
         })
     }
 
-    /// Convenience: FileUserStore + NoopLogSink.
+    /// Convenience: `FileUserStore` + `NoopLogSink`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the user store file cannot be opened.
     pub fn with_file_store_no_log<S>(
         bind_addr: S,
         users_path: PathBuf,
@@ -84,6 +93,11 @@ impl SignalingServer {
     {
         Self::with_file_store(bind_addr, Arc::new(NoopLogSink), users_path, config)
     }
+
+    /// # Errors
+    ///
+    /// Returns an `io::Error` if the TLS configuration cannot be built or if the
+    /// server fails to bind to the specified address.
     pub fn run(self) -> io::Result<()> {
         let Self {
             bind_addr,
@@ -168,16 +182,7 @@ impl SignalingServer {
             // Combine TLS session + TCP into a single Read+Write stream.
             let tls_stream = StreamOwned::new(conn, stream);
 
-            if let Err(e) =
-                spawn_tls_connection_thread(client_id, tls_stream, server_tx_clone, log_for_conn)
-            {
-                sink_warn!(
-                    log,
-                    "failed to spawn TLS connection thread for client {}: {:?}",
-                    client_id,
-                    e
-                );
-            }
+            spawn_tls_connection_thread(client_id, tls_stream, server_tx_clone, log_for_conn);
         }
 
         Ok(())

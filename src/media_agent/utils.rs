@@ -13,12 +13,12 @@ pub fn now_millis() -> u128 {
 }
 
 pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
-    // Si la cámara no devolvió un frame válido
+    // If the camera did not return a valid frame
     if mat.empty() {
         return None;
     }
 
-    // Convertimos BGR → RGBA
+    // Convert BGR → RGBA
     let mut rgba = Mat::default();
     if let Err(e) = imgproc::cvt_color(
         mat,
@@ -31,12 +31,12 @@ pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
         return None;
     }
 
-    // Obtenemos los bytes
+    // Get the bytes
     let size = rgba.size().ok()?;
     let width = size.width as usize;
     let height = size.height as usize;
 
-    // Esto usa el trait MatTraitManual (ya implementado por Mat)
+    // This uses the MatTraitManual trait (already implemented by Mat)
     let data = rgba.data_bytes().ok()?;
 
     Some(egui::ColorImage::from_rgba_unmultiplied(
@@ -45,6 +45,7 @@ pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
     ))
 }
 
+#[allow(clippy::many_single_char_names)]
 pub fn i420_to_rgb(yuv_bytes: &[u8], width: u32, height: u32) -> Vec<u8> {
     let frame_size = (width * height) as usize;
     let chroma_size = frame_size / 4;
@@ -62,7 +63,7 @@ pub fn i420_to_rgb(yuv_bytes: &[u8], width: u32, height: u32) -> Vec<u8> {
             let v = v_plane[((j / 2) * (width / 2) + (i / 2)) as usize] as f32;
 
             let r = (y + 1.402 * (v - 128.0)).clamp(0.0, 255.0);
-            let g = (y - 0.344136 * (u - 128.0) - 0.714136 * (v - 128.0)).clamp(0.0, 255.0);
+            let g = (y - 0.344_136 * (u - 128.0) - 0.714_136 * (v - 128.0)).clamp(0.0, 255.0);
             let b = (y + 1.772 * (u - 128.0)).clamp(0.0, 255.0);
 
             let offset = ((j * width + i) * 3) as usize;

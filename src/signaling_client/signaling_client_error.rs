@@ -18,10 +18,10 @@ pub enum SignalingClientError {
 impl fmt::Display for SignalingClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SignalingClientError::Io(e) => write!(f, "IO error: {e}"),
-            SignalingClientError::Frame(e) => write!(f, "protocol error: {:?}", e),
-            SignalingClientError::Poisoned => write!(f, "stream lock poisoned"),
-            SignalingClientError::Disconnected => write!(f, "signaling client disconnected"),
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Frame(e) => write!(f, "protocol error: {e:?}"),
+            Self::Poisoned => write!(f, "stream lock poisoned"),
+            Self::Disconnected => write!(f, "signaling client disconnected"),
         }
     }
 }

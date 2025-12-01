@@ -51,6 +51,7 @@ impl VideoFrame {
     }
 
     #[must_use]
+    #[allow(clippy::many_single_char_names)]
     pub fn synthetic_yuv420(width: u32, height: u32, tick: u8) -> Self {
         let w = width as usize;
         let h = height as usize;

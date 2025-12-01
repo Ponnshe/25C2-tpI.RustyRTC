@@ -1,7 +1,12 @@
-use super::{FrameError, MsgType, PROTO_VERSION, ProtoError};
+use super::{PROTO_VERSION, ProtoError, errors::FrameError, msg_type::MsgType};
 use std::io::{self, Read, Write};
 
 /// Write a single frame: [ver][type][reserved u16=0][len u32][body...]
+///
+/// # Errors
+///
+/// Returns an `io::Error` if the body is too large or if writing to the stream fails.
+#[allow(clippy::cast_possible_truncation)]
 pub fn write_frame<W: Write>(w: &mut W, msg_type: MsgType, body: &[u8]) -> io::Result<()> {
     if body.len() > u32::MAX as usize {
         return Err(io::Error::new(
@@ -23,6 +28,11 @@ pub fn write_frame<W: Write>(w: &mut W, msg_type: MsgType, body: &[u8]) -> io::R
 }
 
 /// Read a single frame, enforcing a max body length.
+///
+/// # Errors
+///
+/// Returns a `FrameError` if reading from the stream fails, the frame is malformed,
+/// the message type is unknown, or the body length exceeds `max_body`.
 pub fn read_frame<R: Read>(r: &mut R, max_body: usize) -> Result<(MsgType, Vec<u8>), FrameError> {
     let mut header = [0u8; 8];
 

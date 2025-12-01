@@ -75,11 +75,11 @@ impl RtpSession {
             (
                 Some(Arc::new(Mutex::new(SrtpContext::new(
                     logger.clone(),
-                    srtp_session_cfg.inbound.clone(),
+                    &srtp_session_cfg.inbound,
                 )))),
                 Some(Arc::new(Mutex::new(SrtpContext::new(
                     logger.clone(),
-                    srtp_session_cfg.outbound.clone(),
+                    &srtp_session_cfg.outbound,
                 )))),
             )
         } else {
@@ -253,28 +253,25 @@ impl RtpSession {
                         }
 
                         // 2) Bind a pending stream by PT, then move it to the map
-                        if let Ok(mut pend) = pending_recv.lock() {
-                            if let Some(idx) = pend.iter().position(|s| s.codec.payload_type == pt)
-                            {
-                                let mut st = pend.swap_remove(idx);
-                                st.remote_ssrc = Some(ssrc);
-                                st.receive_rtp_packet(rtp);
-                                if let Ok(mut map) = recv_map.lock() {
-                                    map.insert(ssrc, st);
-                                }
-                                continue;
-                            } else {
-                                sink_warn!(
-                                    logger,
-                                    "[RTP] couldn't map codec to payload type on the pool of pending receivers: {pt}"
-                                );
+                        if let Ok(mut pend) = pending_recv.lock()
+                            && let Some(idx) = pend.iter().position(|s| s.codec.payload_type == pt)
+                        {
+                            let mut st = pend.swap_remove(idx);
+                            st.remote_ssrc = Some(ssrc);
+                            st.receive_rtp_packet(rtp);
+                            if let Ok(mut map) = recv_map.lock() {
+                                map.insert(ssrc, st);
                             }
+                            continue;
                         }
 
                         // 3) Unknown SSRC/PT
-                        //
-
-                        sink_warn!(logger, "[RTP] unknown remote SSRC={:#010x} PT={}", ssrc, pt);
+                        sink_warn!(
+                            logger,
+                            "[RTP] unknown remote SSRC={:#010x} PT={}, couldn't map codec to payload type on the pool of pending receivers",
+                            ssrc,
+                            pt
+                        );
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         sink_trace!(logger, "[RTP Session] Received nothing in timeout");

@@ -97,7 +97,7 @@ mod tests {
 
         match h.try_log(LogLevel::Info, "second", "test::target") {
             Err(TrySendError::Full(_)) => {} // expected
-            other => panic!("expected Full, got: {:?}", other),
+            other => panic!("expected Full, got: {other:?}"),
         }
     }
 
@@ -110,7 +110,7 @@ mod tests {
 
         match h.try_log(LogLevel::Error, "won't send", "test::target") {
             Err(TrySendError::Disconnected(_)) => {} // expected
-            other => panic!("expected Disconnected, got: {:?}", other),
+            other => panic!("expected Disconnected, got: {other:?}"),
         }
     }
 }

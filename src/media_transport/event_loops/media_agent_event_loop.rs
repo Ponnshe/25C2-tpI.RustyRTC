@@ -44,7 +44,7 @@ impl MediaAgentEventLoop {
             target_fps,
         }
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::similar_names)]
     #[allow(clippy::expect_used)]
     pub fn start(
         &mut self,

@@ -18,6 +18,10 @@ pub use msg_type::MsgType;
 pub use types::{SessionCode, SessionId, TxnId, UserName};
 
 /// High-level: write a full framed Msg to the wire.
+///
+/// # Errors
+///
+/// Returns `FrameError` if the message cannot be encoded or written to the stream.
 pub fn write_msg<W: Write>(w: &mut W, msg: &SignalingMsg) -> Result<(), FrameError> {
     let (msg_type, body) = encode_msg(msg)?;
     write_frame(w, msg_type, &body)?;
@@ -25,6 +29,11 @@ pub fn write_msg<W: Write>(w: &mut W, msg: &SignalingMsg) -> Result<(), FrameErr
 }
 
 /// High-level: read a full framed Msg from the wire.
+///
+/// # Errors
+///
+/// Returns `FrameError` if a complete frame cannot be read or if the message body
+/// cannot be decoded.
 pub fn read_msg<R: Read>(r: &mut R) -> Result<SignalingMsg, FrameError> {
     let (msg_type, body) = read_frame(r, MAX_BODY_LEN)?;
     let msg = decode_msg(msg_type, &body)?;
@@ -35,6 +44,7 @@ pub fn read_msg<R: Read>(r: &mut R) -> Result<SignalingMsg, FrameError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use peer_status::PeerStatus;
     use std::io::Cursor as IoCursor;
 
     fn roundtrip(msg: &SignalingMsg) -> SignalingMsg {
@@ -74,7 +84,10 @@ mod tests {
         assert_eq!(decoded_list, list);
 
         let peers = SignalingMsg::PeersOnline {
-            peers: vec!["alice".into(), "bob".into()],
+            peers: vec![
+                ("alice".to_string(), PeerStatus::Available),
+                ("bob".to_string(), PeerStatus::Available),
+            ],
         };
         let decoded_peers = roundtrip(&peers);
         assert_eq!(decoded_peers, peers);
@@ -155,6 +168,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn roundtrip_ping_pong() {
         let ping = SignalingMsg::Ping { nonce: 123 };
         let pong = SignalingMsg::Pong { nonce: 456 };
@@ -205,7 +219,7 @@ mod tests {
 
         let res = decode_msg(MsgType::Hello, &body);
         match res {
-            Err(ProtoError::Truncated) => {}
+            Err(ProtoError::Truncated) => {} // expected
             other => panic!("expected Truncated, got {:?}", other),
         }
     }
@@ -219,7 +233,7 @@ mod tests {
 
         let res = decode_msg(MsgType::Hello, &body);
         match res {
-            Err(ProtoError::InvalidUtf8) => {}
+            Err(ProtoError::InvalidUtf8) => {} // expected
             other => panic!("expected InvalidUtf8, got {:?}", other),
         }
     }
@@ -275,7 +289,7 @@ mod tests {
         let res = read_frame(&mut cursor, MAX_BODY_LEN);
 
         match res {
-            Err(FrameError::Proto(ProtoError::UnknownType(0xFF))) => {}
+            Err(FrameError::Proto(ProtoError::UnknownType(0xFF))) => {} // expected
             other => panic!("expected UnknownType(0xFF), got {:?}", other),
         }
     }
@@ -293,7 +307,7 @@ mod tests {
         let res = read_frame(&mut buf, 1); // smaller than body.len()
 
         match res {
-            Err(FrameError::Proto(ProtoError::TooLarge)) => {}
+            Err(FrameError::Proto(ProtoError::TooLarge)) => {} // expected
             other => panic!("expected TooLarge, got {:?}", other),
         }
     }

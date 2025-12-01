@@ -4,7 +4,7 @@ use openh264::{
         BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
         SpsPpsStrategy, UsageType,
     },
-    formats::{RgbSliceU8, YUVBuffer, YUVSource},
+    formats::{RgbSliceU8, YUVBuffer},
 };
 
 use crate::media_agent::{
@@ -77,24 +77,6 @@ impl H264Encoder {
         };
 
         let yuv = YUVBuffer::from_rgb_source(rgb_slice);
-
-        // ---- DEBUG: Imprimir una muestra de los planos YUV ----
-        let y_plane = yuv.y();
-        let u_plane = yuv.u();
-        let v_plane = yuv.v();
-
-        if !y_plane.is_empty() && !u_plane.is_empty() && !v_plane.is_empty() {
-            // Muestra del pixel central
-            let center_y_idx = y_plane.len() / 2;
-            let center_uv_idx = u_plane.len() / 2; // U y V tienen el mismo tamaño
-
-            let y_sample = y_plane.get(center_y_idx).cloned();
-            let u_sample = u_plane.get(center_uv_idx).cloned();
-            let v_sample = v_plane.get(center_uv_idx).cloned();
-            
-            println!("[H264 ENCODER DEBUG] Sampled YUV from openh264 conversion: Y={:?}, U={:?}, V={:?}", y_sample, u_sample, v_sample);
-        }
-        // ---- FIN DEBUG ----
 
         let bitstream = enc
             .encode(&yuv)

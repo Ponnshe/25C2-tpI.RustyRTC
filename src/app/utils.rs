@@ -1,4 +1,7 @@
-use crate::{app::gpu_yuv_renderer::GpuYuvRenderer, log::log_sink::LogSink, media_agent::video_frame::VideoFrame};
+use crate::{
+    app::gpu_yuv_renderer::GpuYuvRenderer, log::log_sink::LogSink,
+    media_agent::video_frame::VideoFrame,
+};
 use std::sync::Arc;
 
 use eframe::{egui, egui_wgpu::RenderState};
@@ -49,7 +52,9 @@ pub fn update_rgb_texture(
     if let Some((id, (prev_w, prev_h))) = texture {
         if *prev_w != width || *prev_h != height {
             tex_mngr.write().free(*id);
-            let new_id = tex_mngr.write().alloc(unique_name.to_owned(), image.into(), options);
+            let new_id = tex_mngr
+                .write()
+                .alloc(unique_name.to_owned(), image.into(), options);
             *texture = Some((new_id, (width, height)));
         } else {
             let delta = egui::epaint::ImageDelta {
@@ -60,12 +65,14 @@ pub fn update_rgb_texture(
             tex_mngr.write().set(*id, delta);
         }
     } else {
-        let new_id = tex_mngr.write().alloc(unique_name.to_owned(), image.into(), options);
+        let new_id = tex_mngr
+            .write()
+            .alloc(unique_name.to_owned(), image.into(), options);
         *texture = Some((new_id, (width, height)));
     }
 }
 
-pub fn update_yuv_texture (
+pub fn update_yuv_texture(
     frame: &VideoFrame,
     texture: &mut Option<(egui::TextureId, (u32, u32))>,
     yuv_renderer: &mut Option<GpuYuvRenderer>,
@@ -94,12 +101,7 @@ pub fn update_yuv_texture (
             let new_id = wgpu_renderer.register_native_texture(&rs.device, &view, filter);
             *texture = Some((new_id, (frame.width, frame.height)));
         } else {
-            wgpu_renderer.update_egui_texture_from_wgpu_texture(
-                &rs.device,
-                &view,
-                filter,
-                *id,
-            );
+            wgpu_renderer.update_egui_texture_from_wgpu_texture(&rs.device, &view, filter, *id);
         }
     } else {
         let new_id = wgpu_renderer.register_native_texture(&rs.device, &view, filter);
