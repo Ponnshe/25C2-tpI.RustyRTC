@@ -53,6 +53,13 @@ impl CongestionController {
         logger: Arc<dyn LogSink>,
         tx_evt: Sender<EngineEvent>,
     ) -> Self {
+        if let Err(e) = tx_evt.send(EngineEvent::UpdateBitrate(initial_bitrate)) {
+            sink_error!(
+                logger.as_ref(),
+                "[Congestion] Failed to send initial UpdateBitrate event: {}",
+                e
+            );
+        }
         Self {
             current_bitrate_bps: initial_bitrate,
             min_bitrate_bps: min_bitrate,
