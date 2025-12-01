@@ -5,6 +5,7 @@ use super::{
 use crate::{
     app::utils::{update_rgb_texture, update_yuv_texture},
     config::Config,
+    congestion_controller::NetworkMetrics,
     core::{
         engine::Engine,
         events::EngineEvent::{
@@ -100,6 +101,9 @@ pub struct RtcApp {
     remote_yuv_renderer: Option<GpuYuvRenderer>,
 
     config: Arc<Config>,
+    //Network Metrics
+    last_metrics: Option<NetworkMetrics>,
+    current_bitrate: Option<u32>,
 }
 
 impl RtcApp {
@@ -169,6 +173,8 @@ impl RtcApp {
             local_yuv_renderer,
             remote_yuv_renderer,
             config,
+            last_metrics: None,
+            current_bitrate: None,
         }
     }
 
@@ -640,8 +646,13 @@ impl RtcApp {
                         format!("[ICE] nominated local={local} remote={remote}"),
                     );
                 }
-                EngineEvent::NetworkMetrics(_) | EngineEvent::UpdateBitrate(_) => {
-                    // These are handled by the engine internally, no UI action needed.
+                EngineEvent::NetworkMetrics(metrics) => {
+                    // Update state with new metrics from the Congestion Controller
+                    self.last_metrics = Some(metrics);
+                }
+                EngineEvent::UpdateBitrate(bps) => {
+                    // Update the bitrate being used by the Encoder
+                    self.current_bitrate = Some(bps);
                 }
             }
         }
@@ -879,54 +890,6 @@ impl RtcApp {
         }
     }
 
-    fn render_remote_sdp_input(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.label("1) Paste remote SDP (offer or answer):");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.remote_sdp_text)
-                .desired_rows(15)
-                .desired_width(f32::INFINITY)
-                .hint_text("Paste remote SDP here…")
-                .lock_focus(true),
-        );
-        ui.horizontal(|ui| {
-            let can_set = !self.remote_sdp_text.trim().is_empty();
-            if ui
-                .add_enabled(can_set, egui::Button::new("Enter SDP message (Set Remote)"))
-                .clicked()
-            {
-                self.pending_remote_sdp = Some(self.remote_sdp_text.trim().to_owned());
-            }
-            if ui.button("Clear").clicked() {
-                self.remote_sdp_text.clear();
-            }
-        });
-    }
-
-    fn render_local_sdp_output(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.label("2) Create local SDP and share it (offer/renegotiation):");
-        ui.horizontal(|ui| {
-            if ui.button("Create SDP message").clicked() {
-                if let Err(e) = self.create_or_renegotiate_local_sdp() {
-                    self.status_line = format!("Failed to create local SDP: {e:?}");
-                } else {
-                    self.status_line = String::from("Local SDP generated.");
-                }
-            }
-            if ui.button("Copy to clipboard").clicked() {
-                ui.output_mut(|o| o.copied_text = String::from(&self.local_sdp_text));
-                self.status_line = String::from("Copied local SDP to clipboard.");
-            }
-        });
-        ui.add(
-            egui::TextEdit::multiline(&mut self.local_sdp_text)
-                .desired_rows(15)
-                .desired_width(f32::INFINITY)
-                .hint_text("Your local SDP (Offer/Answer) will appear here…"),
-        );
-    }
-
     fn render_connection_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
@@ -1004,6 +967,75 @@ impl RtcApp {
             }
         }
     }
+    // Render function for Network Metrics
+    fn render_network_stats(&self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Network Health");
+
+        egui::Grid::new("metrics_grid")
+            .num_columns(2)
+            .spacing([40.0, 4.0])
+            .striped(true)
+            .show(ui, |ui| {
+                // Bitrate
+                ui.label("Encoder Bitrate:");
+                if let Some(bps) = self.current_bitrate {
+                    ui.label(format!("{:.2} Mbps", bps as f32 / 1_000_000.0));
+                } else {
+                    ui.label("Unknown");
+                }
+                ui.end_row();
+
+                if let Some(m) = &self.last_metrics {
+                    // RTT
+                    ui.label("Round Trip Time (RTT):");
+                    let rtt_ms = m.round_trip_time.as_millis();
+                    // Color code RTT: Green < 100ms, Yellow < 200ms, Red > 200ms
+                    let color = if rtt_ms < 100 {
+                        egui::Color32::GREEN
+                    } else if rtt_ms < 200 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::RED
+                    };
+                    ui.colored_label(color, format!("{} ms", rtt_ms));
+                    ui.end_row();
+
+                    // Packet Loss
+                    ui.label("Packet Loss:");
+                    // fraction_lost is 0..255 (0 = 0%, 255 = 100%)
+                    let loss_pct = (m.fraction_lost as f32 / 255.0) * 100.0;
+
+                    let color = if loss_pct < 2.0 {
+                        egui::Color32::GREEN
+                    } else if loss_pct < 5.0 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::RED
+                    };
+
+                    ui.colored_label(color, format!("{:.2}% ({} pkts)", loss_pct, m.packets_lost));
+                    ui.end_row();
+
+                    // Sequence Number (Debugging)
+                    ui.label("Highest Seq Recv:");
+                    ui.label(format!("{}", m.highest_sequence_number));
+                    ui.end_row();
+                } else {
+                    ui.label("Status:");
+                    ui.label("Waiting for RTCP reports...");
+                    ui.end_row();
+                }
+            });
+
+        // Optional: Add transport stats summary
+        ui.add_space(5.0);
+        ui.label(format!(
+            "RTP Total: {} pkts / {} MB",
+            self.rtp_pkts,
+            self.rtp_bytes / 1_000_000
+        ));
+    }
 
     fn current_peer(&self) -> Option<String> {
         match &self.call_flow {
@@ -1059,9 +1091,9 @@ impl App for RtcApp {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
         let ui_fps = self
             .config
-            .get_or_default("UI", "fps", "60")
+            .get_or_default("UI", "fps", "30")
             .parse()
-            .unwrap_or(60);
+            .unwrap_or(30);
         let time = 1 / ui_fps;
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {
@@ -1131,8 +1163,7 @@ impl App for RtcApp {
                 return;
             }
             Self::render_video_summary(ui, local_frame.as_ref(), remote_frame.as_ref());
-            self.render_remote_sdp_input(ui);
-            self.render_local_sdp_output(ui);
+            self.render_network_stats(ui);
             self.render_connection_controls(ui);
             self.render_status_line(ui);
             self.render_log_section(ui);
