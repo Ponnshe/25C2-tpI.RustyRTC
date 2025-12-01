@@ -20,13 +20,7 @@ pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
 
     // Convert BGR → RGBA
     let mut rgba = Mat::default();
-    if let Err(e) = imgproc::cvt_color(
-        mat,
-        &mut rgba,
-        imgproc::COLOR_BGR2RGBA,
-        0,
-        AlgorithmHint::ALGO_HINT_DEFAULT,
-    ) {
+    if let Err(e) = imgproc::cvt_color(mat, &mut rgba, imgproc::COLOR_BGR2RGBA, 0) {
         eprintln!("Color conversion failed: {:?}", e);
         return None;
     }
