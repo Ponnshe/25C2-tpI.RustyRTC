@@ -13,7 +13,7 @@ use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
 use crate::{sink_debug, sink_info, sink_trace, sink_warn};
 
-pub struct Server {
+pub struct ServerEngine {
     presence: Presence,
     sessions: Sessions,
     // Simple counters for IDs; we might use UUIDs or random codes in the future.
@@ -22,7 +22,7 @@ pub struct Server {
     auth: Box<dyn AuthBackend>,
 }
 
-impl Server {
+impl ServerEngine {
     pub fn new() -> Self {
         Self::with_log_and_auth(Arc::new(NoopLogSink), Box::new(AllowAllAuthBackend))
     }
@@ -707,7 +707,7 @@ impl Server {
         out_msgs
     }
 }
-impl Default for Server {
+impl Default for ServerEngine {
     fn default() -> Self {
         Self::new()
     }
@@ -720,18 +720,18 @@ mod tests {
     use crate::signaling::auth::InMemoryAuthBackend;
     use crate::signaling::protocol::SignalingMsg;
 
-    fn new_server() -> Server {
-        Server::with_log(Arc::new(NoopLogSink))
+    fn new_server() -> ServerEngine {
+        ServerEngine::with_log(Arc::new(NoopLogSink))
     }
 
-    fn new_server_with_in_memory_auth() -> Server {
+    fn new_server_with_in_memory_auth() -> ServerEngine {
         let auth = InMemoryAuthBackend::new()
             .with_user("alice", "secret")
             .with_user("bob", "pw2");
-        Server::with_auth(Box::new(auth))
+        ServerEngine::with_auth(Box::new(auth))
     }
 
-    fn login(server: &mut Server, client_id: ClientId, username: &str) {
+    fn login(server: &mut ServerEngine, client_id: ClientId, username: &str) {
         let out = server.handle(
             client_id,
             SignalingMsg::Login {
@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn login_and_create_session_roundtrip() {
-        let mut server = Server::new();
+        let mut server = ServerEngine::new();
         let client1 = 1;
 
         // client logs in
