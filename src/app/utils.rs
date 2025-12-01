@@ -17,7 +17,9 @@ pub fn show_camera_in_ui(
             img_size.x = max_h * img_size.x / img_size.y;
             img_size.y = max_h;
         }
-        ui.image(egui::ImageSource::Texture(egui::load::SizedTexture::new(texture_id, img_size)));
+        ui.image(egui::ImageSource::Texture(egui::load::SizedTexture::new(
+            texture_id, img_size,
+        )));
     } else {
         let size = egui::vec2(max_w.min(128.0), max_h.min(128.0));
         ui.allocate_ui(size, |ui| {
