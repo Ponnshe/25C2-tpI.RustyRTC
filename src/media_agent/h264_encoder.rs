@@ -91,11 +91,6 @@ impl H264Encoder {
             let y_sample = y_plane.get(center_y_idx).cloned();
             let u_sample = u_plane.get(center_uv_idx).cloned();
             let v_sample = v_plane.get(center_uv_idx).cloned();
-
-            println!(
-                "[H264 ENCODER DEBUG] Sampled YUV from openh264 conversion: Y={:?}, U={:?}, V={:?}",
-                y_sample, u_sample, v_sample
-            );
         }
         // ---- FIN DEBUG ----
 
