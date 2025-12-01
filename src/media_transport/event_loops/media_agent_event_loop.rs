@@ -24,6 +24,12 @@ use crate::{
     sink_debug, sink_error, sink_info, sink_trace,
 };
 
+/// The central control loop for the Media Transport's Egress (Outgoing) pipeline.
+///
+/// This event loop is responsible for:
+/// 1. **Frame Scheduling**: Receiving encoded frames, assigning RTP timestamps, and ordering the Packetizer.
+/// 2. **Session Management**: Reacting to connection events (`Established`) to register RTP tracks.
+/// 3. **Flow Control**: Handling bitrate updates and forwarding them to the Media Agent.
 pub struct MediaAgentEventLoop {
     logger: Arc<dyn LogSink>,
     running_flag: Arc<AtomicBool>,
@@ -44,6 +50,20 @@ impl MediaAgentEventLoop {
             target_fps,
         }
     }
+
+    /// Starts the event loop thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `media_transport_event_rx`: Input channel for transport events (Encoded frames, session status).
+    /// * `packetizer_order_tx`: Output channel to instruct the Packetizer worker.
+    /// * `rtp_tx`: Direct channel to the UDP socket for raw packet sending.
+    /// * `session`: Reference to the core RTP Session.
+    /// * `payload_map`: Configured codecs.
+    /// * `outbound_tracks`: State of active outbound RTP streams.
+    /// * `event_tx`: Channel to report errors/status to the main Engine.
+    /// * `allowed_pts`: Set of allowed Payload Types (updated upon negotiation).
+    /// * `media_agent_tx`: Back-channel to the Media Agent (e.g., for bitrate commands).
     #[allow(clippy::too_many_arguments, clippy::similar_names)]
     #[allow(clippy::expect_used)]
     pub fn start(
@@ -61,17 +81,21 @@ impl MediaAgentEventLoop {
         let stop_flag = self.stop_flag.clone();
         let running_flag = self.running_flag.clone();
 
+        // Calculate the RTP timestamp increment per frame (90kHz clock).
+        // E.g., for 30fps: 90000 / 30 = 3000 ticks per frame.
         let rtp_ts_step = 90_000 / self.target_fps;
 
         let logger = self.logger.clone();
 
         let handle = std::thread::spawn(move || {
             let mut last_received_local_ts_ms = None;
+            // Initialize random start timestamp for security/standard compliance.
             let mut rtp_ts = rand::random::<u32>();
 
             while !stop_flag.load(Ordering::SeqCst) {
                 match media_transport_event_rx.recv_timeout(Duration::from_millis(RECV_TIMEOUT)) {
                     Ok(event) => match event {
+                        // --- Egress Video Path ---
                         MediaTransportEvent::SendEncodedFrame {
                             annexb_frame,
                             timestamp_ms,
@@ -81,41 +105,46 @@ impl MediaAgentEventLoop {
                                 logger.clone(),
                                 "[MT Event Loop MA] Received SendEncodedFrame."
                             );
+                            // Simple deduplication logic
                             if last_received_local_ts_ms == Some(timestamp_ms) {
                                 continue;
                             }
                             last_received_local_ts_ms = Some(timestamp_ms);
 
+                            // Construct the order for the packetizer worker
                             let order = PacketizeOrder {
                                 annexb_frame,
-                                rtp_ts,
+                                rtp_ts, // Assign the monotonic RTP timestamp
                                 codec_spec,
                             };
+                            
                             sink_trace!(
                                 logger.clone(),
                                 "[MT Event Loop MA] Sending PacketizeOrder to Packetizer."
                             );
+                            
+                            // Send to Packetizer and increment timestamp for the next frame
                             if packetizer_order_tx.send(order).is_ok() {
                                 rtp_ts = rtp_ts.wrapping_add(rtp_ts_step);
                             }
                         }
+                        
+                        // --- Raw Packet Forwarding ---
                         MediaTransportEvent::RtpIn(pkt) => {
                             sink_trace!(
                                 logger,
-                                "[MediaAgent Event Loop (MT)] Received Rtp Packet. Sending it to Depacketizer"
-                            );
-                            sink_trace!(
-                                logger,
-                                "[MediaAgent Event Loop (MT)] ssrc: {}, seq: {}",
-                                pkt.ssrc,
-                                pkt.seq,
+                                "[MediaAgent Event Loop (MT)] Forwarding raw RTP/RTCP packet to socket"
                             );
                             let _ = rtp_tx.try_send(pkt.clone());
                         }
+
+                        // --- Control Plane: Connection Established ---
                         MediaTransportEvent::Established => {
                             sink_info!(logger, "[MediaAgent Event Loop (MT)] Received Established");
                             let mut sess_guard = session.lock().expect("session lock poisoned");
+                            
                             if let Some(sess) = sess_guard.as_mut() {
+                                // 1. Register outbound tracks (SSRCs) in the RTP session
                                 if let Err(e) = ensure_outbound_tracks(
                                     sess,
                                     payload_map.clone(),
@@ -125,6 +154,8 @@ impl MediaAgentEventLoop {
                                     let _ = event_tx
                                         .send(EngineEvent::Error(format!("media tracks: {e:?}")));
                                 }
+
+                                // 2. Update allowed Payload Types based on remote SDP negotiation
                                 let allowed_pts = allowed_pts.clone();
                                 if let Ok(mut w) = allowed_pts.write() {
                                     w.clear();
@@ -132,21 +163,27 @@ impl MediaAgentEventLoop {
                                 }
                             }
                         }
+
+                        // --- Control Plane: Cleanup ---
                         MediaTransportEvent::Closing | MediaTransportEvent::Closed => {
                             let mut guard = outbound_tracks
                                 .lock()
                                 .expect("outbound_tracks lock poisoned");
                             guard.clear();
                         }
+
+                        // --- Flow Control ---
                         MediaTransportEvent::UpdateBitrate(b) => {
                             sink_info!(
                                 logger,
                                 "[MediaTransport] Telling MediaAgent to update bitrate {}",
                                 b
                             );
+                            // Relay command back to the Application Layer (Encoder)
                             let _ = media_agent_tx.send(MediaAgentEvent::UpdateBitrate(b));
                         }
                     },
+
                     Err(RecvTimeoutError::Disconnected) => {
                         sink_error!(
                             logger,
@@ -191,6 +228,10 @@ impl MediaAgentEventLoop {
     }
 }
 
+/// Helper to register outbound tracks in the RTP session if they don't exist yet.
+///
+/// Ensures that for every supported codec in `payload_map`, there is a corresponding
+/// `OutboundTrackHandle` in the session to manage SSRCs and sequence numbers.
 #[allow(clippy::expect_used)]
 fn ensure_outbound_tracks(
     session: &Session,
@@ -202,12 +243,16 @@ fn ensure_outbound_tracks(
         let mut guard = outbound_tracks
             .lock()
             .expect("outbound_tracks lock poisoned");
+            
         if guard.contains_key(pt) {
             continue;
         }
+        
+        // Register new track with the underlying RTP session
         let handle = session
             .register_outbound_track(codec.rtp_representation.clone())
             .map_err(|e| MediaTransportError::Send(e.to_string()))?;
+            
         sink_debug!(
             logger,
             "[ensure_outbound_tracks] Adding outbound track PT {} ({:?})",

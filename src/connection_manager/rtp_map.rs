@@ -1,19 +1,30 @@
 use std::str::FromStr;
 
+/// Represents an `rtpmap` attribute from an SDP message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtpMap {
+    /// The payload type number.
     pub payload_type: u8,
+    /// The name of the encoding.
     pub encoding_name: String, // leave as-is; case-insensitive in SDP
+    /// The clock rate of the encoding.
     pub clock_rate: u32,
+    /// The encoding parameters, e.g., number of channels for audio.
     pub encoding_params: Option<u16>, // usually channels for audio
 }
 
+/// An error that can occur while parsing an `rtpmap` attribute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RtpMapParseError {
+    /// The `rtpmap` attribute is missing required parts.
     MissingParts,
+    /// The payload type is invalid.
     InvalidPayloadType,
+    /// The clock rate is invalid.
     InvalidClockRate,
+    /// The payload type is out of the valid range [0, 127].
     PayloadTypeOutOfRange,
+    /// The `rtpmap` attribute has unexpected trailing tokens.
     TrailingGarbage,
 }
 

@@ -24,6 +24,30 @@ use openssl::ssl::SslVerifyMode;
 // HANDSHAKE
 // -----------------------------------------------------------------------------
 
+/// Performs a DTLS handshake with a remote peer.
+///
+/// This function sets up a `BufferedUdpChannel` and initiates either a DTLS client
+/// or server handshake based on the `role` parameter. It handles draining stale
+/// packets, setting socket blocking/timeout, and deriving SRTP keys upon successful handshake.
+///
+/// # Arguments
+///
+/// * `sock` - An `Arc` to the `UdpSocket` for communication.
+/// * `peer` - The `SocketAddr` of the remote peer.
+/// * `role` - The `DtlsRole` (Client or Server) for the handshake.
+/// * `logger` - A `LogSink` for logging DTLS-related events.
+/// * `timeout` - The maximum duration to wait for the handshake to complete.
+/// * `expected_fingerprint` - An optional SHA-256 fingerprint string for certificate validation.
+///   If `None`, certificate verification is disabled (INSECURE).
+/// * `config` - The application configuration, used to get certificate paths.
+///
+/// # Errors
+///
+/// Returns a `DtlsError` if:
+/// - Setting socket options fails.
+/// - The DTLS handshake fails (e.g., timeout, invalid certificates).
+/// - SRTP key derivation fails.
+/// - No SRTP profile is negotiated.
 pub fn run_dtls_handshake(
     sock: Arc<UdpSocket>,
     peer: SocketAddr,
@@ -94,6 +118,11 @@ pub fn run_dtls_handshake(
     Ok(cfg)
 }
 
+/// Initiates a DTLS client handshake using OpenSSL.
+///
+/// # Errors
+///
+/// Returns a `DtlsError` if certificate loading, private key loading, or the handshake itself fails.
 fn dtls_connect_openssl(
     logger: Arc<dyn LogSink>,
     stream: BufferedUdpChannel,
@@ -135,6 +164,11 @@ fn dtls_connect_openssl(
     }
 }
 
+/// Initiates a DTLS server handshake using OpenSSL.
+///
+/// # Errors
+///
+/// Returns a `DtlsError` if certificate loading, private key loading, or the handshake itself fails.
 fn dtls_accept_openssl(
     logger: Arc<dyn LogSink>,
     stream: BufferedUdpChannel,
@@ -177,6 +211,11 @@ fn dtls_accept_openssl(
     }
 }
 
+/// Derives SRTP session keys from an established DTLS session.
+///
+/// # Errors
+///
+/// Returns a `DtlsError` if no SRTP profile was negotiated or if key material export fails.
 fn derive_srtp_keys(
     stream: &SslStream<BufferedUdpChannel>,
     role: DtlsRole,
@@ -245,6 +284,15 @@ fn derive_srtp_keys(
     })
 }
 
+/// Creates a base OpenSSL `SslContextBuilder` for DTLS.
+///
+/// Configures SRTP profiles, cipher lists, and optional certificate verification
+/// based on an expected fingerprint.
+///
+/// # Errors
+///
+/// Returns an `io::Result` if OpenSSL initialization, SRTP configuration, cipher list
+/// setting, or certificate verification setup fails.
 fn create_base_context(
     logger: Arc<dyn LogSink>,
     expected_fingerprint: Option<String>,
@@ -320,7 +368,7 @@ fn create_base_context(
     Ok(builder)
 }
 
-/// Convierte un HandshakeError a DtlsError con mensaje útil.
+/// Converts an OpenSSL `HandshakeError` to a `DtlsError` with a useful message.
 fn handshake_error_to_dtlserr<E: std::fmt::Debug>(he: HandshakeError<E>) -> DtlsError {
     match he {
         HandshakeError::WouldBlock(_) => DtlsError::Handshake("Handshake would block".into()),

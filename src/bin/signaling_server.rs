@@ -1,3 +1,6 @@
+//! The signaling server binary for the RoomRTC application.
+//! It starts the signaling server and listens for incoming connections.
+
 use rustyrtc::config::Config;
 use rustyrtc::log::log_sink::LogSink;
 use rustyrtc::log::logger::Logger;

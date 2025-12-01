@@ -26,6 +26,9 @@ use crate::{
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
 use crate::connection_manager::ice_and_sdp::ICEAndSDP;
 
+/// The central orchestrator for a WebRTC peer connection.
+///
+/// Manages ICE, SDP negotiation, DTLS handshake, and media transport.
 pub struct Engine {
     logger_sink: Arc<dyn LogSink>,
     cm: ConnectionManager,
@@ -38,6 +41,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Creates a new `Engine` instance.
     pub fn new(logger_sink: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -96,6 +100,11 @@ impl Engine {
         }
     }
 
+    /// Initiates an SDP negotiation as an offerer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionError` if the negotiation fails.
     pub fn negotiate(&mut self) -> Result<Option<String>, ConnectionError> {
         self.cm
             .set_local_rtp_codecs(self.media_transport.codec_descriptors());
@@ -106,6 +115,11 @@ impl Engine {
         }
     }
 
+    /// Applies a remote SDP (offer or answer) received from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionError` if applying the remote SDP fails.
     pub fn apply_remote_sdp(
         &mut self,
         remote_sdp: &str,
@@ -119,6 +133,11 @@ impl Engine {
         }
     }
 
+    /// Applies a remote ICE candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionError` if applying the candidate fails.
     pub fn apply_remote_candidate(&mut self, candidate_line: &str) -> Result<(), ConnectionError> {
         self.cm.apply_remote_trickle_candidate(candidate_line)
     }
@@ -133,6 +152,11 @@ impl Engine {
             .collect()
     }
 
+    /// Starts the WebRTC session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` error if no nominated ICE pair is available.
     #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), String> {
         let mut guard = self.session.lock().expect("session lock poisoned");
@@ -144,6 +168,7 @@ impl Engine {
         Ok(())
     }
 
+    /// Stops the WebRTC session.
     #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         if let Some(sess) = self.session.lock().expect("session lock poisoned").as_mut() {
@@ -151,6 +176,7 @@ impl Engine {
         }
         self.media_transport.stop();
     }
+    /// Closes the WebRTC session and resets the connection manager.
     #[allow(clippy::expect_used)]
     pub fn close_session(&mut self) {
         let mut guard = self.session.lock().expect("session lock poisoned");
@@ -164,6 +190,8 @@ impl Engine {
         );
     }
 
+    /// Polls for `EngineEvent`s and processes them.
+    /// This method is called repeatedly to drive the engine's state.
     #[allow(clippy::expect_used)]
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
@@ -280,11 +308,13 @@ impl Engine {
         out
     }
 
+    /// Returns a snapshot of the local and remote video frames.
     #[must_use]
     pub fn snapshot_frames(&self) -> (Option<VideoFrame>, Option<VideoFrame>) {
         self.media_transport.snapshot_frames()
     }
 
+    /// Starts the media transport event loops.
     pub fn start_media_transport(&mut self) {
         self.media_transport.start_event_loops(self.session.clone());
         sink_info!(

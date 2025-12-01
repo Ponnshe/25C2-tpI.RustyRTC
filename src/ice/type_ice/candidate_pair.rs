@@ -30,10 +30,15 @@ pub enum CandidatePairState {
 /// Also a priority, to sort candidates.
 #[derive(Debug)]
 pub struct CandidatePair {
+    /// The local candidate in the pair.
     pub local: Candidate,
+    /// The remote candidate in the pair.
     pub remote: Candidate,
+    /// The calculated priority of the candidate pair.
     pub priority: u64,
+    /// The current state of the connectivity check for this pair.
     pub state: CandidatePairState,
+    /// Indicates if this pair has been nominated.
     pub is_nominated: bool,
 }
 

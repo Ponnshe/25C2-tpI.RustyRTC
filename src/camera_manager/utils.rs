@@ -1,7 +1,15 @@
 use opencv::core::Mat;
 use opencv::{core::CV_8UC3, prelude::*};
 
-/// Always returns tightly packed RGB (len = width*height*3), regardless of stride/continuity.
+/// Converts an OpenCV `Mat` to a tightly packed RGB byte vector.
+///
+/// This function ensures the output is a contiguous `Vec<u8>` with RGB data,
+/// with a total length of `width * height * 3`. It handles cases where the
+/// input `Mat` is not continuous by copying the data row by row.
+///
+/// # Errors
+///
+/// Returns an `opencv::Error` if the color conversion or data extraction fails.
 pub fn tight_rgb_bytes(mat: &Mat, width: u32, height: u32) -> opencv::Result<Vec<u8>> {
     // Ensure 8UC3
     if mat.typ() != CV_8UC3 {

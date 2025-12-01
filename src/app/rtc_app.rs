@@ -51,6 +51,8 @@ enum CallFlow {
     },
 }
 
+/// The main application struct for the RoomRTC client.
+/// It holds the state for the GUI, the WebRTC engine, and the signaling client.
 pub struct RtcApp {
     // UI text areas
     remote_sdp_text: String,
@@ -114,6 +116,12 @@ impl RtcApp {
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
     const SERVER_ADDR: &str = "127.0.0.1:5005";
 
+    /// Creates a new `RtcApp`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cc` - The eframe creation context.
+    /// * `config` - The application configuration.
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, config: Arc<Config>) -> Self {
         let logger = Logger::start_client(4096, 256, 50, config.clone());
