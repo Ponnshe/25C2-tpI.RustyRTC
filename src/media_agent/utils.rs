@@ -1,5 +1,5 @@
 use opencv::{
-    core::{AlgorithmHint, Mat, MatTraitConstManual, prelude::*},
+    core::{Mat, MatTraitConstManual, prelude::*},
     imgproc,
     videoio::{CAP_ANY, VideoCapture, VideoCaptureTraitConst},
 };
