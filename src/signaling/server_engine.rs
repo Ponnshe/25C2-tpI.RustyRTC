@@ -8,6 +8,7 @@ use crate::signaling::AuthError;
 use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};
 use crate::signaling::presence::Presence;
+use crate::signaling::protocol::peer_status::PeerStatus;
 use crate::signaling::protocol::{SessionCode, SessionId, SignalingMsg, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
@@ -150,20 +151,25 @@ impl ServerEngine {
             }
         }
     }
-
     fn broadcast_peer_list_update(&self) -> Vec<OutgoingMsg> {
         let mut out_msgs = Vec::new();
         let all_usernames = self.presence.online_usernames();
         let all_clients = self.presence.all_client_ids();
 
         for client_id in all_clients {
-            // Get the username for this specific client so we can filter it out of their list
             if let Some(my_username) = self.presence.username_for(client_id) {
-                // Filter: everyone except me
-                let peers: Vec<String> = all_usernames
+                // Filter: everyone except me, mapped to (Name, Status)
+                let peers = all_usernames
                     .iter()
                     .filter(|u| *u != my_username)
-                    .cloned()
+                    .map(|u| {
+                        let status = if self.presence.is_busy(u) {
+                            PeerStatus::Busy
+                        } else {
+                            PeerStatus::Available
+                        };
+                        (u.clone(), status)
+                    })
                     .collect();
 
                 out_msgs.push(OutgoingMsg {
@@ -336,7 +342,6 @@ impl ServerEngine {
 
         out
     }
-
     fn handle_list_peers(&mut self, client_id: ClientId) -> Vec<OutgoingMsg> {
         let mut out = Vec::new();
         let requester = self.require_logged_in(client_id);
@@ -361,13 +366,20 @@ impl ServerEngine {
             );
         }
 
-        let peers = {
-            let mut all = self.presence.online_usernames();
-            if let Some(current) = requester.as_ref() {
-                all.retain(|peer| peer != current);
-            }
-            all
-        };
+        let peers = self
+            .presence
+            .online_usernames()
+            .into_iter()
+            .filter(|peer| Some(peer) != requester.as_ref()) // Exclude the requester
+            .map(|peer| {
+                let status = if self.presence.is_busy(&peer) {
+                    PeerStatus::Busy
+                } else {
+                    PeerStatus::Available
+                };
+                (peer, status)
+            })
+            .collect();
 
         out.push(OutgoingMsg {
             client_id_target: client_id,
@@ -539,6 +551,7 @@ impl ServerEngine {
             );
             return Vec::new();
         };
+        let mut status_changed = false;
 
         match msg {
             SignalingMsg::Offer {
@@ -553,14 +566,21 @@ impl ServerEngine {
             }),
             SignalingMsg::Answer {
                 txn_id, to, sdp, ..
-            } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
-                SignalingMsg::Answer {
-                    txn_id,
-                    from: username,
-                    to,
-                    sdp,
-                }
-            }),
+            } => {
+                // Mark both as busy
+                self.presence.set_busy(&from_username, true);
+                self.presence.set_busy(&to, true);
+                status_changed = true;
+
+                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                    SignalingMsg::Answer {
+                        txn_id,
+                        from: username,
+                        to,
+                        sdp,
+                    }
+                })
+            }
             SignalingMsg::Candidate {
                 to,
                 mid,
@@ -586,7 +606,12 @@ impl ServerEngine {
                 })
             }
             SignalingMsg::Bye { to, reason, .. } => {
-                self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+                // Mark both as available
+                self.presence.set_busy(&from_username, false);
+                self.presence.set_busy(&to, false);
+                status_changed = true;
+
+                self.forward(from, &from_username, 0, to, |username, _, to| {
                     SignalingMsg::Bye {
                         from: username,
                         to,
@@ -603,6 +628,13 @@ impl ServerEngine {
                 Vec::new()
             }
         }
+        .into_iter()
+        .chain(if status_changed {
+            self.broadcast_peer_list_update()
+        } else {
+            Vec::new()
+        })
+        .collect()
     }
 
     fn forward<F>(

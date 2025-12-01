@@ -1,3 +1,5 @@
+use crate::signaling::protocol::peer_status::PeerStatus;
+
 use super::{MsgType, ProtoError, SignalingMsg};
 use std::str;
 
@@ -39,13 +41,20 @@ pub fn encode_msg(msg: &SignalingMsg) -> Result<(MsgType, Vec<u8>), ProtoError> 
             MsgType::RegisterErr
         }
         ListPeers => MsgType::ListPeers,
-        PeersOnline { peers } => {
+        SignalingMsg::PeersOnline { peers } => {
             if peers.len() > u16::MAX as usize {
                 return Err(ProtoError::InvalidFormat("too many peers"));
             }
             put_u16(&mut body, peers.len() as u16);
-            for peer in peers {
+
+            for (peer, status) in peers {
                 put_str16(&mut body, peer)?;
+
+                let status_byte: u8 = match status {
+                    PeerStatus::Available => 0,
+                    PeerStatus::Busy => 1,
+                };
+                put_u8(&mut body, status_byte);
             }
             MsgType::PeersOnline
         }
@@ -209,7 +218,16 @@ pub fn decode_msg(msg_type: MsgType, body: &[u8]) -> Result<SignalingMsg, ProtoE
             let mut peers = Vec::with_capacity(count);
             for _ in 0..count {
                 let peer = cursor.get_str16()?.to_owned();
-                peers.push(peer);
+
+                let status_byte = cursor.get_u8()?;
+
+                let status = match status_byte {
+                    0 => PeerStatus::Available,
+                    1 => PeerStatus::Busy,
+                    _ => return Err(ProtoError::InvalidFormat("unknown peer status byte")),
+                };
+
+                peers.push((peer, status));
             }
             PeersOnline { peers }
         }

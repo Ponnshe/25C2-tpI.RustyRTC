@@ -13,7 +13,7 @@ use crate::{
     },
     log::{log_level::LogLevel, log_sink::LogSink, logger::Logger},
     media_agent::video_frame::{VideoFrame, VideoFrameData},
-    signaling::protocol::SignalingMsg,
+    signaling::protocol::{SignalingMsg, peer_status::PeerStatus},
     signaling_client::{SignalingClient, SignalingEvent},
     sink_debug,
 };
@@ -86,7 +86,7 @@ pub struct RtcApp {
     login_password: String,
     register_username: String,
     register_password: String,
-    peers_online: Vec<String>,
+    peers_online: Vec<(String, PeerStatus)>,
     current_username: Option<String>,
     signaling_error: Option<String>,
     call_flow: CallFlow,
@@ -810,16 +810,34 @@ impl RtcApp {
         if self.peers_online.is_empty() {
             ui.label("No peers online.");
         } else {
-            let peers: Vec<String> = self.peers_online.clone();
-            for peer in peers {
+            let peers = self.peers_online.clone();
+            for (peer, status) in peers {
                 ui.horizontal(|ui| {
-                    ui.label(&peer);
-                    let busy = matches!(
+                    // 1. Visual Status Indicator
+                    let (icon, color, text) = match status {
+                        PeerStatus::Available => ("●", egui::Color32::GREEN, "Available"),
+                        PeerStatus::Busy => ("busy", egui::Color32::RED, "Busy"),
+                    };
+
+                    ui.colored_label(color, format!("{} {}", icon, peer))
+                        .on_hover_text(text);
+
+                    // 2. Logic to disable call button
+                    // We can't call if:
+                    // A) We are busy (call_flow != Idle)
+                    // B) They are busy (status == Busy)
+                    let i_am_busy = matches!(
                         self.call_flow,
-                        CallFlow::Dialing { .. } | CallFlow::Active { .. }
+                        CallFlow::Dialing { .. }
+                            | CallFlow::Active { .. }
+                            | CallFlow::Incoming { .. }
                     );
+                    let peer_is_busy = matches!(status, PeerStatus::Busy);
+
+                    let can_call = !i_am_busy && !peer_is_busy;
+
                     if ui
-                        .add_enabled(!busy, egui::Button::new(format!("Call {peer}")))
+                        .add_enabled(can_call, egui::Button::new(format!("Call {peer}")))
                         .clicked()
                     {
                         self.start_outgoing_call(&peer);
@@ -829,7 +847,6 @@ impl RtcApp {
         }
         self.render_call_flow_ui(ui);
     }
-
     fn render_call_flow_ui(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         match self.call_flow.clone() {
