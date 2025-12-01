@@ -1,5 +1,5 @@
 use opencv::{
-    core::{AlgorithmHint, Mat, MatTraitConstManual, prelude::*},
+    core::{Mat, MatTraitConstManual, prelude::*},
     imgproc,
     videoio::{CAP_ANY, VideoCapture, VideoCaptureTraitConst},
 };
@@ -25,7 +25,6 @@ pub fn mat_to_color_image(mat: &Mat) -> Option<egui::ColorImage> {
         &mut rgba,
         imgproc::COLOR_BGR2RGBA,
         0,
-        AlgorithmHint::ALGO_HINT_DEFAULT,
     ) {
         eprintln!("Color conversion failed: {:?}", e);
         return None;
