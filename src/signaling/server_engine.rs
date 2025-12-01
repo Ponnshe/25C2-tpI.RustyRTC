@@ -8,12 +8,13 @@ use crate::signaling::AuthError;
 use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};
 use crate::signaling::presence::Presence;
+use crate::signaling::protocol::peer_status::PeerStatus;
 use crate::signaling::protocol::{SessionCode, SessionId, SignalingMsg, UserName};
 use crate::signaling::sessions::{JoinError, Session, Sessions};
 use crate::signaling::types::{ClientId, OutgoingMsg};
 use crate::{sink_debug, sink_info, sink_trace, sink_warn};
 
-pub struct Server {
+pub struct ServerEngine {
     presence: Presence,
     sessions: Sessions,
     // Simple counters for IDs; we might use UUIDs or random codes in the future.
@@ -22,7 +23,7 @@ pub struct Server {
     auth: Box<dyn AuthBackend>,
 }
 
-impl Server {
+impl ServerEngine {
     pub fn new() -> Self {
         Self::with_log_and_auth(Arc::new(NoopLogSink), Box::new(AllowAllAuthBackend))
     }
@@ -150,20 +151,25 @@ impl Server {
             }
         }
     }
-
     fn broadcast_peer_list_update(&self) -> Vec<OutgoingMsg> {
         let mut out_msgs = Vec::new();
         let all_usernames = self.presence.online_usernames();
         let all_clients = self.presence.all_client_ids();
 
         for client_id in all_clients {
-            // Get the username for this specific client so we can filter it out of their list
             if let Some(my_username) = self.presence.username_for(client_id) {
-                // Filter: everyone except me
-                let peers: Vec<String> = all_usernames
+                // Filter: everyone except me, mapped to (Name, Status)
+                let peers = all_usernames
                     .iter()
                     .filter(|u| *u != my_username)
-                    .cloned()
+                    .map(|u| {
+                        let status = if self.presence.is_busy(u) {
+                            PeerStatus::Busy
+                        } else {
+                            PeerStatus::Available
+                        };
+                        (u.clone(), status)
+                    })
                     .collect();
 
                 out_msgs.push(OutgoingMsg {
@@ -336,7 +342,6 @@ impl Server {
 
         out
     }
-
     fn handle_list_peers(&mut self, client_id: ClientId) -> Vec<OutgoingMsg> {
         let mut out = Vec::new();
         let requester = self.require_logged_in(client_id);
@@ -361,13 +366,20 @@ impl Server {
             );
         }
 
-        let peers = {
-            let mut all = self.presence.online_usernames();
-            if let Some(current) = requester.as_ref() {
-                all.retain(|peer| peer != current);
-            }
-            all
-        };
+        let peers = self
+            .presence
+            .online_usernames()
+            .into_iter()
+            .filter(|peer| Some(peer) != requester.as_ref()) // Exclude the requester
+            .map(|peer| {
+                let status = if self.presence.is_busy(&peer) {
+                    PeerStatus::Busy
+                } else {
+                    PeerStatus::Available
+                };
+                (peer, status)
+            })
+            .collect();
 
         out.push(OutgoingMsg {
             client_id_target: client_id,
@@ -539,6 +551,7 @@ impl Server {
             );
             return Vec::new();
         };
+        let mut status_changed = false;
 
         match msg {
             SignalingMsg::Offer {
@@ -553,14 +566,21 @@ impl Server {
             }),
             SignalingMsg::Answer {
                 txn_id, to, sdp, ..
-            } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
-                SignalingMsg::Answer {
-                    txn_id,
-                    from: username,
-                    to,
-                    sdp,
-                }
-            }),
+            } => {
+                // Mark both as busy
+                self.presence.set_busy(&from_username, true);
+                self.presence.set_busy(&to, true);
+                status_changed = true;
+
+                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                    SignalingMsg::Answer {
+                        txn_id,
+                        from: username,
+                        to,
+                        sdp,
+                    }
+                })
+            }
             SignalingMsg::Candidate {
                 to,
                 mid,
@@ -586,7 +606,12 @@ impl Server {
                 })
             }
             SignalingMsg::Bye { to, reason, .. } => {
-                self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+                // Mark both as available
+                self.presence.set_busy(&from_username, false);
+                self.presence.set_busy(&to, false);
+                status_changed = true;
+
+                self.forward(from, &from_username, 0, to, |username, _, to| {
                     SignalingMsg::Bye {
                         from: username,
                         to,
@@ -603,6 +628,13 @@ impl Server {
                 Vec::new()
             }
         }
+        .into_iter()
+        .chain(if status_changed {
+            self.broadcast_peer_list_update()
+        } else {
+            Vec::new()
+        })
+        .collect()
     }
 
     fn forward<F>(
@@ -707,7 +739,7 @@ impl Server {
         out_msgs
     }
 }
-impl Default for Server {
+impl Default for ServerEngine {
     fn default() -> Self {
         Self::new()
     }
@@ -720,18 +752,18 @@ mod tests {
     use crate::signaling::auth::InMemoryAuthBackend;
     use crate::signaling::protocol::SignalingMsg;
 
-    fn new_server() -> Server {
-        Server::with_log(Arc::new(NoopLogSink))
+    fn new_server() -> ServerEngine {
+        ServerEngine::with_log(Arc::new(NoopLogSink))
     }
 
-    fn new_server_with_in_memory_auth() -> Server {
+    fn new_server_with_in_memory_auth() -> ServerEngine {
         let auth = InMemoryAuthBackend::new()
             .with_user("alice", "secret")
             .with_user("bob", "pw2");
-        Server::with_auth(Box::new(auth))
+        ServerEngine::with_auth(Box::new(auth))
     }
 
-    fn login(server: &mut Server, client_id: ClientId, username: &str) {
+    fn login(server: &mut ServerEngine, client_id: ClientId, username: &str) {
         let out = server.handle(
             client_id,
             SignalingMsg::Login {
@@ -751,7 +783,7 @@ mod tests {
 
     #[test]
     fn login_and_create_session_roundtrip() {
-        let mut server = Server::new();
+        let mut server = ServerEngine::new();
         let client1 = 1;
 
         // client logs in

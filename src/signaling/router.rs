@@ -5,12 +5,12 @@ use crate::log::NoopLogSink;
 use crate::log::log_sink::LogSink;
 use crate::signaling::AuthBackend;
 use crate::signaling::protocol::SignalingMsg;
-use crate::signaling::server::Server;
+use crate::signaling::server_engine::ServerEngine;
 use crate::signaling::types::{ClientId, OutgoingMsg};
 
-/// Router glues the Server state machine to per-client "sinks".
+/// Router glues the ServerEngine state machine to per-client "sinks".
 pub struct Router {
-    server: Server,
+    server: ServerEngine,
     outboxes: HashMap<ClientId, Vec<SignalingMsg>>,
 }
 
@@ -21,14 +21,14 @@ impl Router {
 
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
         Self {
-            server: Server::with_log(log),
+            server: ServerEngine::with_log(log),
             outboxes: HashMap::new(),
         }
     }
     /// New: build a Router with explicit log sink *and* auth backend.
     pub fn with_log_and_auth(log: Arc<dyn LogSink>, auth_backend: Box<dyn AuthBackend>) -> Self {
         Self {
-            server: Server::with_log_and_auth(log, auth_backend),
+            server: ServerEngine::with_log_and_auth(log, auth_backend),
             outboxes: HashMap::new(),
         }
     }
@@ -54,7 +54,7 @@ impl Router {
 
     /// Main entrypoint: handle a message coming *from* a client.
     ///
-    /// This calls into the Server and enqueues any resulting messages into the
+    /// This calls into the ServerEngine and enqueues any resulting messages into the
     /// appropriate client outboxes.
     pub fn handle_from_client(&mut self, from_cid: ClientId, msg: SignalingMsg) {
         let out_msgs = self.server.handle(from_cid, msg);
@@ -100,11 +100,11 @@ impl Router {
     }
 
     /// Access to the underlying server, if we ever need to inspect it in tests.
-    pub fn server(&self) -> &Server {
+    pub fn server(&self) -> &ServerEngine {
         &self.server
     }
 
-    pub fn server_mut(&mut self) -> &mut Server {
+    pub fn server_mut(&mut self) -> &mut ServerEngine {
         &mut self.server
     }
 
