@@ -1,6 +1,8 @@
 // ---- Public message enum --------------------------------------------------
 
-use crate::signaling::protocol::{SessionCode, SessionId, TxnId, UserName};
+use crate::signaling::protocol::{
+    SessionCode, SessionId, TxnId, UserName, peer_status::PeerStatus,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignalingMsg {
@@ -30,7 +32,7 @@ pub enum SignalingMsg {
     },
     ListPeers,
     PeersOnline {
-        peers: Vec<UserName>,
+        peers: Vec<(UserName, PeerStatus)>,
     },
 
     // Session management

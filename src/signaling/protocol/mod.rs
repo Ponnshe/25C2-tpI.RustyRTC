@@ -6,6 +6,7 @@ mod errors;
 mod framing;
 mod msg;
 mod msg_type;
+pub mod peer_status;
 mod types;
 
 pub use codec::{decode_msg, encode_msg};

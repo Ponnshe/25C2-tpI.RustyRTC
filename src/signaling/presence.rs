@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::signaling::protocol::UserName;
 use crate::signaling::types::ClientId;
@@ -8,6 +8,7 @@ use crate::signaling::types::ClientId;
 pub struct Presence {
     user_to_client: HashMap<UserName, ClientId>,
     client_to_user: HashMap<ClientId, UserName>,
+    busy_users: HashSet<UserName>,
 }
 
 impl Presence {
@@ -29,6 +30,8 @@ impl Presence {
     pub fn logout(&mut self, client_id: ClientId) -> Option<UserName> {
         if let Some(username) = self.client_to_user.remove(&client_id) {
             self.user_to_client.remove(&username);
+            // Auto-clear busy status on disconnect
+            self.busy_users.remove(&username);
             Some(username)
         } else {
             None
@@ -53,5 +56,16 @@ impl Presence {
     /// This is used to iterate over all clients to broadcast updates.
     pub fn all_client_ids(&self) -> Vec<ClientId> {
         self.client_to_user.keys().copied().collect()
+    }
+    pub fn set_busy(&mut self, username: &str, busy: bool) {
+        if busy {
+            self.busy_users.insert(username.to_string());
+        } else {
+            self.busy_users.remove(username);
+        }
+    }
+
+    pub fn is_busy(&self, username: &str) -> bool {
+        self.busy_users.contains(username)
     }
 }
