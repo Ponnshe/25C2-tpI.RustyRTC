@@ -72,7 +72,7 @@ impl ConnectionManager {
     pub fn new(logger_handle: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let ice_agent =
             IceAgent::with_logger(IceRole::Controlling, logger_handle.clone(), config.as_ref());
-        let local_fingerprint = get_local_fingerprint_sha256(config.clone()).unwrap_or_else(|e| {
+        let local_fingerprint = get_local_fingerprint_sha256(config.as_ref()).unwrap_or_else(|e| {
             eprintln!("Failed to get local fingerprint: {}", e);
             DEFAULT_FINGERPRINT.to_string()
         });
@@ -550,8 +550,11 @@ impl ConnectionManager {
         self.stop_ice_worker();
 
         // Re-initialize the ICE agent (clears candidates, nominated pairs, etc.)
-        self.ice_agent =
-            IceAgent::with_logger(IceRole::Controlling, self.logger_handle.clone(), &self.config);
+        self.ice_agent = IceAgent::with_logger(
+            IceRole::Controlling,
+            self.logger_handle.clone(),
+            &self.config,
+        );
 
         // Reset state flags
         self.signaling = SignalingState::Stable;

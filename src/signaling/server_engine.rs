@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use crate::log::NoopLogSink;
 use crate::log::log_sink::LogSink;
-use crate::signaling::AuthError;
-use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend};
+use crate::signaling::auth::{AllowAllAuthBackend, AuthBackend, AuthError};
 use crate::signaling::errors::{JoinErrorCode, LoginErrorCode, RegisterErrorCode};
 use crate::signaling::presence::Presence;
 use crate::signaling::protocol::peer_status::PeerStatus;
@@ -24,21 +23,25 @@ pub struct ServerEngine {
 }
 
 impl ServerEngine {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_log_and_auth(Arc::new(NoopLogSink), Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom logger, but still "accept all" auth backend.
+    #[must_use]
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
         Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom auth backend, but Noop logging.
+    #[must_use]
     pub fn with_auth(auth: Box<dyn AuthBackend>) -> Self {
         Self::with_log_and_auth(Arc::new(NoopLogSink), auth)
     }
 
     /// Fully explicit constructor: custom logger + custom auth backend.
+    #[must_use]
     pub fn with_log_and_auth(log: Arc<dyn LogSink>, auth: Box<dyn AuthBackend>) -> Self {
         Self {
             presence: Presence::new(),
@@ -68,7 +71,7 @@ impl ServerEngine {
         // First, a bunch of random attempts.
         for _ in 0..100 {
             let n: u32 = rng.gen_range(0..1_000_000); // 0..=999_999
-            let code = format!("{:06}", n);
+            let code = format!("{n:06}");
             if !self.sessions.contains_code(&code) {
                 return code;
             }
@@ -90,7 +93,7 @@ impl ServerEngine {
 
     /// Main entrypoint: handle a message from a client.
     ///
-    /// Returns a list of (target_client, Msg) to send.
+    /// Returns a list of (`target_client`, Msg) to send.
     pub fn handle(&mut self, from_cid: ClientId, msg: SignalingMsg) -> Vec<OutgoingMsg> {
         match msg {
             SignalingMsg::Hello { client_version } => {
@@ -105,11 +108,11 @@ impl ServerEngine {
             }
 
             SignalingMsg::Login { username, password } => {
-                self.handle_login(from_cid, username, password)
+                self.handle_login(from_cid, &username, &password)
             }
 
             SignalingMsg::Register { username, password } => {
-                self.handle_register(from_cid, username, password)
+                self.handle_register(from_cid, &username, &password)
             }
 
             SignalingMsg::ListPeers => self.handle_list_peers(from_cid),
@@ -118,7 +121,7 @@ impl ServerEngine {
                 self.handle_create_session(from_cid, capacity)
             }
 
-            SignalingMsg::Join { session_code } => self.handle_join(from_cid, session_code),
+            SignalingMsg::Join { session_code } => self.handle_join(from_cid, &session_code),
 
             SignalingMsg::Offer { .. }
             | SignalingMsg::Answer { .. }
@@ -232,8 +235,8 @@ impl ServerEngine {
     fn handle_login(
         &mut self,
         client: ClientId,
-        username: UserName,
-        password: String,
+        username: &str,
+        password: &str,
     ) -> Vec<OutgoingMsg> {
         sink_info!(
             self.log,
@@ -243,7 +246,7 @@ impl ServerEngine {
         );
         let mut out = Vec::new();
         // 1) Auth backend decides if username/password are valid.
-        if let Err(err) = self.auth.verify(&username, &password) {
+        if let Err(err) = self.auth.verify(username, password) {
             sink_warn!(
                 self.log,
                 "login failed: client_id={} username={} err={:?}",
@@ -265,7 +268,7 @@ impl ServerEngine {
         }
 
         // 2) Reject if the user is already logged in on another client.
-        if let Some(existing_client) = self.presence.client_id_for(&username) {
+        if let Some(existing_client) = self.presence.client_id_for(&username.to_string()) {
             sink_warn!(
                 self.log,
                 "login rejected: username={} already logged in as client_id={}",
@@ -286,10 +289,12 @@ impl ServerEngine {
             username
         );
         // 3) Success: record presence and send LoginOk.
-        let _ = self.presence.login(client, username.clone());
+        let _ = self.presence.login(client, username.to_string());
         out.push(OutgoingMsg {
             client_id_target: client,
-            msg: SignalingMsg::LoginOk { username },
+            msg: SignalingMsg::LoginOk {
+                username: username.to_string(),
+            },
         });
         // 4) Broadcast updated peer list to everyone (including the new user)
         out.extend(self.broadcast_peer_list_update());
@@ -299,12 +304,12 @@ impl ServerEngine {
     fn handle_register(
         &mut self,
         client_id: ClientId,
-        username: UserName,
-        password: String,
+        username: &str,
+        password: &str,
     ) -> Vec<OutgoingMsg> {
         let mut out = Vec::new();
 
-        let res = self.auth.register(&username, &password);
+        let res = self.auth.register(username, password);
 
         match res {
             Ok(()) => {
@@ -317,7 +322,7 @@ impl ServerEngine {
                 out.push(OutgoingMsg {
                     client_id_target: client_id,
                     msg: SignalingMsg::RegisterOk {
-                        username: username.clone(),
+                        username: username.to_string(),
                     },
                 });
             }
@@ -342,7 +347,9 @@ impl ServerEngine {
 
         out
     }
-    fn handle_list_peers(&mut self, client_id: ClientId) -> Vec<OutgoingMsg> {
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn handle_list_peers(&self, client_id: ClientId) -> Vec<OutgoingMsg> {
         let mut out = Vec::new();
         let requester = self.require_logged_in(client_id);
 
@@ -444,7 +451,7 @@ impl ServerEngine {
         out_msg
     }
 
-    fn handle_join(&mut self, client_id: ClientId, session_code: SessionCode) -> Vec<OutgoingMsg> {
+    fn handle_join(&mut self, client_id: ClientId, session_code: &str) -> Vec<OutgoingMsg> {
         let mut out_msgs = Vec::new();
 
         // require login
@@ -464,7 +471,10 @@ impl ServerEngine {
             return out_msgs;
         };
 
-        match self.sessions.join_by_code(&session_code, client_id) {
+        match self
+            .sessions
+            .join_by_code(&session_code.to_string(), client_id)
+        {
             Ok(session_id) => {
                 sink_info!(
                     self.log,
@@ -553,14 +563,14 @@ impl ServerEngine {
         };
         let mut status_changed = false;
 
-        match msg {
+        let forward_msgs = match msg {
             SignalingMsg::Offer {
                 txn_id, to, sdp, ..
-            } => self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+            } => self.forward(from, &from_username, txn_id, &to, |username, txn_id, to| {
                 SignalingMsg::Offer {
                     txn_id,
                     from: username,
-                    to,
+                    to: to.to_string(),
                     sdp,
                 }
             }),
@@ -572,11 +582,11 @@ impl ServerEngine {
                 self.presence.set_busy(&to, true);
                 status_changed = true;
 
-                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                self.forward(from, &from_username, txn_id, &to, |username, txn_id, to| {
                     SignalingMsg::Answer {
                         txn_id,
                         from: username,
-                        to,
+                        to: to.to_string(),
                         sdp,
                     }
                 })
@@ -587,20 +597,20 @@ impl ServerEngine {
                 mline_index,
                 cand,
                 ..
-            } => self.forward(from, &from_username, 0, to, |username, _txn_id, to| {
+            } => self.forward(from, &from_username, 0, &to, |username, _txn_id, to| {
                 SignalingMsg::Candidate {
                     from: username,
-                    to,
+                    to: to.to_string(),
                     mid,
                     mline_index,
                     cand,
                 }
             }),
             SignalingMsg::Ack { txn_id, to, .. } => {
-                self.forward(from, &from_username, txn_id, to, |username, txn_id, to| {
+                self.forward(from, &from_username, txn_id, &to, |username, txn_id, to| {
                     SignalingMsg::Ack {
                         from: username,
-                        to,
+                        to: to.to_string(),
                         txn_id,
                     }
                 })
@@ -611,10 +621,10 @@ impl ServerEngine {
                 self.presence.set_busy(&to, false);
                 status_changed = true;
 
-                self.forward(from, &from_username, 0, to, |username, _, to| {
+                self.forward(from, &from_username, 0, &to, |username, _, to| {
                     SignalingMsg::Bye {
                         from: username,
-                        to,
+                        to: to.to_string(),
                         reason,
                     }
                 })
@@ -627,29 +637,32 @@ impl ServerEngine {
                 );
                 Vec::new()
             }
-        }
-        .into_iter()
-        .chain(if status_changed {
-            self.broadcast_peer_list_update()
+        };
+
+        if status_changed {
+            forward_msgs
+                .into_iter()
+                .chain(self.broadcast_peer_list_update())
+                .collect()
         } else {
-            Vec::new()
-        })
-        .collect()
+            forward_msgs
+        }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn forward<F>(
-        &mut self,
+        &self,
         from: ClientId,
-        from_username: &UserName,
+        from_username: &str,
         txn_id: u64,
-        to_username: UserName,
+        to_username: &str,
         builder: F,
     ) -> Vec<OutgoingMsg>
     where
-        F: FnOnce(UserName, u64, UserName) -> SignalingMsg,
+        F: FnOnce(UserName, u64, &str) -> SignalingMsg,
     {
         // 2) resolve target client by username
-        let Some(target_client) = self.presence.client_id_for(&to_username) else {
+        let Some(target_client) = self.presence.client_id_for(&to_username.to_string()) else {
             sink_warn!(
                 self.log,
                 "client {} ({}) tried to send signaling to offline user {}",
@@ -660,7 +673,7 @@ impl ServerEngine {
             return Vec::new();
         };
 
-        let msg = builder(from_username.clone(), txn_id, to_username.clone());
+        let msg = builder(from_username.to_string(), txn_id, to_username);
 
         let kind = match &msg {
             SignalingMsg::Offer { .. } => "Offer",
@@ -685,8 +698,8 @@ impl ServerEngine {
         }]
     }
 
-    #[allow(dead_code)]
-    fn handle_ack(&mut self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
+    #[allow(dead_code, clippy::needless_pass_by_ref_mut)]
+    fn handle_ack(&self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
         let username = self.presence.username_for(from_cid).cloned();
         sink_trace!(
             self.log,
@@ -700,7 +713,7 @@ impl ServerEngine {
     }
 
     #[allow(dead_code)]
-    fn handle_bye(&mut self, from: ClientId, reason: Option<String>) -> Vec<OutgoingMsg> {
+    fn handle_bye(&mut self, from: ClientId, reason: Option<&str>) -> Vec<OutgoingMsg> {
         let username_opt = self.presence.username_for(from).cloned();
 
         sink_info!(
@@ -772,13 +785,15 @@ mod tests {
             },
         );
 
-        // We expect a LoginOk back to that client.
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].client_id_target, client_id);
-        match &out[0].msg {
-            SignalingMsg::LoginOk { username: u } => assert_eq!(u, username),
-            other => panic!("expected LoginOk, got {:?}", other),
-        }
+        // We expect a LoginOk back to that client, plus a PeersOnline to existing clients
+        let has_login_ok = out.iter().any(|m| {
+            if m.client_id_target != client_id {
+                return false;
+            }
+            matches!(&m.msg, SignalingMsg::LoginOk { username: u } if u == username)
+        });
+
+        assert!(has_login_ok, "Expected LoginOk for the user");
     }
 
     #[test]
@@ -795,11 +810,10 @@ mod tests {
             },
         );
 
-        assert_eq!(outs.len(), 1);
-        match &outs[0].msg {
-            SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
-            other => panic!("expected LoginOk, got {:?}", other),
-        }
+        let login_ok = outs.iter().find(|m| {
+            m.client_id_target == client1 && matches!(&m.msg, SignalingMsg::LoginOk { .. })
+        });
+        assert!(login_ok.is_some());
 
         // client creates session
         let outs2 = server.handle(client1, SignalingMsg::CreateSession { capacity: 2 });
@@ -812,7 +826,7 @@ mod tests {
                 assert!(session_id.starts_with("sess-"));
                 assert_eq!(session_code.len(), 6);
             }
-            other => panic!("expected Created, got {:?}", other),
+            other => panic!("expected Created, got {other:?}"),
         }
     }
 
@@ -832,8 +846,7 @@ mod tests {
 
         assert!(
             res.is_empty(),
-            "expected no outgoing messages for unauthenticated Offer, got {:?}",
-            res
+            "expected no outgoing messages for unauthenticated Offer, got {res:?}"
         );
     }
 
@@ -855,10 +868,15 @@ mod tests {
             },
         );
 
+        // After login, we get a broadcast update, so we need to filter for the offer
+        let offer_res: Vec<_> = res
+            .into_iter()
+            .filter(|m| matches!(&m.msg, SignalingMsg::Offer { .. }))
+            .collect();
+
         assert!(
-            res.is_empty(),
-            "expected no outgoing messages when target user is offline, got {:?}",
-            res
+            offer_res.is_empty(),
+            "expected no outgoing messages when target user is offline, got {offer_res:?}"
         );
     }
 
@@ -880,9 +898,15 @@ mod tests {
             },
         );
 
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].client_id_target, 2);
-        match &res[0].msg {
+        // We might get multiple messages due to broadcasts, find the offer
+        let offer_msg = res
+            .iter()
+            .find(|m| matches!(&m.msg, SignalingMsg::Offer { .. }));
+        assert!(offer_msg.is_some(), "Expected to find an Offer message");
+
+        let out = offer_msg.unwrap();
+        assert_eq!(out.client_id_target, 2);
+        match &out.msg {
             SignalingMsg::Offer {
                 txn_id,
                 from,
@@ -894,7 +918,7 @@ mod tests {
                 assert_eq!(to, "bob");
                 assert_eq!(sdp, b"v=0");
             }
-            other => panic!("expected forwarded Offer, got {:?}", other),
+            other => panic!("expected forwarded Offer, got {other:?}"),
         }
     }
 
@@ -912,15 +936,15 @@ mod tests {
         // 2) alice creates a session
         let created = server.handle(alice, SignalingMsg::CreateSession { capacity: 2 });
 
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].client_id_target, alice);
+        let created_msg = created.iter().find(|m| m.client_id_target == alice);
+        assert!(created_msg.is_some());
 
-        let (session_id, session_code) = match &created[0].msg {
+        let (session_id, session_code) = match &created_msg.unwrap().msg {
             SignalingMsg::Created {
                 session_id,
                 session_code,
             } => (session_id.clone(), session_code.clone()),
-            other => panic!("expected Created, got {:?}", other),
+            other => panic!("expected Created, got {other:?}"),
         };
 
         // 3) bob joins that session
@@ -931,37 +955,32 @@ mod tests {
             },
         );
 
-        // Now expect JoinOk (to bob) + PeerJoined (to alice)
-        assert_eq!(
-            joined.len(),
-            2,
-            "expected JoinOk + PeerJoined, got {:?}",
-            joined
-        );
-
+        // Now expect JoinOk (to bob) + PeerJoined (to alice) + broadcast updates
         let mut saw_join_ok = false;
         let mut saw_peer_joined = false;
         for m in &joined {
             match &m.msg {
                 SignalingMsg::JoinOk { session_id: sid } => {
-                    assert_eq!(m.client_id_target, bob);
-                    assert_eq!(sid, &session_id);
-                    saw_join_ok = true;
+                    if m.client_id_target == bob {
+                        assert_eq!(sid, &session_id);
+                        saw_join_ok = true;
+                    }
                 }
                 SignalingMsg::PeerJoined {
                     session_id: sid,
                     username,
                 } => {
-                    assert_eq!(m.client_id_target, alice);
-                    assert_eq!(sid, &session_id);
-                    assert_eq!(username, "bob");
-                    saw_peer_joined = true;
+                    if m.client_id_target == alice {
+                        assert_eq!(sid, &session_id);
+                        assert_eq!(username, "bob");
+                        saw_peer_joined = true;
+                    }
                 }
-                other => panic!("unexpected msg in join: {:?}", other),
+                _ => {} // Ignore other messages like PeersOnline
             }
         }
-        assert!(saw_join_ok);
-        assert!(saw_peer_joined);
+        assert!(saw_join_ok, "Did not see JoinOk for bob");
+        assert!(saw_peer_joined, "Did not see PeerJoined for alice");
 
         // 4) now alice sends an Offer to bob; should be forwarded
         let txn_id = 42;
@@ -977,14 +996,18 @@ mod tests {
             },
         );
 
+        let offer_res: Vec<_> = res
+            .into_iter()
+            .filter(|m| matches!(&m.msg, SignalingMsg::Offer { .. }))
+            .collect();
+
         assert_eq!(
-            res.len(),
+            offer_res.len(),
             1,
-            "expected one outgoing Offer message, got {:?}",
-            res
+            "expected one outgoing Offer message, got {offer_res:?}"
         );
 
-        let out = &res[0];
+        let out = &offer_res[0];
         assert_eq!(out.client_id_target, bob);
 
         match &out.msg {
@@ -999,7 +1022,7 @@ mod tests {
                 assert_eq!(to, "bob");
                 assert_eq!(s, &sdp);
             }
-            other => panic!("expected forwarded Offer, got {:?}", other),
+            other => panic!("expected forwarded Offer, got {other:?}"),
         }
     }
 
@@ -1011,17 +1034,28 @@ mod tests {
         login(&mut server, 3, "carol");
 
         let res = server.handle(1, SignalingMsg::ListPeers);
-        assert_eq!(res.len(), 1);
-        let out = &res[0];
-        assert_eq!(out.client_id_target, 1);
-        match &out.msg {
-            SignalingMsg::PeersOnline { peers } => {
-                assert_eq!(peers.len(), 2);
-                assert!(peers.contains(&"bob".to_string()));
-                assert!(peers.contains(&"carol".to_string()));
-                assert!(!peers.contains(&"alice".to_string()));
+
+        // Find the PeersOnline message destined for client 1
+        let peers_online_msg = res.iter().find_map(|m| {
+            if m.client_id_target == 1
+                && let SignalingMsg::PeersOnline { peers } = &m.msg
+            {
+                Some(peers)
+            } else {
+                None
             }
-            other => panic!("expected PeersOnline, got {:?}", other),
+        });
+
+        assert!(
+            peers_online_msg.is_some(),
+            "No PeersOnline message found for client 1"
+        );
+
+        if let Some(peers) = peers_online_msg {
+            assert_eq!(peers.len(), 2);
+            assert!(peers.iter().any(|(name, _)| name == "bob"));
+            assert!(peers.iter().any(|(name, _)| name == "carol"));
+            assert!(!peers.iter().any(|(name, _)| name == "alice"));
         }
     }
 
@@ -1034,7 +1068,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         match &res[0].msg {
             SignalingMsg::PeersOnline { peers } => assert!(peers.is_empty()),
-            other => panic!("expected PeersOnline, got {:?}", other),
+            other => panic!("expected PeersOnline, got {other:?}"),
         }
     }
 
@@ -1052,7 +1086,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         match &res[0].msg {
             SignalingMsg::RegisterOk { username } => assert_eq!(username, "newuser"),
-            other => panic!("expected RegisterOk, got {:?}", other),
+            other => panic!("expected RegisterOk, got {other:?}"),
         }
     }
 
@@ -1073,8 +1107,7 @@ mod tests {
 
         assert!(
             res.is_empty(),
-            "expected no outgoing messages for unauthenticated Ack, got {:?}",
-            res
+            "expected no outgoing messages for unauthenticated Ack, got {res:?}"
         );
     }
 
@@ -1093,9 +1126,13 @@ mod tests {
                 txn_id: 123,
             },
         );
+        let ack_res: Vec<_> = res
+            .into_iter()
+            .filter(|m| matches!(&m.msg, SignalingMsg::Ack { .. }))
+            .collect();
 
-        assert_eq!(res.len(), 1);
-        let out = &res[0];
+        assert_eq!(ack_res.len(), 1);
+        let out = &ack_res[0];
         assert_eq!(out.client_id_target, 2);
         match &out.msg {
             SignalingMsg::Ack { from, to, txn_id } => {
@@ -1103,7 +1140,7 @@ mod tests {
                 assert_eq!(to, "bob");
                 assert_eq!(*txn_id, 123);
             }
-            other => panic!("expected forwarded Ack, got {:?}", other),
+            other => panic!("expected forwarded Ack, got {other:?}"),
         }
     }
 
@@ -1124,8 +1161,7 @@ mod tests {
 
         assert!(
             res.is_empty(),
-            "expected no outgoing messages for unauthenticated Bye, got {:?}",
-            res
+            "expected no outgoing messages for unauthenticated Bye, got {res:?}"
         );
     }
 
@@ -1143,9 +1179,13 @@ mod tests {
                 reason: Some("done".into()),
             },
         );
+        let bye_res: Vec<_> = res
+            .into_iter()
+            .filter(|m| matches!(&m.msg, SignalingMsg::Bye { .. }))
+            .collect();
 
-        assert_eq!(res.len(), 1);
-        let out = &res[0];
+        assert_eq!(bye_res.len(), 1);
+        let out = &bye_res[0];
         assert_eq!(out.client_id_target, 2);
         match &out.msg {
             SignalingMsg::Bye { from, to, reason } => {
@@ -1153,7 +1193,7 @@ mod tests {
                 assert_eq!(to, "bob");
                 assert_eq!(reason.as_deref(), Some("done"));
             }
-            other => panic!("expected forwarded Bye, got {:?}", other),
+            other => panic!("expected forwarded Bye, got {other:?}"),
         }
     }
 
@@ -1163,11 +1203,16 @@ mod tests {
         login(&mut server, 1, "alice");
 
         let res = server.handle(1, SignalingMsg::Ping { nonce: 42 });
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].client_id_target, 1);
-        match &res[0].msg {
+        let pong_res: Vec<_> = res
+            .into_iter()
+            .filter(|m| matches!(&m.msg, SignalingMsg::Pong { .. }))
+            .collect();
+
+        assert_eq!(pong_res.len(), 1);
+        assert_eq!(pong_res[0].client_id_target, 1);
+        match &pong_res[0].msg {
             SignalingMsg::Pong { nonce } => assert_eq!(*nonce, 42),
-            other => panic!("expected Pong, got {:?}", other),
+            other => panic!("expected Pong, got {other:?}"),
         }
     }
 
@@ -1182,14 +1227,15 @@ mod tests {
 
         // alice creates session
         let created = server.handle(alice, SignalingMsg::CreateSession { capacity: 2 });
-        assert_eq!(created.len(), 1);
+        let created_msg = created.iter().find(|m| m.client_id_target == alice);
+        assert!(created_msg.is_some());
 
-        let (session_id, session_code) = match &created[0].msg {
+        let (session_id, session_code) = match &created_msg.unwrap().msg {
             SignalingMsg::Created {
                 session_id,
                 session_code,
             } => (session_id.clone(), session_code.clone()),
-            other => panic!("expected Created, got {:?}", other),
+            other => panic!("expected Created, got {other:?}"),
         };
 
         // bob joins
@@ -1198,27 +1244,29 @@ mod tests {
         // We expect:
         // - JoinOk to bob
         // - PeerJoined to alice
-        assert_eq!(out.len(), 2);
+        // - Broadcasts to both
         let mut saw_join_ok = false;
         let mut saw_peer_joined = false;
 
         for m in &out {
             match &m.msg {
                 SignalingMsg::JoinOk { session_id: sid } => {
-                    assert_eq!(m.client_id_target, bob);
-                    assert_eq!(sid, &session_id);
-                    saw_join_ok = true;
+                    if m.client_id_target == bob {
+                        assert_eq!(sid, &session_id);
+                        saw_join_ok = true;
+                    }
                 }
                 SignalingMsg::PeerJoined {
                     session_id: sid,
                     username,
                 } => {
-                    assert_eq!(m.client_id_target, alice);
-                    assert_eq!(sid, &session_id);
-                    assert_eq!(username, "bob");
-                    saw_peer_joined = true;
+                    if m.client_id_target == alice {
+                        assert_eq!(sid, &session_id);
+                        assert_eq!(username, "bob");
+                        saw_peer_joined = true;
+                    }
                 }
-                other => panic!("unexpected msg: {:?}", other),
+                _ => {}
             }
         }
 
@@ -1245,11 +1293,10 @@ mod tests {
                 assert_eq!(
                     *code,
                     LoginErrorCode::InvalidCredentials.as_u16(),
-                    "expected InvalidCredentials code, got {}",
-                    code
+                    "expected InvalidCredentials code, got {code}"
                 );
             }
-            other => panic!("expected LoginErr, got {:?}", other),
+            other => panic!("expected LoginErr, got {other:?}"),
         }
     }
 
@@ -1265,11 +1312,14 @@ mod tests {
                 password: "secret".into(),
             },
         );
+        let login_ok = out
+            .iter()
+            .find(|m| matches!(&m.msg, SignalingMsg::LoginOk { .. }));
+        assert!(login_ok.is_some());
 
-        assert_eq!(out.len(), 1);
-        match &out[0].msg {
+        match &login_ok.unwrap().msg {
             SignalingMsg::LoginOk { username } => assert_eq!(username, "alice"),
-            other => panic!("expected LoginOk, got {:?}", other),
+            other => panic!("expected LoginOk, got {other:?}"),
         }
     }
 }

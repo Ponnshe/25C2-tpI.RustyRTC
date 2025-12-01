@@ -1,13 +1,13 @@
 use super::candidate::Candidate;
 use super::candidate_pair::CandidatePair;
+use crate::config::Config;
 use crate::ice::type_ice::candidate_type::CandidateType::ServerReflexive;
 use crate::ice::{
     gathering_service::gather_host_candidates, type_ice::candidate_pair::CandidatePairState,
 };
 use crate::log::log_sink::LogSink;
 use crate::{sink_debug, sink_error, sink_info, sink_warn};
-use crate::config::Config;
-use rand::{rngs::OsRng, Rng};
+use rand::{Rng, rngs::OsRng};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::{io::Error, time::Duration};
@@ -382,7 +382,7 @@ impl IceAgent {
 
     // RFC 5389 constants
     const STUN_BINDING_REQUEST: u16 = 0x0001;
-    const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+    const STUN_MAGIC_COOKIE: u32 = 0x2112_A442;
     const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
     const FAMILY_IPV4: u8 = 0x01;
     /// Gathers Server Reflexive (srflx) candidates using a public STUN server.
@@ -1331,7 +1331,10 @@ mod tests {
             .collect();
 
         let count = agent.form_candidate_pairs();
-        assert!(count <= DEFAULT_MAX_CANDIDATE_PAIRS, "Debe respetar el límite máximo");
+        assert!(
+            count <= DEFAULT_MAX_CANDIDATE_PAIRS,
+            "Debe respetar el límite máximo"
+        );
     }
 
     #[test]
@@ -1454,8 +1457,10 @@ mod tests {
         let ip_address = "127.0.0.1";
         let port = 0;
 
-        let mut controlling_agent = IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
-        let mut controlled_agent = IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
+        let mut controlling_agent =
+            IceAgent::new(IceRole::Controlling, mock_logger(), &Config::empty());
+        let mut controlled_agent =
+            IceAgent::new(IceRole::Controlled, mock_logger(), &Config::empty());
 
         let controlling_local = mock_candidate_with_socket(ip_address, port);
         let controlled_remote_candidate = controlling_local.clone_light();

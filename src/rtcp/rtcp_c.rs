@@ -117,9 +117,9 @@ mod tests {
     }
 
     /// Build a single RTCP packet (header+payload) bytes.
-    /// length_words is calculated from payload len.
+    /// `length_words` is calculated from payload len.
     fn mk_packet(version: u8, padding: bool, rc_or_fmt: u8, pt: u8, payload: &[u8]) -> Vec<u8> {
-        let vprc = (version & 0b11) << 6 | ((padding as u8) << 5) | (rc_or_fmt & 0x1F);
+        let vprc = (version & 0b11) << 6 | (u8::from(padding) << 5) | (rc_or_fmt & 0x1F);
         let total = 4 + payload.len();
         assert_eq!(total % 4, 0, "total bytes must be 32-bit aligned for RTCP");
         let length_words = u16::try_from((total / 4) - 1).unwrap();
@@ -295,7 +295,7 @@ mod tests {
             data: vec![1, 2, 3, 4, 5, 6, 7, 8],
         });
 
-        let enc = RtcpPacket::encode_compound(&[pli.clone(), bye.clone(), app.clone()]).unwrap();
+        let enc = RtcpPacket::encode_compound(&[pli, bye, app]).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode compound");
 
         assert_eq!(dec.len(), 3);
@@ -356,7 +356,7 @@ mod tests {
             }],
         });
 
-        let enc = RtcpPacket::encode_compound(&[sr.clone(), rr.clone(), sdes.clone()]).unwrap();
+        let enc = RtcpPacket::encode_compound(&[sr, rr, sdes]).unwrap();
         let dec = RtcpPacket::decode_compound(&enc).expect("decode compound");
         assert_eq!(dec.len(), 3);
         matches!(&dec[0], RtcpPacket::Sr(_));

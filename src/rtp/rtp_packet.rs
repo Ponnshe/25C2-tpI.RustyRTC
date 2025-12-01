@@ -42,17 +42,23 @@ impl RtpPacket {
         Self::new(header, payload)
     }
 
-    /// Encode into a fresh Vec<u8> (network byte order).
+    /// Encode into a fresh `Vec<u8>` (network byte order).
+    ///
+    /// # Errors
+    ///
+    /// Returns `RtpError::HeaderExtensionTooLong` if the header extension data is too large.
     pub fn encode(&self) -> Result<Vec<u8>, RtpError> {
         let mut out = Vec::with_capacity(12 + self.header.csrcs.len() * 4 + self.payload.len() + 4);
 
         let cc = (self.header.csrcs.len() & 0x0F) as u8;
         let has_ext = self.header.header_extension.is_some();
         let has_pad = self.padding_bytes > 0;
-        let vpxcc =
-            (self.header.version & 0b11) << 6 | (has_pad as u8) << 5 | (has_ext as u8) << 4 | cc;
+        let vpxcc = (self.header.version & 0b11) << 6
+            | (u8::from(has_pad) << 5)
+            | (u8::from(has_ext) << 4)
+            | cc;
 
-        let m_pt = ((self.header.marker as u8) << 7) | (self.header.payload_type & 0x7F);
+        let m_pt = (u8::from(self.header.marker) << 7) | (self.header.payload_type & 0x7F);
 
         out.push(vpxcc);
         out.push(m_pt);
@@ -99,6 +105,11 @@ impl RtpPacket {
     }
 
     /// Decode a single RTP packet from `buf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `RtpError` if the buffer is too short, has an invalid version,
+    /// or contains malformed header fields.
     pub fn decode(buf: &[u8]) -> Result<Self, RtpError> {
         if buf.len() < 12 {
             return Err(RtpError::TooShort);
@@ -123,7 +134,7 @@ impl RtpPacket {
         let timestamp = u32::from_be_bytes(buf[4..8].try_into().map_err(|_| RtpError::Invalid)?);
         let ssrc = u32::from_be_bytes(buf[8..12].try_into().map_err(|_| RtpError::Invalid)?);
 
-        let mut idx = 12usize;
+        let mut idx = 12_usize;
 
         // CSRCs
         if buf.len() < idx + cc * 4 {
@@ -177,7 +188,7 @@ impl RtpPacket {
 
         // Determine payload region (handle P bit)
         let mut payload_end = buf.len();
-        let mut padding_bytes = 0u8;
+        let mut padding_bytes = 0_u8;
 
         if padding {
             // Last byte is padding count; must be >= 1 and <= payload length
@@ -262,9 +273,11 @@ mod tests {
         ssrc: u32,
     ) -> Vec<u8> {
         let mut b = Vec::with_capacity(12);
-        let vpxcc =
-            (version & 0b11) << 6 | ((padding as u8) << 5) | ((extension as u8) << 4) | (cc & 0x0F);
-        let m_pt = ((marker as u8) << 7) | (pt & 0x7F);
+        let vpxcc = (version & 0b11) << 6
+            | (u8::from(padding) << 5)
+            | (u8::from(extension) << 4)
+            | (cc & 0x0F);
+        let m_pt = (u8::from(marker) << 7) | (pt & 0x7F);
         b.push(vpxcc);
         b.push(m_pt);
         b.extend_from_slice(&seq.to_be_bytes());
@@ -323,7 +336,7 @@ mod tests {
         // X = 1, provide 4-byte header but not enough data for length_words
         let mut buf = mk_header_bytes(RTP_VERSION, false, true, 0, false, 96, 1, 2, 3);
         // profile = 0xABCD, length_words = 2 (needs 8 bytes)
-        buf.extend_from_slice(&0xABCDu16.to_be_bytes());
+        buf.extend_from_slice(&0xABCD_u16.to_be_bytes());
         buf.extend_from_slice(&2u16.to_be_bytes());
         // only 4 bytes of data given -> should error
         buf.extend_from_slice(&[1, 2, 3, 4]);
@@ -371,16 +384,16 @@ mod tests {
             true,
             127,
             0x1122,
-            0x33_445_566,
-            0x77_889_900,
+            0x3344_5566,
+            0x7788_9900,
         );
         let pkt = RtpPacket::decode(&buf).expect("should decode");
         assert_eq!(pkt.header.version, RTP_VERSION);
         assert!(pkt.header.marker);
         assert_eq!(pkt.header.payload_type, 127);
-        assert_eq!(pkt.header.sequence_number, 0x1_122);
-        assert_eq!(pkt.header.timestamp, 0x33_445_566);
-        assert_eq!(pkt.header.ssrc, 0x77_889_900);
+        assert_eq!(pkt.header.sequence_number, 0x1122);
+        assert_eq!(pkt.header.timestamp, 0x3344_5566);
+        assert_eq!(pkt.header.ssrc, 0x7788_9900);
         assert!(pkt.payload.is_empty());
         assert_eq!(pkt.padding_bytes, 0);
     }
@@ -388,7 +401,7 @@ mod tests {
     #[test]
     fn roundtrip_minimal() {
         let payload = b"hello".to_vec();
-        let pkt = RtpPacket::simple(96, true, 42, 9_000, 0xAA_BBC_CDD, payload.clone());
+        let pkt = RtpPacket::simple(96, true, 42, 9_000, 0xAA_BB_CC_DD, payload.clone());
         let enc = pkt.encode().expect("encode");
         let dec = RtpPacket::decode(&enc).expect("decode");
         assert_eq!(dec.header.version, RTP_VERSION);
@@ -396,14 +409,14 @@ mod tests {
         assert!(dec.header.marker);
         assert_eq!(dec.header.sequence_number, 42);
         assert_eq!(dec.header.timestamp, 9000);
-        assert_eq!(dec.header.ssrc, 0xAA_BBC_CDD);
+        assert_eq!(dec.header.ssrc, 0xAA_BB_CC_DD);
         assert_eq!(dec.payload, payload);
         assert_eq!(dec.padding_bytes, 0);
     }
 
     #[test]
     fn roundtrip_with_padding_1() {
-        let mut hdr = RtpHeader::new(111, 65_535, 0xDE_ADB_EEF, 0x01_020_304).with_marker(false);
+        let mut hdr = RtpHeader::new(111, 65_535, 0xDEAD_BEEF, 0x0102_0304).with_marker(false);
         hdr.padding = true;
 
         let mut pkt = RtpPacket::new(hdr, b"PAYLOAD".to_vec());
@@ -419,7 +432,7 @@ mod tests {
 
     #[test]
     fn roundtrip_with_padding_4() {
-        let mut hdr = RtpHeader::new(111, 7, 1234, 0xCA_FEB_ABE).with_marker(true);
+        let mut hdr = RtpHeader::new(111, 7, 1234, 0xCAFE_BABE).with_marker(true);
         hdr.padding = true;
 
         let mut pkt = RtpPacket::new(hdr, vec![1, 2, 3]);
@@ -435,6 +448,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn roundtrip_with_csrcs_15() {
         let mut hdr = RtpHeader::new(96, 1, 2, 3);
         let csrcs: Vec<u32> = (0..15).map(|i| 0x1111_0000 + i).collect();
@@ -548,6 +562,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn roundtrip_matrix_covering_common_axes() {
         // Sweep over a small matrix of PT/marker/CSRC count/payload sizes.
         let pts = [0u8, 96, 127];
@@ -580,6 +595,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn header_extension_various_lengths_roundtrip() {
         for len in [0usize, 1, 2, 3, 4, 5, 6, 7, 8, 15, 16] {
             let data: Vec<u8> = (0..len as u8).collect();

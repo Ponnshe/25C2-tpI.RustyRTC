@@ -18,7 +18,7 @@ use crate::{
     media_agent::video_frame::{VideoFrame, VideoFrameData},
     sink_debug,
 };
-use eframe::wgpu::{self, util::DeviceExt, PipelineCompilationOptions};
+use eframe::wgpu::{self, PipelineCompilationOptions, util::DeviceExt};
 use std::sync::Arc;
 
 /// Manages GPU resources and the rendering pipeline for YUV-to-RGB conversion.

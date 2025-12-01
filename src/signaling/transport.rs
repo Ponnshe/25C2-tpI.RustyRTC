@@ -6,8 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::log::log_sink::LogSink;
-use crate::signaling::protocol::{FrameError, SignalingMsg};
-use crate::signaling::protocol::{read_msg as proto_read_msg, write_msg as proto_write_msg};
+use crate::signaling::protocol::{self, FrameError, SignalingMsg};
 use crate::signaling::server_event::ServerEvent;
 use crate::signaling::types::ClientId;
 use crate::sink_error;
@@ -23,19 +22,23 @@ impl<S> Connection<S>
 where
     S: Read + Write,
 {
-    pub fn new(id: ClientId, stream: S) -> Self {
+    pub const fn new(id: ClientId, stream: S) -> Self {
         Self {
             client_id: id,
             stream,
         }
     }
 
+    /// # Errors
+    /// Returns `FrameError` on I/O or protocol-level read errors.
     pub fn recv(&mut self) -> Result<SignalingMsg, FrameError> {
-        proto_read_msg(&mut self.stream)
+        protocol::read_msg(&mut self.stream)
     }
 
+    /// # Errors
+    /// Returns `FrameError` on I/O or protocol-level write errors.
     pub fn send(&mut self, msg: &SignalingMsg) -> Result<(), FrameError> {
-        proto_write_msg(&mut self.stream, msg)
+        protocol::write_msg(&mut self.stream, msg)
     }
 }
 
@@ -48,18 +51,16 @@ pub(crate) fn spawn_tls_connection_thread(
     stream: StreamOwned<ServerConnection, TcpStream>,
     server_tx: Sender<ServerEvent>,
     log: Arc<dyn LogSink>,
-) -> io::Result<()> {
+) {
     let (to_client_tx, to_client_rx) = mpsc::channel::<SignalingMsg>();
 
     // Register client with the central server loop.
     server_tx
         .send(ServerEvent::RegisterClient {
             client_id,
-            to_client: to_client_tx.clone(),
+            to_client: to_client_tx,
         })
         .expect("server loop should be alive");
-
-    let log_for_thread = log.clone();
 
     thread::spawn(move || {
         let mut conn = Connection::new(client_id, stream);
@@ -70,12 +71,7 @@ pub(crate) fn spawn_tls_connection_thread(
                 match to_client_rx.try_recv() {
                     Ok(msg) => {
                         if let Err(e) = conn.send(&msg) {
-                            sink_error!(
-                                log_for_thread,
-                                "[conn {}] error sending TLS msg: {:?}",
-                                client_id,
-                                e
-                            );
+                            sink_error!(log, "[conn {}] error sending TLS msg: {:?}", client_id, e);
                             let _ = server_tx.send(ServerEvent::Disconnected { client_id });
                             return;
                         }
@@ -110,7 +106,7 @@ pub(crate) fn spawn_tls_connection_thread(
                 // Fatal IO error: disconnect.
                 Err(FrameError::Io(e)) => {
                     sink_error!(
-                        log_for_thread,
+                        log,
                         "[conn {}] IO error in TLS reader: {:?} (kind={:?})",
                         client_id,
                         e,
@@ -119,10 +115,10 @@ pub(crate) fn spawn_tls_connection_thread(
                     let _ = server_tx.send(ServerEvent::Disconnected { client_id });
                     return;
                 }
-                // Protocol/framig error: also disconnect.
-                Err(other) => {
+                // Protocol/framing error: also disconnect.
+                Err(other @ FrameError::Proto(_)) => {
                     sink_error!(
-                        log_for_thread,
+                        log,
                         "[conn {}] frame error in TLS reader: {:?}",
                         client_id,
                         other
@@ -136,14 +132,12 @@ pub(crate) fn spawn_tls_connection_thread(
             thread::sleep(Duration::from_millis(10));
         }
     });
-
-    Ok(())
 }
 
-/// Spawn reader + writer threads for a single TcpStream client.
+/// Spawn reader + writer threads for a single `TcpStream` client.
 ///
-/// `server_tx` is the Sender<ServerEvent> that talks to the central server loop.
-#[allow(clippy::expect_used)]
+/// `server_tx` is the `Sender<ServerEvent>` that talks to the central server loop.
+#[allow(clippy::expect_used, clippy::needless_pass_by_value)]
 #[allow(dead_code)]
 pub(crate) fn spawn_connection_threads(
     client_id: ClientId,
@@ -157,7 +151,7 @@ pub(crate) fn spawn_connection_threads(
     server_tx
         .send(ServerEvent::RegisterClient {
             client_id,
-            to_client: to_client_tx.clone(),
+            to_client: to_client_tx,
         })
         .expect("server loop should be alive");
 
@@ -211,21 +205,14 @@ pub(crate) fn spawn_connection_threads(
 
     // WRITER THREAD: to_client_rx -> socket
 
-    let log_for_write = log.clone();
     {
-        let server_tx = server_tx.clone();
         thread::spawn(move || {
             let mut conn = Connection::new(client_id, write_stream);
 
             while let Ok(msg) = to_client_rx.recv() {
                 if let Err(e) = conn.send(&msg) {
-                    sink_error!(
-                        log_for_write,
-                        "[conn {}] error sending msg: {:?}",
-                        client_id,
-                        e
-                    );
-                    let _ = server_tx.send(ServerEvent::Disconnected { client_id });
+                    sink_error!(log, "[conn {}] error sending msg: {:?}", client_id, e);
+                    // The reader thread is the one responsible for notifying the server of a disconnect.
                     break;
                 }
             }

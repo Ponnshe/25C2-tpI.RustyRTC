@@ -306,9 +306,9 @@ enum UtcConvError {
     Day,
 }
 
-/// Conversión UTC mínima (sin segundos intercalares).
-/// Nota: no es `const fn` porque usa `Result/try_from`; silenciamos solo ese hint.
-#[allow(clippy::missing_const_for_fn)]
+/// Minimal UTC conversion (no leap seconds).
+/// Note: not a `const fn` because it uses `Result/try_from`.
+#[allow(clippy::missing_const_for_fn, clippy::many_single_char_names)]
 fn unix_to_utc(mut s: u64) -> Result<SimpleUtc, UtcConvError> {
     use std::convert::TryFrom;
 

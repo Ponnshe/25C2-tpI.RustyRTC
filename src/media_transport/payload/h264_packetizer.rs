@@ -373,7 +373,7 @@ mod tests {
 
         let pt = 96u8;
         let ts = 123_456u32;
-        let ssrc = 0x11223344;
+        let ssrc = 0x1122_3344;
         let seq0 = 5000u16;
 
         let (pkts, next_seq) = p.packetize_annexb_to_rtp(&a, pt, ts, ssrc, seq0);
@@ -397,11 +397,11 @@ mod tests {
     fn rtp_decode_rejects_bad_version_variants() {
         // Build a valid small RTP packet first
         let pkt = RtpPacket::simple(
-            96,         // PT
-            true,       // M
-            1000,       // seq
-            4242,       // ts
-            0xAABBCCDD, // ssrc
+            96,          // PT
+            true,        // M
+            1000,        // seq
+            4242,        // ts
+            0xAABB_CCDD, // ssrc
             vec![0x65, 1, 2],
         );
         let bytes = pkt.encode().expect("encode");

@@ -3,7 +3,7 @@
 /// Header:
 ///   [ver: u8][msg_type: u8][flags: u16][body_len: u32]
 /// Body:
-///   [payload bytes...], up to MAX_BODY_LEN.
+///   [payload bytes...], up to `MAX_BODY_LEN`.
 pub const PROTO_VERSION: u8 = 1;
 
 /// Maximum allowed body size for a frame (to avoid OOM).
