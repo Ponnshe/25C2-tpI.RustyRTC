@@ -84,8 +84,14 @@ pub fn camera_loop(
 fn convert_to_videoframe(mat: &Mat, w: u32, h: u32) -> Result<VideoFrame> {
     let mut rgb_mat = Mat::default();
 
-    imgproc::cvt_color(mat, &mut rgb_mat, imgproc::COLOR_BGR2RGB, 0)
-        .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
+    imgproc::cvt_color(
+        mat,
+        &mut rgb_mat,
+        imgproc::COLOR_BGR2RGB,
+        0,
+        opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+    )
+    .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
     let bytes = tight_rgb_bytes(&rgb_mat, w, h)
         .map_err(|e| MediaAgentError::Io(format!("pack RGB: {e}")))?;
 
