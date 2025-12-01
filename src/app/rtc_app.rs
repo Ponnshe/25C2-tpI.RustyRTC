@@ -339,25 +339,42 @@ impl RtcApp {
             }
             SignalingMsg::Offer {
                 from, txn_id, sdp, ..
-            } => match String::from_utf8(sdp) {
-                Ok(body) => {
-                    self.remote_sdp_text = body.clone();
-                    self.call_flow = CallFlow::Incoming {
-                        from: from.clone(),
-                        txn_id,
-                        sdp: body,
-                    };
-                    self.status_line = format!("Incoming call from {from}");
-                    let _ = self.send_signaling(SignalingMsg::Ack {
+            } => {
+                // PROTECTION: If we are not Idle, we are busy. Reject the call.
+                if !matches!(self.call_flow, CallFlow::Idle) {
+                    self.background_log(
+                        LogLevel::Info,
+                        format!("Auto-rejecting call from {} (busy)", from),
+                    );
+
+                    // Send a Bye immediately to stop the caller's ringing state
+                    let _ = self.send_signaling(SignalingMsg::Bye {
                         from: self.current_username.clone().unwrap_or_default(),
                         to: from,
-                        txn_id,
+                        reason: Some("User is busy".into()),
                     });
+                    return;
                 }
-                Err(e) => {
-                    self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
+                match String::from_utf8(sdp) {
+                    Ok(body) => {
+                        self.remote_sdp_text = body.clone();
+                        self.call_flow = CallFlow::Incoming {
+                            from: from.clone(),
+                            txn_id,
+                            sdp: body,
+                        };
+                        self.status_line = format!("Incoming call from {from}");
+                        let _ = self.send_signaling(SignalingMsg::Ack {
+                            from: self.current_username.clone().unwrap_or_default(),
+                            to: from,
+                            txn_id,
+                        });
+                    }
+                    Err(e) => {
+                        self.push_ui_log(format!("Invalid SDP from {from}: {e}"));
+                    }
                 }
-            },
+            }
             SignalingMsg::Answer {
                 from, txn_id, sdp, ..
             } => match String::from_utf8(sdp) {
