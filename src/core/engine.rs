@@ -243,7 +243,9 @@ impl Engine {
             match self.ui_rx.try_recv() {
                 Ok(ev) => match &ev {
                     EngineEvent::NetworkMetrics(m) => {
-                        self.congestion_controller.on_network_metrics(m.clone())
+                        self.congestion_controller.on_network_metrics(m.clone());
+                        processed += 1;
+                        out.push(EngineEvent::NetworkMetrics(m.clone()));
                     }
 
                     EngineEvent::UpdateBitrate(br) => {
@@ -253,6 +255,8 @@ impl Engine {
                             let _ =
                                 media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
                         }
+                        processed += 1;
+                        out.push(EngineEvent::UpdateBitrate(*br));
                     }
 
                     _ => {
