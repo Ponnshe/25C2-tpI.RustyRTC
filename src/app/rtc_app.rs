@@ -975,11 +975,25 @@ impl RtcApp {
         // 2) Tear down media (safe to call even if session never started)
         self.engine.stop();
 
-        // 3) Reset call-related state
+        // 3) Re-initialize the Engine for the next call.
+        // The Engine (and its internal MediaTransport) consumes one-time resources (channels)
+        // during startup. To support a second call, we must create a fresh instance.
+        let logger_handle = Arc::new(self.logger.handle());
+        self.engine = Engine::new(logger_handle);
+
+        // 4) Reset call-related state
         self.call_flow = CallFlow::Idle;
+
+        // Since we dropped the old engine, we will never receive its "Closed" event,
+        // so we must force the state to Idle to enable the "Start Connection" button.
+        self.conn_state = ConnState::Idle;
+
         self.pending_remote_sdp = None;
         self.has_local_description = false;
         self.has_remote_description = false;
+        // Clear stale SDPs because the new Engine has new ICE credentials.
+        self.local_sdp_text.clear();
+        self.remote_sdp_text.clear();
 
         // This ensures 'have_any_texture' becomes false, closing the window.
         self.local_camera_texture = None;
