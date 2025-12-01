@@ -7,20 +7,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{dtls, ice::type_ice::ice_agent::IceRole};
-use crate::{dtls::DtlsRole, sink_trace};
-
 use crate::{
+    config::Config,
     congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
+    dtls::{self, DtlsRole},
+    ice::type_ice::ice_agent::IceRole,
     log::log_sink::LogSink,
-    media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
+    media_agent::video_frame::VideoFrame,
     media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
-    sink_debug, sink_info,
+    sink_debug, sink_info, sink_trace,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -34,14 +34,15 @@ pub struct Engine {
     ui_rx: Receiver<EngineEvent>,
     media_transport: MediaTransport,
     congestion_controller: CongestionController,
+    config: Arc<Config>,
 }
 
 impl Engine {
-    pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
+    pub fn new(logger_sink: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let media_transport =
-            MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
+            MediaTransport::new(event_tx.clone(), logger_sink.clone(), config.clone());
         let initial_bitrate = crate::media_agent::constants::BITRATE;
         let congestion_controller = CongestionController::new(
             initial_bitrate,
@@ -75,13 +76,14 @@ impl Engine {
         });
 
         Self {
-            cm: ConnectionManager::new(logger_sink.clone()),
+            cm: ConnectionManager::new(logger_sink.clone(), config.clone()),
             logger_sink,
             session: Arc::new(Mutex::new(None)),
             event_tx,
             media_transport,
             congestion_controller,
             ui_rx,
+            config,
         }
     }
 
@@ -199,6 +201,7 @@ impl Engine {
                     self.logger_sink.clone(),
                     Duration::from_secs_f32(5.0),
                     remote_fp,
+                    self.config.clone(),
                 ) {
                     Ok(cfg) => Some(cfg),
                     Err(e) => {

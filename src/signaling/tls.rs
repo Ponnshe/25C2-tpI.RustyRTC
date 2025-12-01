@@ -1,12 +1,15 @@
+use crate::{
+    config::Config,
+    tls_utils::{
+        load_signaling_certs, load_signaling_private_key, SIGNALING_CA_PEM,
+    },
+};
+use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer};
+use rustls_pemfile::certs;
 use std::{
     io::{self, Cursor},
     sync::Arc,
 };
-
-use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer};
-use rustls_pemfile::certs;
-
-use crate::tls_utils::{SIGNALING_CA_PEM, load_certs, load_private_key};
 
 /// Build a RootCertStore that trusts ONLY the pinned mkcert CA.
 fn build_pinned_root_store() -> io::Result<RootCertStore> {
@@ -51,12 +54,9 @@ pub fn build_signaling_client_config() -> io::Result<Arc<ClientConfig>> {
 ///
 /// We’ll call this once at startup, then re-use the Arc<ServerConfig>
 /// for each accepted TCP connection (wrapping in `ServerConnection` / `StreamOwned` later).
-pub fn build_signaling_server_config(
-    cert_path: &str,
-    key_path: &str,
-) -> io::Result<Arc<ServerConfig>> {
-    let certs = load_certs(cert_path)?;
-    let key = load_private_key(key_path)?;
+pub fn build_signaling_server_config(config: Arc<Config>) -> io::Result<Arc<ServerConfig>> {
+    let certs = load_signaling_certs(config.clone())?;
+    let key = load_signaling_private_key(config)?;
 
     let config = ServerConfig::builder()
         .with_no_client_auth()

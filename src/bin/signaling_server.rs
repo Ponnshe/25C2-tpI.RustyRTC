@@ -1,36 +1,29 @@
-use std::sync::Arc;
-use std::{env, process};
-
+use rustyrtc::config::Config;
 use rustyrtc::log::log_sink::LogSink;
 use rustyrtc::log::logger::Logger;
 use rustyrtc::signaling::run::run_signaling_server_with_log;
+use std::sync::Arc;
+use std::{env, process};
 
 fn main() -> std::io::Result<()> {
-    // --- Parse CLI args ----------------------------------------------------
-    //
-    // Supported:
-    //   cargo run --bin signaling_server
-    //      -> binds to 0.0.0.0:5000 (default)
-    //
-    //   cargo run --bin signaling_server -- 0.0.0.0:6000
-    //      -> binds to 0.0.0.0:6000
-    //
-    //   cargo run --bin signaling_server -- 127.0.0.1 7000
-    //      -> binds to 127.0.0.1:7000
+    // --- Load config file --------------------------------------------------
+    let config = Config::load("roomrtc.conf")
+        .or_else(|_| Config::load("default.conf"))
+        .unwrap_or_else(|e| {
+            eprintln!("Error loading config: {e}. Using empty config.");
+            Config::empty()
+        });
+    let config = Arc::new(config);
 
+    // --- Parse CLI args ----------------------------------------------------
     let args: Vec<String> = env::args().collect();
 
     let addr = match args.len() {
-        // no extra args -> default listen address
-        1 => "0.0.0.0:5000".to_owned(),
-
-        // one extra arg: full addr "IP:PORT"
+        1 => config
+            .get_or_default("Signaling", "listen_address", "0.0.0.0:5000")
+            .to_string(),
         2 => args[1].clone(),
-
-        // two extra args: IP + PORT
         3 => format!("{}:{}", args[1], args[2]),
-
-        // anything else -> usage error
         _ => {
             eprintln!("Usage:");
             eprintln!("  {}                # listen on 0.0.0.0:5000", args[0]);
@@ -53,5 +46,6 @@ fn main() -> std::io::Result<()> {
     eprintln!("[signaling_server] starting on {}", addr);
 
     // --- Run signaling server (blocks) -------------------------------------
-    run_signaling_server_with_log(&addr, log_sink)
+    run_signaling_server_with_log(&addr, log_sink, Arc::clone(&config))
 }
+

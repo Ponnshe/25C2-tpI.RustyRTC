@@ -1,16 +1,8 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{
-        Arc, Mutex, RwLock,
-        mpsc::{self, Receiver, Sender, SyncSender},
-    },
-    thread::JoinHandle,
-};
-
 use crate::{
+    config::Config,
     core::{events::EngineEvent, session::Session},
     log::log_sink::LogSink,
-    media_agent::{MediaAgent, spec::CodecSpec, video_frame::VideoFrame},
+    media_agent::{MediaAgent, constants::TARGET_FPS, spec::CodecSpec, video_frame::VideoFrame},
     media_transport::{
         codec::CodecDescriptor,
         constants::{DYNAMIC_PAYLOAD_TYPE_START, RTP_TX_CHANNEL_SIZE},
@@ -25,6 +17,14 @@ use crate::{
     },
     rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
     sink_error, sink_info,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex, RwLock,
+        mpsc::{self, Receiver, Sender, SyncSender},
+    },
+    thread::JoinHandle,
 };
 
 pub struct MediaTransport {
@@ -45,8 +45,16 @@ pub struct MediaTransport {
 }
 
 impl MediaTransport {
-    pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>, target_fps: u32) -> Self {
-        let media_agent = MediaAgent::new(logger.clone());
+    pub fn new(
+        event_tx: Sender<EngineEvent>,
+        logger: Arc<dyn LogSink>,
+        config: Arc<Config>,
+    ) -> Self {
+        let media_agent = MediaAgent::new(logger.clone(), config.clone());
+        let target_fps = config
+            .get_or_default("Media", "fps", "30")
+            .parse()
+            .unwrap_or(TARGET_FPS);
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
 
         let depacketizer_event_loop = DepacketizerEventLoop::new(logger.clone());

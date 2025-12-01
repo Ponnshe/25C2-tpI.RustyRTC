@@ -24,6 +24,13 @@ pub const BINDING_RESPONSE: &[u8] = b"BINDING-RESPONSE";
 /// Configuration constants
 const MAX_PAIR_LIMIT: usize = 100; // reasonable upper bound to avoid combinatorial explosion
 const MIN_PRIORITY_THRESHOLD: u64 = 1; // pairs below this value are ignored
+// RFC 5389 constants
+const HOSTNAME_STUN_GOOGLE: &str = "stun.cloudflare.com:3478";
+const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+const FAMILY_IPV4: u8 = 0x01;
+const TIMEOUT_SECS: u64 = 2;
 
 /// Helper to format error messages consistently
 fn error_message(msg: &str) -> String {
