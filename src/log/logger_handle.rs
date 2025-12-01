@@ -67,6 +67,7 @@ impl LoggerHandle {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::mpsc::{TrySendError, sync_channel};
 
@@ -91,8 +92,7 @@ mod tests {
         let (tx, _rx) = sync_channel::<LogMsg>(1);
         let h = LoggerHandle { tx };
 
-        let _ = h
-            .try_log(LogLevel::Info, "first", "test::target")
+        h.try_log(LogLevel::Info, "first", "test::target")
             .expect("first send should succeed");
 
         match h.try_log(LogLevel::Info, "second", "test::target") {

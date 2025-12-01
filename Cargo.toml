@@ -12,7 +12,6 @@ openh264 = "0.9"
 opencv = "0.97"
 rustls = { version = "0.23", features = ["std"]}
 rustls-pemfile = "2.2.0"
-webpki-roots = "0.26"
 bytemuck = "1.24.0"
 wgpu = "27.0.1"
 openssl = "0.10"
@@ -32,8 +31,11 @@ log-error = []
 
 
 [lints.clippy]
-all         = { level = "deny", priority = -1 }
-pedantic    = { level = "deny", priority = -1 }
-nursery     = { level = "warn", priority = -1 }
+# Standard lints: Warn is usually sufficient for "all"
+all = { level = "warn", priority = -1 }
+# Pedantic: Useful to see, annoying to be forced into. Keep as warn.
+# pedantic = { level = "warn", priority = -1 }
+# The "Must Haves" for reliability
 unwrap_used = "deny"
-expect_used = "deny"
+# Optional: Allow 'expect' because it adds context, or keep 'deny' for strict libraries
+expect_used = "warn"

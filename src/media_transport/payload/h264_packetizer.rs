@@ -131,10 +131,10 @@ impl H264Packetizer {
 
             // If this NALU was the last NALU of the AU and we already pushed at least one chunk,
             // mark the last emitted chunk as marker=true (end of frame).
-            if ni + 1 == nalus.len() {
-                if let Some(last) = out.last_mut() {
-                    last.marker = true;
-                }
+            if ni + 1 == nalus.len()
+                && let Some(last) = out.last_mut()
+            {
+                last.marker = true;
             }
         }
 
@@ -232,6 +232,7 @@ fn find_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::rtp::rtp_error::RtpError;
     use crate::rtp::rtp_packet::RtpPacket;
@@ -296,7 +297,7 @@ mod tests {
         let p = H264Packetizer::new(30).with_overhead(12);
         // NALU length exactly 18 -> remains single-nalu (no FU-A)
         let mut nalu = vec![0x41];
-        nalu.extend(std::iter::repeat(0u8).take(17));
+        nalu.extend(std::iter::repeat_n(0u8, 17));
         let a = annexb(&[&nalu]);
         let chunks = p.packetize_annexb_to_payloads(&a);
         assert_eq!(chunks.len(), 1);
@@ -311,7 +312,7 @@ mod tests {
         // max_payload = 18, nalu len = 19 -> FU-A of 2 fragments (since FU adds 2B overhead)
         let p = H264Packetizer::new(30).with_overhead(12);
         let mut nalu = vec![0x65]; // IDR
-        nalu.extend(std::iter::repeat(0u8).take(18)); // total 19
+        nalu.extend(std::iter::repeat_n(0u8, 18)); // total 19
         let a = annexb(&[&nalu]);
         let chunks = p.packetize_annexb_to_payloads(&a);
         assert_eq!(chunks.len(), 2);

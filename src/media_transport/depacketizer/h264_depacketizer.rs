@@ -7,8 +7,9 @@
 
 #[derive(Debug, Clone)]
 struct FuState {
+    #[allow(dead_code)]
     nalu_header: u8, // reconstructed: F|NRI|Type
-    buf: Vec<u8>,    // complete NAL content: [nalu_header, ...payload...]
+    buf: Vec<u8>, // complete NAL content: [nalu_header, ...payload...]
 }
 
 #[derive(Debug, Default, Clone)]
@@ -47,10 +48,10 @@ impl H264Depacketizer {
             self.cur_ts = Some(timestamp);
         }
 
-        if let Some(expect) = self.expected_seq {
-            if seq != expect {
-                self.frame_corrupted = true;
-            }
+        if let Some(expect) = self.expected_seq
+            && seq != expect
+        {
+            self.frame_corrupted = true;
         }
         self.expected_seq = Some(seq.wrapping_add(1));
 
@@ -176,6 +177,7 @@ impl H264Depacketizer {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     // ---------- helpers ----------

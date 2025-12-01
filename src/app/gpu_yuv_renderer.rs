@@ -1,4 +1,3 @@
-// src/gpu_yuv_renderer.rs
 //! GPU YUV420 -> RGB renderer using wgpu + egui_wgpu_backend.
 //!
 //! Usage (resumen):
@@ -11,14 +10,15 @@
 //!  - wgpu
 //!  - egui_wgpu_backend (o egui_wgpu)
 //!  - egui
-//! Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
-
+//!    Ajusta nombres si tu versión de egui_wgpu_backend difiere ligeramente.
+/// (Y_plane, U_plane, V_plane, y_stride, u_stride, v_stride)
+///
 use crate::{
     log::log_sink::LogSink,
     media_agent::video_frame::{VideoFrame, VideoFrameData},
-    sink_debug, sink_error,
+    sink_debug,
 };
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu::{self, PipelineCompilationOptions, util::DeviceExt};
 use std::sync::Arc;
 
 pub struct GpuYuvRenderer {
@@ -50,6 +50,7 @@ pub struct GpuYuvRenderer {
     // formats and config
     output_format: wgpu::TextureFormat,
 
+    #[allow(dead_code)]
     logger: Arc<dyn LogSink>,
 
     // dentro de GpuYuvRenderer
@@ -99,8 +100,8 @@ impl GpuYuvRenderer {
             label: Some("yuv-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -200,7 +201,7 @@ impl GpuYuvRenderer {
                         },
                     ],
                 }],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
@@ -210,7 +211,7 @@ impl GpuYuvRenderer {
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -255,7 +256,7 @@ impl GpuYuvRenderer {
     /// Update with a new YUV frame. This uploads Y/U/V planes to GPU, re-create textures if sizes changed,
     /// runs a render pass to the output texture, but DOES NOT register the texture with egui.
     /// After calling this, call `egui_texture_id(...)` to register the output texture for egui.
-
+    #[allow(clippy::expect_used)]
     pub fn update_frame(
         &mut self,
         device: &wgpu::Device,
@@ -288,10 +289,9 @@ impl GpuYuvRenderer {
         // UV planes: size = ceil(width/2), ceil(height/2)
         let y_w = width;
         let y_h = height;
-        let uv_w = (width as usize + 1) / 2;
-        let uv_h = (height as usize + 1) / 2;
+        let uv_w = (width).div_ceil(2);
+        let uv_h = (height).div_ceil(2);
 
-        // Re-create texturas si cambian tamaños
         if self.y_size != (y_w, y_h) || self.tex_y.is_none() {
             self.tex_y = Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("y-plane"),
@@ -334,10 +334,10 @@ impl GpuYuvRenderer {
             };
             self.tex_u = Some(create_uv("u-plane"));
             self.tex_v = Some(create_uv("v-plane"));
-            self.uv_size = (uv_w as u32, uv_h as u32);
+            self.uv_size = (uv_w, uv_h);
         }
 
-        // Output texture (RGBA) igual tamaño que Y
+        // Output texture (RGBA) Same size as Y
         if self.output_texture.is_none() || self.output_view.is_none() || self.y_size.0 != y_w {
             let out = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("yuv-rgb-output"),
@@ -358,51 +358,39 @@ impl GpuYuvRenderer {
             self.output_texture = Some(out);
         }
 
-        // Subida de texturas respetando stride
-        let upload_plane = |tex: &wgpu::Texture, data: &[u8], w: usize, h: usize, stride: usize| {
-            let bytes_per_row = aligned_bytes_per_row(stride);
-
-            let expected_bytes = bytes_per_row as usize * h;
-            if data.len() < expected_bytes {
-                sink_error!(
-                    logger,
-                    "Data length {} < expected {} bytes. Adjusting rows!",
-                    data.len(),
-                    expected_bytes
-                );
-            }
-
-            queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    texture: tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                data,
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(h as u32),
-                },
-                wgpu::Extent3d {
-                    width: w as u32,
-                    height: h as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
-        };
-
         upload_plane(
-            self.tex_y.as_ref().unwrap(),
+            logger.clone(),
+            self.tex_y
+                .as_ref()
+                .expect("Y-plane texture not initialized"),
             &y_plane,
-            y_w as usize,
-            y_h as usize,
+            y_w,
+            y_h,
             y_stride,
+            queue,
         );
-        upload_plane(self.tex_u.as_ref().unwrap(), &u_plane, uv_w, uv_h, u_stride);
-        upload_plane(self.tex_v.as_ref().unwrap(), &v_plane, uv_w, uv_h, v_stride);
-
+        upload_plane(
+            logger.clone(),
+            self.tex_u
+                .as_ref()
+                .expect("U-plane texture not initialized"),
+            &u_plane,
+            uv_w,
+            uv_h,
+            u_stride,
+            queue,
+        );
+        upload_plane(
+            logger.clone(),
+            self.tex_v
+                .as_ref()
+                .expect("V-plane texture not initialized"),
+            &v_plane,
+            uv_w,
+            uv_h,
+            v_stride,
+            queue,
+        );
         // Bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("yuv-bind-group"),
@@ -414,7 +402,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_y
                             .as_ref()
-                            .unwrap()
+                            .expect("Y texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -424,7 +412,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_u
                             .as_ref()
-                            .unwrap()
+                            .expect("U texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -434,7 +422,7 @@ impl GpuYuvRenderer {
                         &self
                             .tex_v
                             .as_ref()
-                            .unwrap()
+                            .expect("V texture missing for bind group")
                             .create_view(&Default::default()),
                     ),
                 },
@@ -458,7 +446,10 @@ impl GpuYuvRenderer {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("yuv-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.output_view.as_ref().unwrap(),
+                    view: self
+                        .output_view
+                        .as_ref()
+                        .expect("Output view not initialized"),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -471,7 +462,13 @@ impl GpuYuvRenderer {
             });
 
             rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+            rpass.set_bind_group(
+                0,
+                self.bind_group
+                    .as_ref()
+                    .expect("Bind group not initialized"),
+                &[],
+            );
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             rpass.draw(0..self.vertex_count, 0..1);
         }
@@ -483,6 +480,87 @@ impl GpuYuvRenderer {
     }
 }
 
-fn aligned_bytes_per_row(stride: usize) -> u32 {
-    ((stride as u32 + 255) / 256) * 256
+fn upload_plane(
+    logger: Arc<dyn LogSink>,
+    tex: &wgpu::Texture,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    queue: &wgpu::Queue,
+) {
+    let w = width as usize;
+    let h = height as usize;
+
+    // wgpu requires texture row alignment to be a multiple of 256 bytes.
+    let aligned_bpr = ((w as u32 + 255) / 256) * 256;
+
+    sink_debug!(
+        logger,
+        "[UPLOAD] w={} h={} stride={} aligned_bpr={}",
+        w,
+        h,
+        stride,
+        aligned_bpr
+    );
+
+    // If the source stride happens to match the required alignment, we can copy directly.
+    // This avoids an expensive allocation and copy for every frame plane.
+    if stride as u32 == aligned_bpr {
+        queue.write_texture(
+            tex.as_image_copy(),
+            data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(stride as u32),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        return;
+    }
+
+    // The stride from the decoder is not 256-byte aligned. We must copy the data
+    // row-by-row into a temporary, correctly aligned buffer before uploading to the GPU.
+    let mut aligned_data = Vec::with_capacity((aligned_bpr * height) as usize);
+    for row_idx in 0..h {
+        let src_start = row_idx * stride;
+        let src_end = src_start + w;
+
+        if src_end > data.len() {
+            // Source data is smaller than expected for this row.
+            // Avoid panicking by padding the rest of the row with black.
+            let valid_len = data.len().saturating_sub(src_start).max(0);
+            if valid_len > 0 {
+                aligned_data.extend_from_slice(&data[src_start..src_start + valid_len]);
+            }
+            aligned_data.extend(std::iter::repeat(0).take(w - valid_len));
+        } else {
+            // Copy the actual pixel data for the row.
+            aligned_data.extend_from_slice(&data[src_start..src_end]);
+        }
+
+        // Add padding to the end of the row to meet wgpu's alignment requirement.
+        let padding = aligned_bpr as usize - w;
+        aligned_data.extend(std::iter::repeat(0).take(padding));
+    }
+
+    queue.write_texture(
+        tex.as_image_copy(),
+        &aligned_data,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(aligned_bpr),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
 }

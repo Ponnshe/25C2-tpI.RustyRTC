@@ -30,7 +30,7 @@ use crate::{
 };
 use crate::{
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
-    rtcp::{picture_loss::PictureLossIndication, rtcp::RtcpPacket},
+    rtcp::{RtcpPacket, picture_loss::PictureLossIndication},
 };
 use rand::{RngCore, rngs::OsRng};
 
@@ -51,12 +51,14 @@ pub struct RtpSession {
     cname: String,
     rtcp_interval: Duration,
     //Srtp config
+    #[allow(dead_code)]
     srtp_cfg: Option<SrtpSessionConfig>,
     // Contextos SRTP protegidos por Mutex para acceso compartido
     srtp_inbound: Option<Arc<Mutex<SrtpContext>>>,
     srtp_outbound: Option<Arc<Mutex<SrtpContext>>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl RtpSession {
     pub fn new(
         sock: Arc<UdpSocket>,
@@ -163,7 +165,7 @@ impl RtpSession {
         let cfg = RtpSendConfig::new(codec);
         self.add_send_stream(cfg)
     }
-
+    #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), RtpSessionError> {
         self.run.store(true, Ordering::SeqCst);
 
@@ -215,7 +217,11 @@ impl RtpSession {
                         // 3. SRTP Unprotect
                         if let Some(ctx) = &srtp_inbound {
                             // Mutex lock, attempt unprotect
-                            match ctx.lock().unwrap().unprotect(&mut pkt) {
+                            match ctx
+                                .lock()
+                                .expect("SRTP inbound lock poisoned")
+                                .unprotect(&mut pkt)
+                            {
                                 Ok(_) => {
                                     // Success: pkt is now cleartext RTP
                                 }
@@ -371,8 +377,12 @@ impl RtpSession {
     }
 
     /// Convenience: does this remote SSRC exist as a recv stream?
+    #[allow(clippy::expect_used)]
     pub fn has_recv_ssrc(&self, remote_ssrc: u32) -> bool {
-        self.recv_streams.lock().unwrap().contains_key(&remote_ssrc)
+        self.recv_streams
+            .lock()
+            .expect("recv_streams lock poisoned")
+            .contains_key(&remote_ssrc)
     }
 
     pub fn send_rtp_payload(
@@ -469,10 +479,10 @@ fn handle_rtcp(
                 // 2) Embedded report blocks → sender streams (outbound metrics/RTT)
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &sr.reports {
-                        if let Some(st) = g.get_mut(&rb.ssrc) {
-                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
-                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
-                            }
+                        if let Some(st) = g.get_mut(&rb.ssrc)
+                            && let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact)
+                        {
+                            let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
                         }
                     }
                 }
@@ -482,10 +492,10 @@ fn handle_rtcp(
                 // Each report block targets one of our *sender* SSRCs
                 if let Ok(mut g) = send_map.lock() {
                     for rb in &rr.reports {
-                        if let Some(st) = g.get_mut(&rb.ssrc) {
-                            if let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact) {
-                                let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
-                            }
+                        if let Some(st) = g.get_mut(&rb.ssrc)
+                            && let Some(metrics) = st.on_report_block(rb, arrival_ntp_compact)
+                        {
+                            let _ = tx_evt.send(EngineEvent::NetworkMetrics(metrics));
                         }
                     }
                 }

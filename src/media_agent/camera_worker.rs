@@ -160,15 +160,13 @@ pub fn spawn_camera_worker(
                 ) {
                     logger_error!(logger, "camera loop stopped: {e:?}");
                 }
-            } else {
-                if let Err(e) = synthetic_loop(
-                    log_for_synthetic,
-                    local_frame_tx,
-                    target_fps,
-                    running.clone(),
-                ) {
-                    logger_error!(logger, "synthetic loop stopped: {e:?}");
-                }
+            } else if let Err(e) = synthetic_loop(
+                log_for_synthetic,
+                local_frame_tx,
+                target_fps,
+                running.clone(),
+            ) {
+                logger_error!(logger, "synthetic loop stopped: {e:?}");
             }
         })
         .ok();

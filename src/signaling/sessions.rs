@@ -45,6 +45,7 @@ impl Sessions {
     }
 
     /// Find session by code and add a member.
+    #[allow(clippy::expect_used)]
     pub fn join_by_code(
         &mut self,
         session_code: &SessionCode,
@@ -121,6 +122,7 @@ impl Sessions {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn mk_session(

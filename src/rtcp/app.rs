@@ -1,7 +1,7 @@
 use crate::rtcp::{
+    RtcpPacket,
     common_header::CommonHeader,
     packet_type::{PT_APP, RtcpPacketType},
-    rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
 
@@ -23,7 +23,7 @@ impl RtcpPacketType for App {
         out.extend_from_slice(&self.data);
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
@@ -39,7 +39,7 @@ impl RtcpPacketType for App {
         if payload.len() < 8 {
             return Err(RtcpError::TooShort);
         }
-        let ssrc = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+        let ssrc = u32::from_be_bytes(payload[0..4].try_into().map_err(|_| RtcpError::TooShort)?);
         let mut name = [0u8; 4];
         name.copy_from_slice(&payload[4..8]);
         let data = payload[8..].to_vec();

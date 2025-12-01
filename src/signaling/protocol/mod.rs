@@ -32,6 +32,7 @@ pub fn read_msg<R: Read>(r: &mut R) -> Result<SignalingMsg, FrameError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::io::Cursor as IoCursor;
 

@@ -72,6 +72,7 @@ pub fn run_server_loop(mut router: Router, log: Arc<dyn LogSink>, rx: Receiver<S
 }
 /// Helper: short variant name for logging.
 /// We avoid logging full SDP/candidates here.
+#[allow(dead_code)]
 fn msg_name(msg: &SignalingMsg) -> &'static str {
     use SignalingMsg::*;
     match msg {
@@ -102,6 +103,7 @@ fn msg_name(msg: &SignalingMsg) -> &'static str {
 }
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::mpsc;
     use std::thread;

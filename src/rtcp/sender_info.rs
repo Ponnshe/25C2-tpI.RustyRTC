@@ -31,11 +31,19 @@ impl SenderInfo {
         }
         Ok((
             Self {
-                ntp_most_sw: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
-                now_least_sw: u32::from_be_bytes(buf[4..8].try_into().unwrap()),
-                rtp_ts: u32::from_be_bytes(buf[8..12].try_into().unwrap()),
-                packet_count: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
-                octet_count: u32::from_be_bytes(buf[16..20].try_into().unwrap()),
+                ntp_most_sw: u32::from_be_bytes(
+                    buf[0..4].try_into().map_err(|_| RtcpError::TooShort)?,
+                ),
+                now_least_sw: u32::from_be_bytes(
+                    buf[4..8].try_into().map_err(|_| RtcpError::TooShort)?,
+                ),
+                rtp_ts: u32::from_be_bytes(buf[8..12].try_into().map_err(|_| RtcpError::TooShort)?),
+                packet_count: u32::from_be_bytes(
+                    buf[12..16].try_into().map_err(|_| RtcpError::TooShort)?,
+                ),
+                octet_count: u32::from_be_bytes(
+                    buf[16..20].try_into().map_err(|_| RtcpError::TooShort)?,
+                ),
             },
             20,
         ))

@@ -66,7 +66,7 @@ impl RtpPacket {
 
         if let Some(ext) = &self.header.header_extension {
             // RFC3550: 16-bit profile, 16-bit length in 32-bit words
-            let words = ((ext.data.len() + 3) / 4) as u32;
+            let words = ext.data.len().div_ceil(4) as u32;
             if words > u16::MAX as u32 {
                 return Err(RtpError::HeaderExtensionTooLong);
             }
@@ -78,7 +78,7 @@ impl RtpPacket {
             // pad to 32-bit boundary with zero bytes
             let pad = (4 - (ext.data.len() % 4)) % 4;
             if pad != 0 {
-                out.extend(std::iter::repeat(0u8).take(pad));
+                out.extend(std::iter::repeat_n(0u8, pad));
             }
         }
 
@@ -90,7 +90,7 @@ impl RtpPacket {
         if has_pad {
             // Add (padding_bytes - 1) filler bytes (any value is legal; use 0) and end with the pad count
             if self.padding_bytes > 1 {
-                out.extend(std::iter::repeat(0u8).take((self.padding_bytes - 1) as usize));
+                out.extend(std::iter::repeat_n(0u8, (self.padding_bytes - 1) as usize));
             }
             out.push(self.padding_bytes);
         }
@@ -118,9 +118,10 @@ impl RtpPacket {
         let marker = (m_pt >> 7) != 0;
         let payload_type = m_pt & 0x7F;
 
-        let sequence_number = u16::from_be_bytes(buf[2..4].try_into().unwrap());
-        let timestamp = u32::from_be_bytes(buf[4..8].try_into().unwrap());
-        let ssrc = u32::from_be_bytes(buf[8..12].try_into().unwrap());
+        let sequence_number =
+            u16::from_be_bytes(buf[2..4].try_into().map_err(|_| RtpError::Invalid)?);
+        let timestamp = u32::from_be_bytes(buf[4..8].try_into().map_err(|_| RtpError::Invalid)?);
+        let ssrc = u32::from_be_bytes(buf[8..12].try_into().map_err(|_| RtpError::Invalid)?);
 
         let mut idx = 12usize;
 
@@ -133,7 +134,11 @@ impl RtpPacket {
         }
         let mut csrcs = Vec::with_capacity(cc);
         for _ in 0..cc {
-            let csrc = u32::from_be_bytes(buf[idx..idx + 4].try_into().unwrap());
+            let csrc = u32::from_be_bytes(
+                buf[idx..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
             csrcs.push(csrc);
             idx += 4;
         }
@@ -144,8 +149,16 @@ impl RtpPacket {
             if buf.len() < idx + 4 {
                 return Err(RtpError::HeaderExtensionTooShort);
             }
-            let profile = u16::from_be_bytes(buf[idx..idx + 2].try_into().unwrap());
-            let length_words = u16::from_be_bytes(buf[idx + 2..idx + 4].try_into().unwrap());
+            let profile = u16::from_be_bytes(
+                buf[idx..idx + 2]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
+            let length_words = u16::from_be_bytes(
+                buf[idx + 2..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtpError::Invalid)?,
+            );
             idx += 4;
 
             let ext_len = (length_words as usize) * 4;
@@ -236,6 +249,7 @@ mod tests {
     use super::super::rtp_header_extension::RtpHeaderExtension;
     use super::RtpPacket;
 
+    #[allow(clippy::too_many_arguments)]
     fn mk_header_bytes(
         version: u8,
         padding: bool,

@@ -2,6 +2,7 @@ use super::{
     connection_error::ConnectionError, ice_and_sdp::ICEAndSDP, ice_phase::IcePhase,
     outbound_sdp::OutboundSdp, rtp_map::RtpMap, signaling_state::SignalingState,
 };
+use crate::config::Config;
 use crate::connection_manager::config::{
     DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_MEDIA_KIND, DEFAULT_NET_TYPE,
     DEFAULT_PORT, DEFAULT_PROTO,
@@ -21,7 +22,6 @@ use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
 use crate::sink_error;
 use crate::tls_utils::get_local_fingerprint_sha256;
-
 use std::collections::HashSet;
 use std::{
     io::ErrorKind,
@@ -29,6 +29,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
 pub const DEFAULT_FINGERPRINT: &str =
     "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00";
 
@@ -67,9 +68,9 @@ impl ConnectionManager {
     ///
     /// The ICE agent is initialized in the `Controlling` role.
     #[must_use]
-    pub fn new(logger_handle: Arc<dyn LogSink>) -> Self {
+    pub fn new(logger_handle: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let ice_agent = IceAgent::with_logger(IceRole::Controlling, logger_handle.clone());
-        let local_fingerprint = get_local_fingerprint_sha256().unwrap_or_else(|e| {
+        let local_fingerprint = get_local_fingerprint_sha256(config).unwrap_or_else(|e| {
             eprintln!("Failed to get local fingerprint: {}", e);
             DEFAULT_FINGERPRINT.to_string()
         });
@@ -523,14 +524,14 @@ impl ConnectionManager {
     fn extract_and_store_fingerprint(&mut self, remote: &Sdp) -> Result<(), ConnectionError> {
         for m in remote.media() {
             for a in m.attrs() {
-                if a.key() == "fingerprint" {
-                    if let Some(val) = a.value() {
-                        let parts: Vec<&str> = val.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            // parts[0] is "sha-256", parts[1] is the hash
-                            self.remote_fingerprint = Some(parts[1].to_string());
-                            return Ok(());
-                        }
+                if a.key() == "fingerprint"
+                    && let Some(val) = a.value()
+                {
+                    let parts: Vec<&str> = val.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        // parts[0] is "sha-256", parts[1] is the hash
+                        self.remote_fingerprint = Some(parts[1].to_string());
+                        return Ok(());
                     }
                 }
             }

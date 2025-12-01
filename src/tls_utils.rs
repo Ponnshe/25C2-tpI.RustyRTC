@@ -1,13 +1,14 @@
+use crate::config::Config;
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer},
+    RootCertStore,
+};
+use rustls_pemfile::{certs, read_one, Item};
 use std::{
     fs::File,
     io::{self, BufReader, Cursor},
+    sync::Arc,
 };
-
-use rustls::{
-    RootCertStore,
-    pki_types::{CertificateDer, PrivateKeyDer},
-};
-use rustls_pemfile::{Item, certs, read_one};
 
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
@@ -107,27 +108,52 @@ pub fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
     ))
 }
 
+pub fn load_signaling_certs(config: Arc<Config>) -> io::Result<Vec<CertificateDer<'static>>> {
+    let path = config.get_or_default(
+        "TLS",
+        "signaling_cert",
+        "certs/signaling/cert.pem",
+    );
+    load_certs(path)
+}
+
+pub fn load_signaling_private_key(config: Arc<Config>) -> io::Result<PrivateKeyDer<'static>> {
+    let path = config.get_or_default(
+        "TLS",
+        "signaling_key",
+        "certs/signaling/key.pem",
+    );
+    load_private_key(path)
+}
+
+pub fn load_dtls_certs(config: Arc<Config>) -> io::Result<Vec<CertificateDer<'static>>> {
+    let path = config.get_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
+    load_certs(path)
+}
+
+pub fn load_dtls_private_key(config: Arc<Config>) -> io::Result<PrivateKeyDer<'static>> {
+    let path = config.get_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
+    load_private_key(path)
+}
+
 /// Calcula el fingerprint SHA-256 del certificado local para ponerlo en el SDP.
 /// Formato: "XX:YY:ZZ:..." (mayúsculas)
-pub fn get_local_fingerprint_sha256() -> std::io::Result<String> {
+pub fn get_local_fingerprint_sha256(config: Arc<Config>) -> std::io::Result<String> {
     // Reusamos CN_PATH o la ruta hardcoded
-    let certs_der = load_certs(DTLS_CERT_PATH)?;
+    let certs_der = load_dtls_certs(config)?;
 
     if certs_der.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "No certs found",
-        ));
+        return Err(io::Error::other("No certs found"));
     }
 
     // Parsear con OpenSSL
-    let x509 = X509::from_der(&certs_der[0].to_vec())
+    let x509 = X509::from_der(&certs_der[0])
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     // Calcular Digest SHA256
     let digest = x509
         .digest(MessageDigest::sha256())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     // Formatear a Hex separado por colons
     let hex: Vec<String> = digest.iter().map(|b| format!("{:02X}", b)).collect();

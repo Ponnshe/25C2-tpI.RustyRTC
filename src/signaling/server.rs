@@ -24,15 +24,12 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Self {
-        Self::with_log_and_auth(
-            Arc::new(NoopLogSink),
-            Box::new(AllowAllAuthBackend::default()),
-        )
+        Self::with_log_and_auth(Arc::new(NoopLogSink), Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom logger, but still "accept all" auth backend.
     pub fn with_log(log: Arc<dyn LogSink>) -> Self {
-        Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend::default()))
+        Self::with_log_and_auth(log, Box::new(AllowAllAuthBackend))
     }
 
     /// Server with a custom auth backend, but Noop logging.
@@ -656,6 +653,7 @@ impl Server {
         }]
     }
 
+    #[allow(dead_code)]
     fn handle_ack(&mut self, from_cid: ClientId, txn_id: u64) -> Vec<OutgoingMsg> {
         let username = self.presence.username_for(from_cid).cloned();
         sink_trace!(
@@ -669,6 +667,7 @@ impl Server {
         Vec::new()
     }
 
+    #[allow(dead_code)]
     fn handle_bye(&mut self, from: ClientId, reason: Option<String>) -> Vec<OutgoingMsg> {
         let username_opt = self.presence.username_for(from).cloned();
 
@@ -708,9 +707,15 @@ impl Server {
         out_msgs
     }
 }
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::signaling::auth::InMemoryAuthBackend;
     use crate::signaling::protocol::SignalingMsg;

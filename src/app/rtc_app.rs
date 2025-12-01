@@ -3,6 +3,8 @@ use super::{
     utils::show_camera_in_ui,
 };
 use crate::{
+    app::utils::{update_rgb_texture, update_yuv_texture},
+    config::Config,
     core::{
         engine::Engine,
         events::EngineEvent::{
@@ -35,6 +37,7 @@ enum CallFlow {
     Idle,
     Dialing {
         peer: String,
+        #[allow(dead_code)]
         txn_id: u64,
     },
     Incoming {
@@ -72,6 +75,7 @@ pub struct RtcApp {
     // RTP summaries
     rtp_pkts: u64,
     rtp_bytes: u64,
+    #[allow(dead_code)]
     rtp_last_report: Instant,
 
     //Siganling setup
@@ -94,6 +98,8 @@ pub struct RtcApp {
 
     local_yuv_renderer: Option<GpuYuvRenderer>,
     remote_yuv_renderer: Option<GpuYuvRenderer>,
+
+    config: Arc<Config>,
 }
 
 impl RtcApp {
@@ -102,15 +108,20 @@ impl RtcApp {
     const CAMERAS_WINDOW_HEIGHT: f32 = 400.0;
     const LOCAL_CAMERA_SIZE: f32 = 400.0;
     const REMOTE_CAMERA_SIZE: f32 = 400.0;
+    const SERVER_ADDR: &str = "127.0.0.1:5005";
 
-    const SIGNALING_SERVER_ADDR: &str = "192.168.0.12:6000";
     #[must_use]
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Arc<Config>) -> Self {
         let logger = Logger::start_default("roomrtc", 4096, 256, 50);
         let logger_handle = Arc::new(logger.handle());
 
-        let (local_yuv_renderer, remote_yuv_renderer) =
-            if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+        let server_addr_input = config
+            .get_or_default("Signaling", "server_address", Self::SERVER_ADDR)
+            .to_string();
+
+        let (local_yuv_renderer, remote_yuv_renderer) = cc.wgpu_render_state.as_ref().map_or_else(
+            || (None, None),
+            |render_state| {
                 let local = GpuYuvRenderer::new(
                     &render_state.device,
                     render_state.target_format,
@@ -122,16 +133,15 @@ impl RtcApp {
                     logger_handle.clone(),
                 );
                 (Some(local), Some(remote))
-            } else {
-                (None, None)
-            };
+            },
+        );
 
         Self {
             remote_sdp_text: String::new(),
             local_sdp_text: String::new(),
             pending_remote_sdp: None,
             status_line: "Ready.".into(),
-            engine: Engine::new(logger_handle),
+            engine: Engine::new(logger_handle, config.clone()),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
@@ -146,7 +156,7 @@ impl RtcApp {
             remote_camera_texture: None,
             signaling_client: None,
             signaling_screen: SignalingScreen::Connect,
-            server_addr_input: Self::SIGNALING_SERVER_ADDR.into(),
+            server_addr_input,
             login_username: String::new(),
             login_password: String::new(),
             register_username: String::new(),
@@ -158,6 +168,7 @@ impl RtcApp {
             next_txn_id: 1,
             local_yuv_renderer,
             remote_yuv_renderer,
+            config,
         }
     }
 
@@ -191,22 +202,23 @@ impl RtcApp {
         }
     }
     fn summarize_frame(frame: Option<&VideoFrame>) -> String {
-        match frame {
-            Some(f) => {
+        frame.map_or_else(
+            || "no frame".into(),
+            |f| {
                 let (w, h) = (f.width, f.height);
                 let format = f.format;
                 let bytes = match &f.data {
                     VideoFrameData::Rgb(d) => d.len(),
                     VideoFrameData::Yuv420 { y, u, v, .. } => y.len() + u.len() + v.len(),
                 };
+
                 if w > 0 && h > 0 {
                     format!("{w}x{h} ({format:?}) • {bytes} bytes")
                 } else {
                     format!("{bytes} bytes (pending decode)")
                 }
-            }
-            None => "no frame".into(),
-        }
+            },
+        )
     }
 
     fn connect_to_signaling(&mut self) {
@@ -224,7 +236,9 @@ impl RtcApp {
         // TLS SNI / certificate name.
         // This MUST match the mkcert-generated certificate (signal.internal).
         // We keep it fixed for now, even if the user types 127.0.0.1:6000.
-        let domain = "signal.internal";
+        let domain = self
+            .config
+            .get_or_default("Signaling", "tls_domain", "signal.internal");
 
         // Build TLS config + connect over TLS, handling errors explicitly (no `?`).
         let res: io::Result<SignalingClient> =
@@ -238,7 +252,7 @@ impl RtcApp {
                 self.signaling_client = Some(client);
                 self.signaling_screen = SignalingScreen::Login;
                 self.signaling_error = None;
-                self.status_line = format!("Connecting to {}…", addr);
+                self.status_line = format!("Connecting to {addr}…");
             }
             Err(e) => {
                 let msg = format!("Failed to connect to signaling server: {e}");
@@ -296,6 +310,7 @@ impl RtcApp {
         }
     }
 
+    #[allow(clippy::assigning_clones)]
     fn handle_signaling_server_msg(&mut self, msg: SignalingMsg) {
         match msg {
             SignalingMsg::LoginOk { username } => {
@@ -306,7 +321,7 @@ impl RtcApp {
                 self.request_peer_list();
             }
             SignalingMsg::LoginErr { code } => {
-                let msg = format!("Login failed with code {}", code);
+                let msg = format!("Login failed with code {code}");
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
@@ -315,7 +330,7 @@ impl RtcApp {
                 self.login_username = username;
             }
             SignalingMsg::RegisterErr { code } => {
-                let msg = format!("Registration failed with code {}", code);
+                let msg = format!("Registration failed with code {code}");
                 self.signaling_error = Some(msg.clone());
                 self.push_ui_log(msg);
             }
@@ -335,7 +350,7 @@ impl RtcApp {
                     self.status_line = format!("Incoming call from {from}");
                     let _ = self.send_signaling(SignalingMsg::Ack {
                         from: self.current_username.clone().unwrap_or_default(),
-                        to: from.clone(),
+                        to: from,
                         txn_id,
                     });
                 }
@@ -379,7 +394,7 @@ impl RtcApp {
                 let _ = self.send_signaling(SignalingMsg::Pong { nonce });
             }
             SignalingMsg::Bye { from, reason, .. } => {
-                self.push_ui_log(format!("Peer {from} ended call: {:?}", reason));
+                self.push_ui_log(format!("Peer {from} ended call: {reason:?}"));
                 // Remote already sent BYE; don't echo it back.
                 self.teardown_call(reason, false);
             }
@@ -389,7 +404,7 @@ impl RtcApp {
             other => {
                 self.background_log(
                     LogLevel::Debug,
-                    format!("Unhandled signaling message: {:?}", other),
+                    format!("Unhandled signaling message: {other:?}"),
                 );
             }
         }
@@ -515,12 +530,6 @@ impl RtcApp {
 
     fn decline_incoming_call(&mut self) {
         self.teardown_call(Some("declined".into()), true);
-    }
-
-    fn reset_call_flow(&mut self) {
-        self.call_flow = CallFlow::Idle;
-        self.pending_remote_sdp = None;
-        self.engine.stop();
     }
 
     fn create_or_renegotiate_local_sdp(&mut self) -> Result<(), GuiError> {
@@ -937,7 +946,7 @@ impl RtcApp {
                 if !l_buf.is_empty() && lp == rp {
                     self.background_log(
                         LogLevel::Error,
-                        "⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x}).",
+                        format!("⚠️ Local & Remote share the SAME pixel buffer (0x{lp:x})."),
                     );
                 }
 
@@ -961,31 +970,43 @@ impl RtcApp {
             }
         }
     }
+
     fn current_peer(&self) -> Option<String> {
         match &self.call_flow {
-            CallFlow::Dialing { peer, .. } => Some(peer.clone()),
+            CallFlow::Dialing { peer, .. } | CallFlow::Active { peer } => Some(peer.clone()),
             CallFlow::Incoming { from, .. } => Some(from.clone()),
-            CallFlow::Active { peer } => Some(peer.clone()),
             CallFlow::Idle => None,
         }
     }
 
     fn teardown_call(&mut self, reason: Option<String>, send_bye: bool) {
         // 1) Conditionally send Bye Singaling Message
-        if send_bye {
-            if let Some(peer) = self.current_peer() {
-                self.send_bye(&peer, reason.clone());
-            }
+        if send_bye && let Some(peer) = self.current_peer() {
+            self.send_bye(&peer, reason.clone());
         }
 
         // 2) Tear down media (safe to call even if session never started)
         self.engine.stop();
 
-        // 3) Reset call-related state
+        // 3) Re-initialize the Engine for the next call.
+        // The Engine (and its internal MediaTransport) consumes one-time resources (channels)
+        // during startup. To support a second call, we must create a fresh instance.
+        let logger_handle = Arc::new(self.logger.handle());
+        self.engine = Engine::new(logger_handle, self.config.clone());
+
+        // 4) Reset call-related state
         self.call_flow = CallFlow::Idle;
+
+        // Since we dropped the old engine, we will never receive its "Closed" event,
+        // so we must force the state to Idle to enable the "Start Connection" button.
+        self.conn_state = ConnState::Idle;
+
         self.pending_remote_sdp = None;
         self.has_local_description = false;
         self.has_remote_description = false;
+        // Clear stale SDPs because the new Engine has new ICE credentials.
+        self.local_sdp_text.clear();
+        self.remote_sdp_text.clear();
 
         // This ensures 'have_any_texture' becomes false, closing the window.
         self.local_camera_texture = None;
@@ -1002,9 +1023,15 @@ impl RtcApp {
 impl App for RtcApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         // repaint policy: if connection is running OR any texture is alive, tick ~60 fps
+        let ui_fps = self
+            .config
+            .get_or_default("UI", "fps", "60")
+            .parse()
+            .unwrap_or(60);
+        let time = 1 / ui_fps;
         let any_video = self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
         if matches!(self.conn_state, ConnState::Running) || any_video {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(time));
         }
 
         if let Some(sdp) = self.pending_remote_sdp.take() {
@@ -1021,10 +1048,10 @@ impl App for RtcApp {
         // If we hung up (CallFlow::Idle), force frames to None.
         // This prevents the "last frame" from resurrecting the textures
         // while the Engine is busy closing gracefully in the background.
-        let (local_frame, remote_frame) = if !matches!(self.call_flow, CallFlow::Idle) {
-            self.engine.snapshot_frames()
-        } else {
+        let (local_frame, remote_frame) = if matches!(self.call_flow, CallFlow::Idle) {
             (None, None)
+        } else {
+            self.engine.snapshot_frames()
         };
 
         self.debug_frame_alias_and_size(local_frame.as_ref(), remote_frame.as_ref());
@@ -1052,7 +1079,7 @@ impl App for RtcApp {
                     &mut self.remote_yuv_renderer,
                     Some(render_state),
                     "camera/remote",
-                    logger_handle.clone(),
+                    logger_handle,
                 );
             }
         }
@@ -1088,9 +1115,9 @@ fn update_texture_from_frame(
     unique_name: &str,
     logger: Arc<dyn LogSink>,
 ) {
-    let w = frame.width;
-    let h = frame.height;
-    if w == 0 || h == 0 {
+    let width = frame.width;
+    let height = frame.height;
+    if width == 0 || height == 0 {
         return;
     }
 
@@ -1098,8 +1125,8 @@ fn update_texture_from_frame(
         logger,
         "[VIDEO] {:?}: {}x{}, kind={:?}",
         unique_name,
-        w,
-        h,
+        width,
+        height,
         match &frame.data {
             VideoFrameData::Rgb(_) => "RGB",
             VideoFrameData::Yuv420 { .. } => "YUV420",
@@ -1107,80 +1134,10 @@ fn update_texture_from_frame(
     );
     match &frame.data {
         crate::media_agent::video_frame::VideoFrameData::Rgb(rgb) => {
-            let image = egui::ColorImage::from_rgb([w as usize, h as usize], rgb);
-            let options = egui::TextureOptions {
-                magnification: egui::TextureFilter::Linear,
-                minification: egui::TextureFilter::Linear,
-                ..Default::default()
-            };
-            let tex_mngr = ctx.tex_manager();
-
-            if let Some((id, (prev_w, prev_h))) = texture {
-                if *prev_w != w || *prev_h != h {
-                    tex_mngr.write().free(*id);
-                    let new_id =
-                        tex_mngr
-                            .write()
-                            .alloc(unique_name.to_owned(), image.into(), options);
-                    *texture = Some((new_id, (w, h)));
-                } else {
-                    let delta = egui::epaint::ImageDelta {
-                        image: egui::epaint::ImageData::Color(image.into()),
-                        options,
-                        pos: None,
-                    };
-                    tex_mngr.write().set(*id, delta);
-                }
-            } else {
-                let new_id = tex_mngr
-                    .write()
-                    .alloc(unique_name.to_owned(), image.into(), options);
-                *texture = Some((new_id, (w, h)));
-            }
+            update_rgb_texture(ctx, texture, width, height, rgb, unique_name);
         }
         crate::media_agent::video_frame::VideoFrameData::Yuv420 { .. } => {
-            if let (Some(renderer), Some(render_state)) = (yuv_renderer, render_state) {
-                sink_debug!(&logger, "[YUV] Using renderer for {}", unique_name,);
-                renderer.update_frame(
-                    &render_state.device,
-                    &render_state.queue,
-                    frame,
-                    logger.clone(),
-                );
-
-                if let Some(output_texture) = renderer.output_texture() {
-                    let view =
-                        output_texture.create_view(&eframe::wgpu::TextureViewDescriptor::default());
-                    let filter = eframe::wgpu::FilterMode::Linear;
-                    let mut wgpu_renderer = render_state.renderer.write();
-
-                    if let Some((id, (prev_w, prev_h))) = texture {
-                        if *prev_w != w || *prev_h != h {
-                            wgpu_renderer.free_texture(id);
-                            let new_id = wgpu_renderer.register_native_texture(
-                                &render_state.device,
-                                &view,
-                                filter,
-                            );
-                            *texture = Some((new_id, (w, h)));
-                        } else {
-                            wgpu_renderer.update_egui_texture_from_wgpu_texture(
-                                &render_state.device,
-                                &view,
-                                filter,
-                                *id,
-                            );
-                        }
-                    } else {
-                        let new_id = wgpu_renderer.register_native_texture(
-                            &render_state.device,
-                            &view,
-                            filter,
-                        );
-                        *texture = Some((new_id, (w, h)));
-                    }
-                }
-            }
+            update_yuv_texture(frame, texture, yuv_renderer, render_state, logger);
         }
     }
 }

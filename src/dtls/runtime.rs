@@ -1,11 +1,5 @@
-use std::{
-    io::{self},
-    net::{SocketAddr, UdpSocket},
-    sync::Arc,
-    time::Duration,
-};
-
 use crate::{
+    config::Config,
     dtls::{
         buffered_udp_channel::BufferedUdpChannel, dtls_error::DtlsError, dtls_role::DtlsRole,
         socket_blocking_guard::SocketBlockingGuard,
@@ -13,10 +7,15 @@ use crate::{
     log::log_sink::LogSink,
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
     srtp::{SrtpEndpointKeys, SrtpProfile, SrtpSessionConfig},
-    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH},
+    tls_utils::{DTLS_CERT_PATH, DTLS_KEY_PATH, load_dtls_certs, load_dtls_private_key},
 };
-
 use openssl::ssl::{HandshakeError, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslStream};
+use std::{
+    io::{self},
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+    time::Duration,
+};
 
 use openssl::hash::MessageDigest;
 use openssl::ssl::SslVerifyMode;
@@ -32,16 +31,14 @@ pub fn run_dtls_handshake(
     logger: Arc<dyn LogSink>,
     timeout: Duration,
     expected_fingerprint: Option<String>,
+    config: Arc<Config>,
 ) -> Result<SrtpSessionConfig, DtlsError> {
     // Draining socket (nonblocking)
     sock.set_nonblocking(true).ok();
     let mut drain_buf = [0u8; 4096];
     let mut drained_count = 0;
-    loop {
-        match sock.recv_from(&mut drain_buf) {
-            Ok(_) => drained_count += 1,
-            Err(_) => break,
-        }
+    while sock.recv_from(&mut drain_buf).is_ok() {
+        drained_count += 1;
     }
     if drained_count > 0 {
         sink_debug!(
@@ -75,8 +72,12 @@ pub fn run_dtls_handshake(
 
     // Llamada al handshake
     let dtls_stream = match role {
-        DtlsRole::Client => dtls_connect_openssl(logger.clone(), channel, expected_fingerprint),
-        DtlsRole::Server => dtls_accept_openssl(logger.clone(), channel, expected_fingerprint),
+        DtlsRole::Client => {
+            dtls_connect_openssl(logger.clone(), channel, expected_fingerprint, config)
+        }
+        DtlsRole::Server => {
+            dtls_accept_openssl(logger.clone(), channel, expected_fingerprint, config)
+        }
     }
     .map_err(|e| {
         sink_error!(&logger, "[DTLS] Handshake FAILED with {}: {}", peer, e);
@@ -86,7 +87,7 @@ pub fn run_dtls_handshake(
     // Exportación de llaves
     let cfg = derive_srtp_keys(&dtls_stream, role, logger.clone()).map_err(|e| {
         sink_error!(&logger, "[DTLS] Key derivation failed: {}", e);
-        DtlsError::from(e)
+        e
     })?;
 
     sink_info!(&logger, "[DTLS] Handshake Success! SRTP keys derived.");
@@ -97,26 +98,29 @@ fn dtls_connect_openssl(
     logger: Arc<dyn LogSink>,
     stream: BufferedUdpChannel,
     expected_fingerprint: Option<String>,
+    config: Arc<Config>,
 ) -> Result<SslStream<BufferedUdpChannel>, DtlsError> {
     sink_debug!(&logger, "[DTLS] Client: Initializing OpenSSL context...");
     let mut builder =
         create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
 
+    let cert_path = config.get_or_default("TLS", "dtls_cert", "certs/dtls/cert.pem");
+    let key_path = config.get_or_default("TLS", "dtls_key", "certs/dtls/key.pem");
+
     sink_debug!(
         &logger,
         "[DTLS] Client: Loading identity (chain {} and key {})",
-        DTLS_CERT_PATH,
-        DTLS_KEY_PATH
+        cert_path,
+        key_path
     );
 
     builder
-        .set_certificate_chain_file(DTLS_CERT_PATH)
+        .set_certificate_chain_file(cert_path)
         .map_err(|e| DtlsError::Ssl(format!("set_certificate_chain_file failed: {}", e)))?;
 
     builder
-        .set_private_key_file(DTLS_KEY_PATH, SslFiletype::PEM)
+        .set_private_key_file(key_path, SslFiletype::PEM)
         .map_err(|e| DtlsError::Ssl(format!("set_private_key_file failed: {}", e)))?;
-
     builder
         .check_private_key()
         .map_err(|e| DtlsError::Ssl(format!("Private key does not match certificate: {}", e)))?;
@@ -135,24 +139,28 @@ fn dtls_accept_openssl(
     logger: Arc<dyn LogSink>,
     stream: BufferedUdpChannel,
     expected_fingerprint: Option<String>,
+    config: Arc<Config>,
 ) -> Result<SslStream<BufferedUdpChannel>, DtlsError> {
     sink_debug!(&logger, "[DTLS] Server: Initializing OpenSSL context...");
     let mut builder =
         create_base_context(logger.clone(), expected_fingerprint).map_err(DtlsError::from)?;
 
+    let cert_path = config.get_or_default("TLS", "dtls_cert", DTLS_CERT_PATH);
+    let key_path = config.get_or_default("TLS", "dtls_key", DTLS_KEY_PATH);
+
     sink_debug!(
         &logger,
         "[DTLS] Server: Loading chain {} and key {}",
-        DTLS_CERT_PATH,
-        DTLS_KEY_PATH
+        cert_path,
+        key_path
     );
 
     builder
-        .set_certificate_chain_file(DTLS_CERT_PATH)
+        .set_certificate_chain_file(cert_path)
         .map_err(|e| DtlsError::Ssl(format!("set_certificate_chain_file failed: {}", e)))?;
 
     builder
-        .set_private_key_file(DTLS_KEY_PATH, SslFiletype::PEM)
+        .set_private_key_file(key_path, SslFiletype::PEM)
         .map_err(|e| DtlsError::Ssl(format!("set_private_key_file failed: {}", e)))?;
 
     builder
@@ -242,25 +250,15 @@ fn create_base_context(
     expected_fingerprint: Option<String>,
 ) -> io::Result<SslContextBuilder> {
     let mut builder = SslContextBuilder::new(SslMethod::dtls())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("OpenSSL init failed: {}", e)))?;
+        .map_err(|e| io::Error::other(format!("OpenSSL init failed: {}", e)))?;
 
     builder
         .set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80")
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("set_tlsext_use_srtp failed: {}", e),
-            )
-        })?;
+        .map_err(|e| io::Error::other(format!("set_tlsext_use_srtp failed: {}", e)))?;
 
     builder
         .set_cipher_list("DEFAULT:@SECLEVEL=0")
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("set_cipher_list failed: {}", e),
-            )
-        })?;
+        .map_err(|e| io::Error::other(format!("set_cipher_list failed: {}", e)))?;
 
     if let Some(fp) = expected_fingerprint {
         let logger_cb = logger.clone();

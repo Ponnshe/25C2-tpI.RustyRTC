@@ -1,11 +1,6 @@
-use std::net::TcpListener;
-use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
-use std::time::Duration;
-use std::{io, thread};
-
-use crate::log::NoopLogSink;
+use crate::config::Config;
 use crate::log::log_sink::LogSink;
+use crate::log::NoopLogSink;
 use crate::signaling::auth::{AuthBackend, FileUserStore};
 use crate::signaling::router::Router;
 use crate::signaling::runtime::run_server_loop;
@@ -13,9 +8,13 @@ use crate::signaling::server_event::ServerEvent;
 use crate::signaling::tls::build_signaling_server_config;
 use crate::signaling::transport::spawn_tls_connection_thread;
 use crate::signaling::types::ClientId;
-use crate::tls_utils::{SIGNALING_CERT_PATH, SIGNALING_KEY_PATH};
 use crate::{sink_info, sink_warn};
 use rustls::{ServerConnection, StreamOwned};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
+use std::{io, thread};
 
 /// Top-level runtime object for the signaling service.
 ///
@@ -23,18 +22,24 @@ use rustls::{ServerConnection, StreamOwned};
 /// - bind address
 /// - logging sink
 /// - auth backend (e.g. FileUserStore)
-/// and knows how to spin up the central Router+Server loop plus per-connection threads.
+///   and knows how to spin up the central Router+Server loop plus per-connection threads.
 pub struct SignalingServer {
     bind_addr: String,
     log: Arc<dyn LogSink>,
     auth_backend: Box<dyn AuthBackend>,
     /// Optional: kept only for nicer logging/debugging.
     user_store_path: Option<PathBuf>,
+    config: Arc<Config>,
 }
 
 impl SignalingServer {
     /// Construct a server with an arbitrary auth backend (good for tests).
-    pub fn with_auth<S, A>(bind_addr: S, log: Arc<dyn LogSink>, auth_backend: A) -> Self
+    pub fn with_auth<S, A>(
+        bind_addr: S,
+        log: Arc<dyn LogSink>,
+        auth_backend: A,
+        config: Arc<Config>,
+    ) -> Self
     where
         S: Into<String>,
         A: AuthBackend + 'static,
@@ -44,6 +49,7 @@ impl SignalingServer {
             log,
             auth_backend: Box::new(auth_backend),
             user_store_path: None,
+            config,
         }
     }
 
@@ -52,6 +58,7 @@ impl SignalingServer {
         bind_addr: S,
         log: Arc<dyn LogSink>,
         users_path: PathBuf,
+        config: Arc<Config>,
     ) -> io::Result<Self>
     where
         S: Into<String>,
@@ -62,15 +69,20 @@ impl SignalingServer {
             log,
             auth_backend: Box::new(store),
             user_store_path: Some(users_path),
+            config,
         })
     }
 
     /// Convenience: FileUserStore + NoopLogSink.
-    pub fn with_file_store_no_log<S>(bind_addr: S, users_path: PathBuf) -> io::Result<Self>
+    pub fn with_file_store_no_log<S>(
+        bind_addr: S,
+        users_path: PathBuf,
+        config: Arc<Config>,
+    ) -> io::Result<Self>
     where
         S: Into<String>,
     {
-        Self::with_file_store(bind_addr, Arc::new(NoopLogSink), users_path)
+        Self::with_file_store(bind_addr, Arc::new(NoopLogSink), users_path, config)
     }
     pub fn run(self) -> io::Result<()> {
         let Self {
@@ -78,16 +90,11 @@ impl SignalingServer {
             log,
             auth_backend,
             user_store_path,
+            config,
         } = self;
 
         // --- TLS config (mkcert server cert + key) ---
-        // You can later move these to env vars or config.
-        let cert_path = std::env::var("RUSTYRTC_SIGNALING_CERT")
-            .unwrap_or_else(|_| SIGNALING_CERT_PATH.to_string());
-        let key_path = std::env::var("RUSTYRTC_SIGNALING_KEY")
-            .unwrap_or_else(|_| SIGNALING_KEY_PATH.to_string());
-
-        let tls_config = build_signaling_server_config(&cert_path, &key_path)?;
+        let tls_config = build_signaling_server_config(config)?;
 
         let listener = TcpListener::bind(&bind_addr)?;
 

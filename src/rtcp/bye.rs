@@ -1,7 +1,7 @@
 use crate::rtcp::{
+    RtcpPacket,
     common_header::CommonHeader,
     packet_type::{PT_BYE, RtcpPacketType},
-    rtcp::RtcpPacket,
     rtcp_error::RtcpError,
 };
 
@@ -29,13 +29,13 @@ impl RtcpPacketType for Bye {
             // pad to 4 bytes
             let pad = (4 - ((1 + rbytes.len()) % 4)) % 4;
             if pad != 0 {
-                out.extend(std::iter::repeat(0u8).take(pad));
+                out.extend(std::iter::repeat_n(0u8, pad));
             }
         }
 
         let pad = (4 - (out.len() - start) % 4) % 4;
         if pad != 0 {
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         let total = out.len() - start;
         let len_words = (total / 4) - 1;
@@ -56,7 +56,11 @@ impl RtcpPacketType for Bye {
         let mut sources = Vec::with_capacity(sc);
         let mut idx = 0usize;
         for _ in 0..sc {
-            let ssrc = u32::from_be_bytes(payload[idx..idx + 4].try_into().unwrap());
+            let ssrc = u32::from_be_bytes(
+                payload[idx..idx + 4]
+                    .try_into()
+                    .map_err(|_| RtcpError::Truncated)?,
+            );
             sources.push(ssrc);
             idx += 4;
         }

@@ -38,6 +38,7 @@ impl PacketizerEventLoop {
         }
     }
 
+    #[allow(clippy::expect_used)]
     pub fn start(
         &mut self,
         packetizer_event_rx: Receiver<PacketizerEvent>,
@@ -61,7 +62,9 @@ impl PacketizerEventLoop {
                                 logger,
                                 "[Packetizer Event Loop (MT)] Received FramePacketized from Packetizer"
                             );
-                            let guard = outbound_tracks.lock().unwrap();
+                            let guard = outbound_tracks
+                                .lock()
+                                .expect("outbound_tracks lock poisoned");
                             let Some((&pt, _)) = payload_map
                                 .iter()
                                 .find(|(_pt, desc)| desc.spec == frame.codec_spec)
@@ -87,7 +90,7 @@ impl PacketizerEventLoop {
                                 );
                                 continue;
                             };
-                            let mut sess_guard = session.lock().unwrap();
+                            let mut sess_guard = session.lock().expect("session lock poisoned");
                             sink_debug!(
                                 logger,
                                 "[Packetizer Event Loop (MT)] Using Session to send frame"
@@ -136,6 +139,7 @@ impl PacketizerEventLoop {
         self.event_loop_handler = Some(handle);
     }
 
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         sink_info!(self.logger, "[MT Event Loop MA] Stopping the event loop");
         self.stop_flag.store(true, Ordering::SeqCst);

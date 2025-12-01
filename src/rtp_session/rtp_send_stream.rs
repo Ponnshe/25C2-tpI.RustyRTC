@@ -8,9 +8,7 @@ use super::rtp_send_error::RtpSendError;
 use super::{rtp_codec::RtpCodec, rtp_send_config::RtpSendConfig, tx_tracker::TxTracker};
 
 use crate::rtp_session::time;
-use crate::{
-    congestion_controller::congestion_controller::NetworkMetrics, srtp::srtp_context::SrtpContext,
-};
+use crate::{congestion_controller::NetworkMetrics, srtp::srtp_context::SrtpContext};
 use crate::{log::log_sink::LogSink, rtp::rtp_packet::RtpPacket};
 use crate::{
     rtcp::{report_block::ReportBlock, sender_info::SenderInfo, sender_report::SenderReport},
@@ -129,6 +127,7 @@ impl RtpSendStream {
     }
     /// Send one RTP payload with explicit timestamp & marker.
     /// Increments seqno and updates SR counters. Does NOT change pacing itself.
+    #[allow(clippy::expect_used)]
     pub fn send_rtp_payload(
         &mut self,
         payload: &[u8],
@@ -149,7 +148,7 @@ impl RtpSendStream {
         if let Some(ctx) = &self.srtp_context {
             // ssrc se necesita para el ROC
             ctx.lock()
-                .unwrap()
+                .expect("SRTP outbound lock poisoned")
                 .protect(self.local_ssrc, &mut encoded)
                 .map_err(|e| {
                     RtpSendError::SRTP(format!("[SRTP] could not protect packet: {e}").to_owned())

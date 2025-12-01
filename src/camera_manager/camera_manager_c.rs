@@ -22,6 +22,7 @@ use super::camera_error::CameraError;
 /// when no longer needed.
 pub struct CameraManager {
     cam: Option<VideoCapture>,
+    #[allow(dead_code)]
     logger: Arc<dyn LogSink>,
     width: u32,
     height: u32,

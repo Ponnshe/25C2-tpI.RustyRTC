@@ -1,13 +1,6 @@
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
-    },
-    thread::{self, JoinHandle},
-    time::Duration,
-};
-
+use super::constants::{KEYINT, TARGET_FPS};
+use crate::config::Config;
+use crate::media_agent::constants::DEFAULT_CAMERA_ID;
 use crate::{
     core::events::EngineEvent,
     log::log_sink::LogSink,
@@ -26,8 +19,15 @@ use crate::{
     media_transport::media_transport_event::MediaTransportEvent,
     sink_debug, sink_error, sink_info, sink_trace, sink_warn,
 };
-
-use super::constants::{DEFAULT_CAMERA_ID, KEYINT, TARGET_FPS};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 
 pub struct MediaAgent {
     logger: Arc<dyn LogSink>,
@@ -42,10 +42,11 @@ pub struct MediaAgent {
     media_agent_event_tx: Option<Sender<MediaAgentEvent>>,
     ma_encoder_event_tx: Option<Sender<EncoderInstruction>>,
     running: Arc<AtomicBool>,
+    config: Arc<Config>,
 }
 
 impl MediaAgent {
-    pub fn new(logger: Arc<dyn LogSink>) -> Self {
+    pub fn new(logger: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let sent_any_frame = Arc::new(AtomicBool::new(false));
 
         let supported_media = vec![MediaSpec {
@@ -66,6 +67,7 @@ impl MediaAgent {
             media_agent_event_tx: None,
             ma_encoder_event_tx: None,
             running: Arc::new(AtomicBool::new(false)),
+            config,
         }
     }
     pub fn start(
@@ -81,11 +83,24 @@ impl MediaAgent {
         let remote_frame = self.remote_frame.clone();
         let local_frame = self.local_frame.clone();
 
+        let default_camera_id = self
+            .config
+            .get_or_default("Media", "default_camera", "0")
+            .parse()
+            .unwrap_or(DEFAULT_CAMERA_ID);
+
         //Start camera worker
-        let camera_id = discover_camera_id().unwrap_or(DEFAULT_CAMERA_ID);
+        let camera_id = discover_camera_id().unwrap_or(default_camera_id);
         sink_debug!(logger.clone(), "[MediaAgent] Starting Camera Worker...");
+
+        let target_fps = self
+            .config
+            .get_or_default("Media", "fps", "30")
+            .parse()
+            .unwrap_or(TARGET_FPS);
+
         let (local_frame_rx, status, handle) =
-            spawn_camera_worker(TARGET_FPS, logger.clone(), camera_id, running.clone());
+            spawn_camera_worker(target_fps, logger.clone(), camera_id, running.clone());
         sink_debug!(logger.clone(), "[MediaAgent] Camera Worker Started");
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
@@ -136,6 +151,7 @@ impl MediaAgent {
             remote_frame,
             self.sent_any_frame.clone(),
             running,
+            self.config.clone(),
         );
         self.listener_handle = listener_handle;
         sink_info!(logger.clone(), "[MediaAgent] Listener Started");
@@ -213,7 +229,7 @@ impl MediaAgent {
             .and_then(|guard| guard.as_ref().cloned());
         (local, remote)
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn spawn_listener_thread(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
@@ -225,6 +241,7 @@ impl MediaAgent {
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
         sent_any_frame: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
+        config: Arc<Config>,
     ) -> Option<JoinHandle<()>> {
         sink_info!(logger, "[MA Listener] Starting...");
         thread::Builder::new()
@@ -241,11 +258,12 @@ impl MediaAgent {
                     remote_frame,
                     sent_any_frame,
                     running,
+                    config,
                 );
             })
             .ok()
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn listener_loop(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
@@ -257,6 +275,7 @@ impl MediaAgent {
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
         sent_any_frame: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
+        config: Arc<Config>,
     ) {
         while running.load(Ordering::Relaxed) {
             Self::drain_camera_frames(
@@ -276,6 +295,7 @@ impl MediaAgent {
                         &ma_encoder_event_tx,
                         &media_transport_event_tx,
                         &remote_frame,
+                        &config,
                     );
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -357,6 +377,7 @@ impl MediaAgent {
         ma_encoder_event_tx: &Sender<EncoderInstruction>,
         media_transport_event_tx: &Sender<MediaTransportEvent>,
         remote_frame: &Arc<Mutex<Option<VideoFrame>>>,
+        config: &Arc<Config>,
     ) {
         match event {
             MediaAgentEvent::DecodedVideoFrame(frame) => {
@@ -418,10 +439,18 @@ impl MediaAgent {
                 }
             }
             MediaAgentEvent::UpdateBitrate(b) => {
+                let fps = config
+                    .get_or_default("Media", "fps", "30")
+                    .parse()
+                    .unwrap_or(TARGET_FPS);
+                let keyint = config
+                    .get_or_default("Media", "keyframe_interval", "90")
+                    .parse()
+                    .unwrap_or(KEYINT);
                 let instruction = EncoderInstruction::SetConfig {
-                    fps: TARGET_FPS,
+                    fps,
                     bitrate: b,
-                    keyint: KEYINT,
+                    keyint,
                 };
                 if ma_encoder_event_tx.send(instruction).is_ok() {
                     sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);

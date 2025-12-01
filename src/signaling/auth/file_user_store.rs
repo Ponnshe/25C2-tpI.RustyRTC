@@ -156,7 +156,7 @@ impl AuthBackend for FileUserStore {
             .insert(username.to_owned(), UserEntry { salt, hash });
 
         // Persist to disk; if it fails, roll back and signal Internal.
-        if let Err(_) = self.persist() {
+        if self.persist().is_err() {
             self.users.remove(username);
             return Err(RegisterError::Internal);
         }
@@ -212,6 +212,7 @@ fn hash_password(password: &str, salt: &[u8; 16]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
     use std::path::PathBuf;

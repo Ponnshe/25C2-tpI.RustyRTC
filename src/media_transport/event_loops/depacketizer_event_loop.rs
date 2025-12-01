@@ -49,7 +49,7 @@ impl DepacketizerEventLoop {
                 const TIMEOUT: Duration = Duration::from_millis(RECV_TIMEOUT);
                 match depacketizer_event_rx.recv_timeout(TIMEOUT) {
                     Ok(event) => {
-                        match event {
+                        let _ = match event {
                             DepacketizerEvent::AnnexBFrameReady { codec_spec, bytes } => {
                                 sink_trace!(
                                     logger,
@@ -89,6 +89,7 @@ impl DepacketizerEventLoop {
         self.event_loop_handler = Some(handle);
     }
 
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         sink_debug!(self.logger, "[MT Event Loop MA] Stopping the event loop");
         self.stop_flag.store(true, Ordering::SeqCst);

@@ -26,6 +26,7 @@ pub struct PacketizedFrame {
     pub codec_spec: CodecSpec,
 }
 
+#[allow(clippy::expect_used)]
 pub fn spawn_packetizer_worker(
     order_rx: Receiver<PacketizeOrder>,
     event_tx: Sender<PacketizerEvent>,

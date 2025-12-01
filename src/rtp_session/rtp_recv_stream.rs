@@ -1,5 +1,4 @@
 use crate::core::events::EngineEvent;
-use crate::log::log_level::LogLevel;
 use crate::log::log_sink::LogSink;
 use crate::media_transport::media_transport_event::RtpIn;
 use crate::rtcp::report_block::ReportBlock;

@@ -7,22 +7,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{dtls, ice::type_ice::ice_agent::IceRole};
-use crate::{dtls::DtlsRole, sink_trace};
-
 use crate::{
-    congestion_controller::congestion_controller::CongestionController,
+    config::Config,
+    congestion_controller::CongestionController,
     connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
+    dtls::{self, DtlsRole},
+    ice::type_ice::ice_agent::IceRole,
     log::log_sink::LogSink,
-    media_agent::{constants::TARGET_FPS, video_frame::VideoFrame},
-    media_transport::{
-        media_transport::MediaTransport, media_transport_event::MediaTransportEvent,
-    },
-    sink_debug, sink_info,
+    media_agent::video_frame::VideoFrame,
+    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
+    sink_debug, sink_info, sink_trace,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -36,14 +34,15 @@ pub struct Engine {
     ui_rx: Receiver<EngineEvent>,
     media_transport: MediaTransport,
     congestion_controller: CongestionController,
+    config: Arc<Config>,
 }
 
 impl Engine {
-    pub fn new(logger_sink: Arc<dyn LogSink>) -> Self {
+    pub fn new(logger_sink: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let media_transport =
-            MediaTransport::new(event_tx.clone(), logger_sink.clone(), TARGET_FPS);
+            MediaTransport::new(event_tx.clone(), logger_sink.clone(), config.clone());
         let initial_bitrate = crate::media_agent::constants::BITRATE;
         let congestion_controller = CongestionController::new(
             initial_bitrate,
@@ -77,13 +76,14 @@ impl Engine {
         });
 
         Self {
-            cm: ConnectionManager::new(logger_sink.clone()),
+            cm: ConnectionManager::new(logger_sink.clone(), config.clone()),
             logger_sink,
             session: Arc::new(Mutex::new(None)),
             event_tx,
             media_transport,
             congestion_controller,
             ui_rx,
+            config,
         }
     }
 
@@ -124,8 +124,9 @@ impl Engine {
             .collect()
     }
 
+    #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), String> {
-        let mut guard = self.session.lock().unwrap();
+        let mut guard = self.session.lock().expect("session lock poisoned");
         if let Some(sess) = guard.as_mut() {
             sess.start();
         } else {
@@ -134,15 +135,16 @@ impl Engine {
         Ok(())
     }
 
+    #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
-        if let Some(sess) = self.session.lock().unwrap().as_mut() {
+        if let Some(sess) = self.session.lock().expect("session lock poisoned").as_mut() {
             sess.request_close();
         }
         self.media_transport.stop();
     }
-
+    #[allow(clippy::expect_used)]
     pub fn close_session(&mut self) {
-        let mut guard = self.session.lock().unwrap();
+        let mut guard = self.session.lock().expect("session lock poisoned");
         *guard = None;
         // This ensures cm.ice_agent.get_data_channel_socket() returns Err/None
         // in the next poll() loop, preventing the zombie DTLS handshake.
@@ -153,72 +155,78 @@ impl Engine {
         );
     }
 
+    #[allow(clippy::expect_used)]
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
         self.cm.drain_ice_events();
 
-        if self.session.lock().unwrap().is_none() {
-            if let Ok((sock, peer)) = self.cm.ice_agent.get_data_channel_socket() {
-                if let Err(e) = sock.connect(peer) {
-                    let _ = self
-                        .event_tx
-                        .send(EngineEvent::Error(format!("socket.connect: {e}")));
-                } else {
-                    let local = sock
-                        .local_addr()
-                        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-                    let _ = self.event_tx.send(EngineEvent::IceNominated {
-                        local,
-                        remote: peer,
-                    });
+        if self
+            .session
+            .lock()
+            .expect("session lock poisoned")
+            .is_none()
+            && let Ok((sock, peer)) = self.cm.ice_agent.get_data_channel_socket()
+        {
+            if let Err(e) = sock.connect(peer) {
+                let _ = self
+                    .event_tx
+                    .send(EngineEvent::Error(format!("socket.connect: {e}")));
+            } else {
+                let local = sock
+                    .local_addr()
+                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+                let _ = self.event_tx.send(EngineEvent::IceNominated {
+                    local,
+                    remote: peer,
+                });
 
-                    // Matar al worker de ICE antes de DTLS ---
-                    // Esto asegura que nadie más esté leyendo del socket.
-                    self.cm.stop_ice_worker();
+                // Matar al worker de ICE antes de DTLS ---
+                // Esto asegura que nadie más esté leyendo del socket.
+                self.cm.stop_ice_worker();
 
-                    // --- IceRole -> DtlsRole ---
-                    let dtls_role = match self.cm.ice_agent.role {
-                        IceRole::Controlling => DtlsRole::Server,
-                        IceRole::Controlled => DtlsRole::Client,
-                    };
+                // --- IceRole -> DtlsRole ---
+                let dtls_role = match self.cm.ice_agent.role {
+                    IceRole::Controlling => DtlsRole::Server,
+                    IceRole::Controlled => DtlsRole::Client,
+                };
 
-                    // Retrieve the remote fingerprint stored in CM
-                    let remote_fp = self.cm.remote_fingerprint.clone();
+                // Retrieve the remote fingerprint stored in CM
+                let remote_fp = self.cm.remote_fingerprint.clone();
 
-                    // --- blocking DTLS handshake ---
-                    let srtp_cfg = match dtls::run_dtls_handshake(
-                        Arc::clone(&sock),
-                        peer,
-                        dtls_role,
-                        self.logger_sink.clone(),
-                        Duration::from_secs_f32(5.0),
-                        remote_fp,
-                    ) {
-                        Ok(cfg) => Some(cfg),
-                        Err(e) => {
-                            let _ = self
-                                .event_tx
-                                .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
-                            None // podrías también hacer `continue` para no crear sesión
-                        }
-                    };
+                // --- blocking DTLS handshake ---
+                let srtp_cfg = match dtls::run_dtls_handshake(
+                    Arc::clone(&sock),
+                    peer,
+                    dtls_role,
+                    self.logger_sink.clone(),
+                    Duration::from_secs_f32(5.0),
+                    remote_fp,
+                    self.config.clone(),
+                ) {
+                    Ok(cfg) => Some(cfg),
+                    Err(e) => {
+                        let _ = self
+                            .event_tx
+                            .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
+                        None // podrías también hacer `continue` para no crear sesión
+                    }
+                };
 
-                    let sess = Session::new(
-                        Arc::clone(&sock),
-                        peer,
-                        self.cm.remote_codecs().clone(),
-                        self.event_tx.clone(),
-                        self.logger_sink.clone(),
-                        SessionConfig {
-                            handshake_timeout: Duration::from_secs(10),
-                            resend_every: Duration::from_millis(250),
-                            close_timeout: Duration::from_secs(5),
-                            close_resend_every: Duration::from_millis(250),
-                        },
-                        srtp_cfg,
-                    );
-                    *self.session.lock().unwrap() = Some(sess);
-                }
+                let sess = Session::new(
+                    Arc::clone(&sock),
+                    peer,
+                    self.cm.remote_codecs().clone(),
+                    self.event_tx.clone(),
+                    self.logger_sink.clone(),
+                    SessionConfig {
+                        handshake_timeout: Duration::from_secs(10),
+                        resend_every: Duration::from_millis(250),
+                        close_timeout: Duration::from_secs(5),
+                        close_resend_every: Duration::from_millis(250),
+                    },
+                    srtp_cfg,
+                );
+                *self.session.lock().expect("session lock poisoned") = Some(sess);
             }
         }
 
@@ -271,7 +279,7 @@ impl Engine {
             "[Engine] Sending Established Event to Media Transport"
         );
         if let Some(media_transport_event_tx) = self.media_transport.media_transport_event_tx() {
-            media_transport_event_tx.send(MediaTransportEvent::Established);
+            let _ = media_transport_event_tx.send(MediaTransportEvent::Established);
         }
     }
 }

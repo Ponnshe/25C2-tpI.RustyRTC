@@ -18,18 +18,13 @@ impl Presence {
     /// Log in a user on a given client.
     ///
     /// Returns:
-    /// - Ok(previous_client) if this user was already logged in somewhere else.
-    /// - Err(()) if user was not previously logged in.
-    pub fn login(
-        &mut self,
-        client_id: ClientId,
-        username: UserName,
-    ) -> Result<Option<ClientId>, ()> {
+    /// - Some(previous_client) if this user was already logged in somewhere else.
+    /// - None if user was not previously logged in.
+    pub fn login(&mut self, client_id: ClientId, username: UserName) -> Option<ClientId> {
         let old_client = self.user_to_client.insert(username.clone(), client_id);
         self.client_to_user.insert(client_id, username);
-        Ok(old_client)
+        old_client
     }
-
     /// Remove client from presence; returns the username if any.
     pub fn logout(&mut self, client_id: ClientId) -> Option<UserName> {
         if let Some(username) = self.client_to_user.remove(&client_id) {

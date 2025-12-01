@@ -1,16 +1,8 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{
-        Arc, Mutex, RwLock,
-        mpsc::{self, Receiver, Sender, SyncSender},
-    },
-    thread::JoinHandle,
-};
-
 use crate::{
+    config::Config,
     core::{events::EngineEvent, session::Session},
     log::log_sink::LogSink,
-    media_agent::{media_agent::MediaAgent, spec::CodecSpec, video_frame::VideoFrame},
+    media_agent::{MediaAgent, constants::TARGET_FPS, spec::CodecSpec, video_frame::VideoFrame},
     media_transport::{
         codec::CodecDescriptor,
         constants::{DYNAMIC_PAYLOAD_TYPE_START, RTP_TX_CHANNEL_SIZE},
@@ -25,6 +17,14 @@ use crate::{
     },
     rtp_session::{outbound_track_handle::OutboundTrackHandle, rtp_codec::RtpCodec},
     sink_error, sink_info,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex, RwLock,
+        mpsc::{self, Receiver, Sender, SyncSender},
+    },
+    thread::JoinHandle,
 };
 
 pub struct MediaTransport {
@@ -45,8 +45,16 @@ pub struct MediaTransport {
 }
 
 impl MediaTransport {
-    pub fn new(event_tx: Sender<EngineEvent>, logger: Arc<dyn LogSink>, target_fps: u32) -> Self {
-        let media_agent = MediaAgent::new(logger.clone());
+    pub fn new(
+        event_tx: Sender<EngineEvent>,
+        logger: Arc<dyn LogSink>,
+        config: Arc<Config>,
+    ) -> Self {
+        let media_agent = MediaAgent::new(logger.clone(), config.clone());
+        let target_fps = config
+            .get_or_default("Media", "fps", "30")
+            .parse()
+            .unwrap_or(TARGET_FPS);
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
 
         let depacketizer_event_loop = DepacketizerEventLoop::new(logger.clone());
@@ -74,6 +82,7 @@ impl MediaTransport {
         }
     }
 
+    #[allow(clippy::expect_used)]
     pub fn start_event_loops(&mut self, session: Arc<Mutex<Option<Session>>>) {
         let logger = self.logger.clone();
         let maybe_media_transport_event_tx = self.media_transport_event_tx();
@@ -85,7 +94,8 @@ impl MediaTransport {
         let (packetizer_event_tx, packetizer_event_rx) = mpsc::channel();
 
         if let Some(media_transport_event_tx) = maybe_media_transport_event_tx {
-            self.media_agent
+            let _ = self
+                .media_agent
                 .start(self.event_tx.clone(), media_transport_event_tx);
         }
 
@@ -132,7 +142,10 @@ impl MediaTransport {
             );
         }
 
-        let media_transport_event_rx = self.media_transport_event_rx.take().unwrap();
+        let media_transport_event_rx = self
+            .media_transport_event_rx
+            .take()
+            .expect("MediaTransport event receiver missing (already started?)");
 
         if let Some(rtp_tx) = self.rtp_tx.clone()
             && let Some(allowed_pts) = self.allowed_pts.clone()

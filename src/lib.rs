@@ -16,3 +16,4 @@ pub mod signaling;
 pub mod signaling_client;
 pub mod srtp;
 pub mod tls_utils;
+pub mod config;
