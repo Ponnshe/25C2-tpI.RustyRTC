@@ -8,8 +8,9 @@ use rustyrtc::signaling::run::run_signaling_server_with_log;
 use std::sync::Arc;
 use std::{env, process};
 
-fn main() -> std::io::Result<()> {
-    let args: Vec<String> = env::args().collect();
+fn main() /*-> std::io::Result<()>*/ {
+    audio_poc::poc_main::start_audio_poc().unwrap();
+    /*let args: Vec<String> = env::args().collect();
     let config_result = if args.len() > 1 {
         let path = &args[1];
         println!("Trying to load personal config: {}", path);
@@ -38,5 +39,5 @@ fn main() -> std::io::Result<()> {
     eprintln!("[signaling_server] starting on {}", addr);
 
     // --- Run signaling server (blocks) -------------------------------------
-    run_signaling_server_with_log(addr, log_sink, Arc::clone(&config))
+    run_signaling_server_with_log(addr, log_sink, Arc::clone(&config))*/
 }
