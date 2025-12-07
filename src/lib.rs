@@ -45,3 +45,5 @@ pub mod signaling_client;
 pub mod srtp;
 /// TLS (Transport Layer Security) utility functions.
 pub mod tls_utils;
+
+pub mod audio;
