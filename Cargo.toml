@@ -20,6 +20,7 @@ ctr = "0.9"
 hmac = "0.12"
 sha1 = "0.10"
 byteorder = "1.5"
+cpal = "0.16.0"
 
 [features]
 default = ["log-info"] # Default to Info, Warn, Error

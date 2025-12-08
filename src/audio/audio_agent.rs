@@ -110,7 +110,6 @@ impl AudioAgent {
                     }
                 }
 
-                // --- RTP → Playback ---
                 match rx_from_rtp.recv_timeout(Duration::from_millis(1)) {
                     Ok(frame) => {
                         if tx_agent_to_playback.send(frame).is_err() {
