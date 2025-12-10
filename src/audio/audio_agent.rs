@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use crate::{sink_info, sink_warn};
 use crate::log::log_sink::LogSink;
@@ -14,6 +14,13 @@ use crate::audio::types::{AudioConfig, AudioFrame};
 pub enum AudioAgentState {
     Stopped,
     Running,
+}
+
+/// Represents whether the audio is currently enabled or muted.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AudioState {
+    Enabled,
+    Muted,
 }
 
 pub struct AudioAgent {
@@ -34,6 +41,9 @@ pub struct AudioAgent {
     worker_handle: Option<JoinHandle<()>>,
 
     logger: Option<Arc<dyn LogSink>>,
+
+    /// Handles the audio flow: mute/unmute state, audio pipeline control, etc.
+    mute_flag: Arc<AtomicBool>,
 }
 
 impl AudioAgent {
@@ -57,6 +67,7 @@ impl AudioAgent {
             rx_from_rtp,
             worker_handle: None,
             logger,
+            mute_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -158,6 +169,37 @@ impl AudioAgent {
         }
 
         Ok(())
+    }
+
+    /// Mutes the audio stream.
+    pub fn mute(&self) {
+        self.mute_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Unmutes the audio stream.
+    pub fn unmute(&self) {
+        self.mute_flag.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns the current audio state.
+    pub fn audio_state(&self) -> AudioState {
+        if self.mute_flag.load(Ordering::Relaxed) {
+            AudioState::Muted
+        } else {
+            AudioState::Enabled
+        }
+    }
+
+    /// Returns true if audio is muted.
+    pub fn is_muted(&self) -> bool {
+        self.mute_flag.load(Ordering::Relaxed)
+    }
+
+    /// Called by the audio pipeline before sending RTP.
+    ///
+    /// If muted, the audio is **not** sent.
+    pub fn should_send_audio(&self) -> bool {
+        !self.mute_flag.load(Ordering::Relaxed)
     }
 }
 
