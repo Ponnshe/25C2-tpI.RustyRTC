@@ -1,0 +1,80 @@
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::sync::{mpsc::Receiver, mpsc::Sender, Arc};
+use crate::file_handler::events::{FileHandlerEvents, ReaderCommands};
+use crate::log::log_sink::LogSink;
+use crate::{sink_debug, sink_error, sink_info, sink_warn};
+
+const CHUNK_SIZE: usize = 1024;
+
+pub struct ReaderWorker {
+    id: u32,
+    reader: BufReader<File>,
+    tx_listener: Sender<FileHandlerEvents>,
+    rx_cmd: Receiver<ReaderCommands>,
+    log_sink: Arc<dyn LogSink>,
+}
+
+impl ReaderWorker {
+    pub fn new(
+        id: u32,
+        path: String,
+        tx_listener: Sender<FileHandlerEvents>,
+        rx_cmd: Receiver<ReaderCommands>,
+        log_sink: Arc<dyn LogSink>,
+    ) -> Result<Self, String> {
+        let file = File::open(&path).map_err(|e| e.to_string())?;
+        let reader = BufReader::new(file);
+        Ok(Self {
+            id,
+            reader,
+            tx_listener,
+            rx_cmd,
+            log_sink,
+        })
+    }
+
+    pub fn run(mut self) {
+        sink_info!(self.log_sink, "ReaderWorker {} started", self.id);
+        
+        while let Ok(cmd) = self.rx_cmd.recv() {
+            match cmd {
+                ReaderCommands::GetChunk => {
+                    let mut buffer = vec![0u8; CHUNK_SIZE];
+                    match self.reader.read(&mut buffer) {
+                        Ok(0) => {
+                            // EOF
+                            sink_debug!(self.log_sink, "ReaderWorker {} EOF", self.id);
+                            let _ = self.tx_listener.send(FileHandlerEvents::ReadChunk {
+                                id: self.id,
+                                payload: Vec::new(),
+                            });
+                            let _ = self.tx_listener.send(FileHandlerEvents::ReaderWorkerFinished(self.id));
+                            break;
+                        }
+                        Ok(n) => {
+                            buffer.truncate(n);
+                            sink_debug!(self.log_sink, "ReaderWorker {} read {} bytes", self.id, n);
+                            if let Err(e) = self.tx_listener.send(FileHandlerEvents::ReadChunk {
+                                id: self.id,
+                                payload: buffer,
+                            }) {
+                                sink_warn!(self.log_sink, "ReaderWorker {} failed to send ReadChunk: {}", self.id, e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            sink_error!(self.log_sink, "ReaderWorker {} read error: {}", self.id, e);
+                            let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
+                        }
+                    }
+                }
+                ReaderCommands::Cancel => {
+                    sink_info!(self.log_sink, "ReaderWorker {} cancelled", self.id);
+                    break;
+                }
+            }
+        }
+        sink_info!(self.log_sink, "ReaderWorker {} stopped", self.id);
+    }
+}
