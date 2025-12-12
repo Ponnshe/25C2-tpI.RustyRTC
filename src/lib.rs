@@ -21,6 +21,8 @@ pub mod connection_manager;
 pub mod core;
 /// DTLS (Datagram Transport Layer Security) implementation.
 pub mod dtls;
+/// File handler for P2P file transfer.
+pub mod file_handler;
 /// ICE (Interactive Connectivity Establishment) implementation for NAT traversal.
 pub mod ice;
 /// Logging utilities for the application.
