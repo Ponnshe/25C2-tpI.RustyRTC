@@ -1,4 +1,5 @@
 use super::constants::{KEYINT, TARGET_FPS};
+use crate::audio::types::AudioFrame;
 use crate::config::Config;
 use crate::media_agent::constants::DEFAULT_CAMERA_ID;
 use crate::{
@@ -66,6 +67,7 @@ pub struct MediaAgent {
     
     running: Arc<AtomicBool>,
     config: Arc<Config>,
+    audio_downlink_tx: Option<Sender<AudioFrame>>,
 }
 
 impl MediaAgent {
@@ -95,6 +97,7 @@ impl MediaAgent {
             ma_encoder_event_tx: None,
             running: Arc::new(AtomicBool::new(false)),
             config,
+            audio_downlink_tx: None,
         }
     }
 
@@ -186,6 +189,7 @@ impl MediaAgent {
 
         // --- 4. Start Central Listener ---
         sink_debug!(logger.clone(), "[MediaAgent] Starting Listener...");
+        let audio_downlink_tx = self.audio_downlink_tx.clone();
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
             local_frame_rx,
@@ -195,6 +199,7 @@ impl MediaAgent {
             media_transport_event_tx,
             local_frame,
             remote_frame,
+            audio_downlink_tx,
             self.sent_any_frame.clone(),
             running,
             self.config.clone(),
@@ -241,6 +246,10 @@ impl MediaAgent {
         }
 
         sink_debug!(self.logger, "[MediaAgent] stopped cleanly");
+    }
+
+    pub fn set_audio_downlink(&mut self, tx: Sender<AudioFrame>) {
+        self.audio_downlink_tx = Some(tx);
     }
 
     #[must_use]
@@ -293,6 +302,7 @@ impl MediaAgent {
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
+        audio_downlink_tx: Option<Sender<AudioFrame>>,
         sent_any_frame: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
         config: Arc<Config>,
@@ -310,6 +320,7 @@ impl MediaAgent {
                     media_transport_event_tx,
                     local_frame,
                     remote_frame,
+                    audio_downlink_tx,
                     sent_any_frame,
                     running,
                     config,
@@ -333,6 +344,7 @@ impl MediaAgent {
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
+        audio_downlink_tx: Option<Sender<AudioFrame>>,
         sent_any_frame: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
         config: Arc<Config>,
@@ -357,6 +369,7 @@ impl MediaAgent {
                         &ma_encoder_event_tx,
                         &media_transport_event_tx,
                         &remote_frame,
+                        &audio_downlink_tx,
                         &config,
                     );
                 }
@@ -448,6 +461,7 @@ impl MediaAgent {
         ma_encoder_event_tx: &Sender<EncoderInstruction>,
         media_transport_event_tx: &Sender<MediaTransportEvent>,
         remote_frame: &Arc<Mutex<Option<VideoFrame>>>,
+        audio_downlink_tx: &Option<Sender<AudioFrame>>,
         config: &Arc<Config>,
     ) {
         match event {
@@ -530,6 +544,13 @@ impl MediaAgent {
                 };
                 if ma_encoder_event_tx.send(instruction).is_ok() {
                     sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
+                }
+            }
+            MediaAgentEvent::RemoteAudioFrame(frame) => {
+                if let Some(tx) = audio_downlink_tx {
+                    if tx.send(frame).is_err() {
+                        sink_warn!(logger, "[MediaAgent] audio downlink channel closed");
+                    }
                 }
             }
         }

@@ -281,4 +281,9 @@ impl MediaTransport {
         self.payload_map = Arc::new(HashMap::new());
         sink_info!(self.logger, "[MediaTransport] Stopped");
     }
+
+    pub fn media_agent_mut(&mut self) -> &mut MediaAgent {
+        &mut self.media_agent
+    }
+    
 }

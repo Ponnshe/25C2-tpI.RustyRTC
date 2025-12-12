@@ -10,18 +10,13 @@ use std::{
 };
 
 use crate::{
-    core::{events::EngineEvent, session::Session},
-    log::log_sink::LogSink,
-    media_agent::events::MediaAgentEvent,
-    media_transport::{
+    audio::types::AudioFrame, core::{events::EngineEvent, session::Session}, log::log_sink::LogSink, media_agent::events::MediaAgentEvent, media_transport::{
         codec::CodecDescriptor,
         error::{MediaTransportError, Result},
-        event_loops::constants::RECV_TIMEOUT,
+        event_loops::constants::{RECV_TIMEOUT, RTP_PT_AUDIO_PCM},
         media_transport_event::{MediaTransportEvent, RtpIn},
         packetizer_worker::PacketizeOrder,
-    },
-    rtp_session::outbound_track_handle::OutboundTrackHandle,
-    sink_debug, sink_error, sink_info, sink_trace,
+    }, rtp::rtp_sender::RtpSender, rtp_session::outbound_track_handle::OutboundTrackHandle, sink_debug, sink_error, sink_info, sink_trace, sink_warn
 };
 
 /// The central control loop for the Media Transport's Egress (Outgoing) pipeline.
@@ -36,6 +31,7 @@ pub struct MediaAgentEventLoop {
     stop_flag: Arc<AtomicBool>,
     event_loop_handler: Option<JoinHandle<()>>,
     target_fps: u32,
+    audio_rtp_sender: Option<RtpSender>,
 }
 
 impl MediaAgentEventLoop {
@@ -48,8 +44,10 @@ impl MediaAgentEventLoop {
             stop_flag,
             event_loop_handler: None,
             target_fps,
+            audio_rtp_sender: None,
         }
     }
+    
 
     /// Starts the event loop thread.
     ///
@@ -80,6 +78,7 @@ impl MediaAgentEventLoop {
     ) {
         let stop_flag = self.stop_flag.clone();
         let running_flag = self.running_flag.clone();
+        let mut audio_sender = self.audio_rtp_sender.take();
 
         // Calculate the RTP timestamp increment per frame (90kHz clock).
         // E.g., for 30fps: 90000 / 30 = 3000 ticks per frame.
@@ -88,6 +87,9 @@ impl MediaAgentEventLoop {
         let logger = self.logger.clone();
 
         let handle = std::thread::spawn(move || {
+            let mut audio_sender = audio_sender.take().unwrap_or_else(|| {
+                RtpSender::audio_opus(rand::random())
+            });
             let mut last_received_local_ts_ms = None;
             // Initialize random start timestamp for security/standard compliance.
             let mut rtp_ts = rand::random::<u32>();
@@ -99,7 +101,7 @@ impl MediaAgentEventLoop {
                         MediaTransportEvent::SendEncodedFrame {
                             annexb_frame,
                             timestamp_ms,
-                            codec_spec,
+                            codec_spec, 
                         } => {
                             sink_debug!(
                                 logger.clone(),
@@ -131,11 +133,20 @@ impl MediaAgentEventLoop {
                         
                         // --- Raw Packet Forwarding ---
                         MediaTransportEvent::RtpIn(pkt) => {
-                            sink_trace!(
-                                logger,
-                                "[MediaAgent Event Loop (MT)] Forwarding raw RTP/RTCP packet to socket"
-                            );
-                            let _ = rtp_tx.try_send(pkt.clone());
+                            // PT típico de audio (el que estés usando)
+                            if pkt.pt == RTP_PT_AUDIO_PCM {
+                                if let Some(frame) = decode_rtp_audio(pkt) {
+                                    let _ = media_agent_tx.send(
+                                        MediaAgentEvent::RemoteAudioFrame(frame)
+                                    );
+                                }
+                            } else {
+                                sink_trace!(
+                                    logger,
+                                    "[MediaAgent Event Loop (MT)] Forwarding raw RTP/RTCP packet to socket"
+                                );
+                                let _ = rtp_tx.try_send(pkt.clone());
+                            }
                         }
 
                         // --- Control Plane: Connection Established ---
@@ -163,6 +174,13 @@ impl MediaAgentEventLoop {
                                 }
                             }
                         }
+
+                        //Send Audio Frame: Recognized audio
+                        MediaTransportEvent::SendAudioFrame { samples, timestamp, channels } => {
+                            if let Err(e) = send_rtp_audio_thread(&mut audio_sender, &rtp_tx, samples, timestamp, channels, &logger) {
+                                sink_warn!(logger, "[audio] send_rtp_audio failed: {e}");
+                            }
+                        }                        
 
                         // --- Control Plane: Cleanup ---
                         MediaTransportEvent::Closing | MediaTransportEvent::Closed => {
@@ -226,7 +244,64 @@ impl MediaAgentEventLoop {
             "[MT Event Loop MA] The event loop has been stopped"
         );
     }
+    
 }
+
+fn send_rtp_audio_thread(
+    sender: &mut RtpSender,
+    rtp_tx: &SyncSender<RtpIn>,
+    samples: Vec<i16>,
+    _timestamp: Duration,
+    channels: u16,
+    logger: &Arc<dyn LogSink>,
+) -> Result<()> {
+    let mut payload = Vec::with_capacity(samples.len() * 2);
+    for s in samples {
+        payload.extend_from_slice(&s.to_le_bytes());
+    }
+
+    let samples_per_frame = (payload.len() / 2 / channels as usize) as u32;
+    let packet = sender.build_packet(payload, false, samples_per_frame);
+
+    let raw = packet
+    .encode()
+    .map_err(|e| MediaTransportError::Send(format!("rtp encode: {e:?}")))?;
+
+    rtp_tx.try_send(RtpIn {
+        pt: packet.payload_type(),
+        marker: packet.marker(),
+        timestamp_90khz: packet.timestamp(),
+        seq: packet.seq(),
+        ssrc: packet.ssrc(),
+        payload: raw,
+    })
+    .map_err(|e| MediaTransportError::Send(format!("rtp_tx try_send: {e}")))?;
+
+
+    sink_trace!(logger, "[audio] RTP sent seq={} ts={} ssrc={}", packet.seq(), packet.timestamp(), packet.ssrc());
+    Ok(())
+}
+
+fn decode_rtp_audio(pkt: RtpIn) -> Option<AudioFrame> {
+    // PCM i16 little-endian
+    if pkt.payload.len() % 2 != 0 {
+        return None;
+    }
+
+    let mut samples = Vec::with_capacity(pkt.payload.len() / 2);
+    for chunk in pkt.payload.chunks_exact(2) {
+        samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+
+    let ms: u64 = (u64::from(pkt.timestamp_90khz) * 1000) / 48_000;
+
+    Some(AudioFrame {
+        timestamp: Duration::from_millis(ms),
+        samples,
+        channels: 1,
+    })
+}
+
 
 /// Helper to register outbound tracks in the RTP session if they don't exist yet.
 ///

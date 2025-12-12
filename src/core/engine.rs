@@ -8,19 +8,10 @@ use std::{
 };
 
 use crate::{
-    config::Config,
-    congestion_controller::CongestionController,
-    connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
-    core::{
+    audio::{audio_agent::AudioAgent, audio_io::{AudioIo, NoopAudioIo}, cpal_io::CpalAudioIo, types::AudioConfig}, config::Config, congestion_controller::CongestionController, connection_manager::{connection_error::ConnectionError, ConnectionManager, OutboundSdp}, core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
-    },
-    dtls::{self, DtlsRole},
-    ice::type_ice::ice_agent::IceRole,
-    log::log_sink::LogSink,
-    media_agent::video_frame::VideoFrame,
-    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
-    sink_debug, sink_info, sink_trace,
+    }, dtls::{self, DtlsRole}, ice::type_ice::ice_agent::IceRole, log::log_sink::LogSink, media_agent::video_frame::VideoFrame, media_transport::{media_transport_event::MediaTransportEvent, MediaTransport}, sink_debug, sink_info, sink_trace, sink_warn
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -38,6 +29,7 @@ pub struct Engine {
     media_transport: MediaTransport,
     congestion_controller: CongestionController,
     config: Arc<Config>,
+    audio_agent: AudioAgent,
 }
 
 impl Engine {
@@ -47,6 +39,25 @@ impl Engine {
         let (event_tx, event_rx) = mpsc::channel();
         let media_transport =
             MediaTransport::new(event_tx.clone(), logger_sink.clone(), config.clone());
+        // Config de audio por defecto (48 kHz, mono, 20ms)
+        let audio_config = AudioConfig::default_voice();
+
+        let audio_io: Box<dyn AudioIo> = match CpalAudioIo::new(audio_config.clone()) {
+            Ok(io) => Box::new(io),
+            Err(e) => {
+                // Si falla CPAL, logueamos y caemos a un IO "vacío"
+                sink_warn!(
+                    logger_sink,
+                    "[Audio] No se pudo inicializar CpalAudioIo: {}. Desactivando captura/reproducción de audio.",
+                    e
+                );
+                Box::new(NoopAudioIo::new(audio_config.clone()))
+            }
+        };
+
+        // Nuestro agente de audio orquestador
+        let audio_agent = AudioAgent::new(audio_config, audio_io, Some(logger_sink.clone()));
+
         let initial_bitrate = crate::media_agent::constants::BITRATE;
         let max_bitrate = config
             .get("Media", "max_bitrate")
@@ -97,6 +108,7 @@ impl Engine {
             congestion_controller,
             ui_rx,
             config,
+            audio_agent
         }
     }
 
@@ -317,6 +329,32 @@ impl Engine {
     /// Starts the media transport event loops.
     pub fn start_media_transport(&mut self) {
         self.media_transport.start_event_loops(self.session.clone());
+        if let Some(tx) = self.audio_agent.downlink_sender() {
+            self.media_transport
+                .media_agent_mut()
+                .set_audio_downlink(tx);
+        }        
+        //Se inicia audio, con el hilo uplink (CPAL → RTP → Transport)
+        if let Some(tx) = self.media_transport.media_transport_event_tx() {
+            let rx = self.audio_agent.take_uplink_receiver();
+            let mute_flag = self.audio_agent.mute_handle();
+    
+            std::thread::spawn(move || {
+                while let Ok(frame) = rx.recv() {
+                    // Si está muteado, descartamos el frame
+                    if mute_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
+    
+                    let _ = tx.send(MediaTransportEvent::SendAudioFrame {
+                        samples: frame.samples,
+                        timestamp: frame.timestamp,
+                        channels: frame.channels,
+                    });
+                }
+            });
+        }        
+                
         sink_info!(
             self.logger_sink,
             "[Engine] Sending Established Event to Media Transport"

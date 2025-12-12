@@ -38,6 +38,8 @@ pub struct AudioAgent {
     /// RTP → agente (receiver interno para playback).
     rx_from_rtp: Receiver<AudioFrame>,
 
+    rx_to_rtp: Receiver<AudioFrame>,
+
     worker_handle: Option<JoinHandle<()>>,
 
     logger: Option<Arc<dyn LogSink>>,
@@ -52,7 +54,7 @@ impl AudioAgent {
         io: Box<dyn AudioIo>,
         logger: Option<Arc<dyn LogSink>>,
     ) -> Self {
-        let (tx_to_rtp, _rx_to_rtp_unused) = channel::<AudioFrame>();
+        let (tx_to_rtp, rx_to_rtp) = channel::<AudioFrame>();
 
         // Canal bidireccional para RTP → agente
         let (tx_from_rtp, rx_from_rtp) = channel::<AudioFrame>();
@@ -68,7 +70,26 @@ impl AudioAgent {
             worker_handle: None,
             logger,
             mute_flag: Arc::new(AtomicBool::new(false)),
+            rx_to_rtp
         }
+    }
+
+    /// Devuelve el Receiver que entrega los frames de audio
+    /// capturados y listos para enviar por RTP.
+    ///
+    /// Se "consume" el receiver interno, por lo que sólo debe llamarse una vez.
+    pub fn take_uplink_receiver(&mut self) -> Receiver<AudioFrame> {
+        // Creamos un canal dummy para dejar algo en `self.rx_to_rtp`
+        let (_dummy_tx, dummy_rx) = std::sync::mpsc::channel();
+        std::mem::replace(&mut self.rx_to_rtp, dummy_rx)
+    }
+
+    /// Devuelve un handle compartido al flag de mute.
+    ///
+    /// Permite que otros hilos consulten el estado de mute sin
+    /// tomar un lock sobre `AudioAgent`.
+    pub fn mute_handle(&self) -> Arc<AtomicBool> {
+        self.mute_flag.clone()
     }
 
     pub fn config(&self) -> &AudioConfig {
@@ -201,6 +222,10 @@ impl AudioAgent {
     pub fn should_send_audio(&self) -> bool {
         !self.mute_flag.load(Ordering::Relaxed)
     }
+
+    pub fn downlink_sender(&self) -> Option<Sender<AudioFrame>> {
+        Some(self.tx_from_rtp.clone())
+    }    
 }
 
 

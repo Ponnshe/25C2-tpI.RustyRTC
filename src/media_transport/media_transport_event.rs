@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::media_agent::spec::CodecSpec;
 
 #[derive(Debug, Clone)]
@@ -22,4 +24,9 @@ pub enum MediaTransportEvent {
     Closed,
     RtpIn(RtpIn),
     Closing,
+    SendAudioFrame {
+        samples: Vec<i16>,
+        timestamp: Duration,
+        channels: u16,
+    },
 }
