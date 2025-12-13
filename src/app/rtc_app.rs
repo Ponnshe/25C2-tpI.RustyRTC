@@ -106,6 +106,8 @@ pub struct RtcApp {
     //Network Metrics
     last_metrics: Option<NetworkMetrics>,
     current_bitrate: Option<u32>,
+    //Flag for audio
+    audio_muted: bool,
 }
 
 impl RtcApp {
@@ -183,6 +185,7 @@ impl RtcApp {
             config,
             last_metrics: None,
             current_bitrate: None,
+            audio_muted: false,
         }
     }
 
@@ -662,6 +665,9 @@ impl RtcApp {
                     // Update the bitrate being used by the Encoder
                     self.current_bitrate = Some(bps);
                 }
+                EngineEvent::MuteAudio(_) => {
+                    // Engine handle mute sound, UI do nothing
+                }
             }
         }
     }
@@ -894,6 +900,18 @@ impl RtcApp {
                 if ui.button("Hang up").clicked() {
                     self.teardown_call(Some("hangup".into()), true);
                 }
+
+                let label = if self.audio_muted {
+                    "Unmute audio"
+                } else {
+                    "Mute audio"
+                };
+            
+                if ui.button(label).clicked() {
+                    self.audio_muted = !self.audio_muted;
+                    self.engine.set_audio_muted(self.audio_muted);
+                }
+                
             }
         }
     }

@@ -76,8 +76,6 @@ impl Engine {
             event_tx.clone(),
         );
 
-        let logger = logger_sink.clone();
-
         let media_tx = media_transport.media_transport_event_tx();
         std::thread::spawn(move || {
             while let Ok(ev) = event_rx.recv() {
@@ -110,6 +108,10 @@ impl Engine {
             config,
             audio_agent
         }
+    }
+
+    pub fn set_audio_muted(&self, muted: bool) {
+        let _ = self.event_tx.send(EngineEvent::MuteAudio(muted));
     }
 
     /// Initiates an SDP negotiation as an offerer.
@@ -307,6 +309,23 @@ impl Engine {
                         processed += 1;
                         out.push(EngineEvent::UpdateBitrate(*br));
                     }
+
+                    EngineEvent::MuteAudio(muted) => {
+                        sink_info!(
+                            self.logger_sink,
+                            "[Engine] Audio mute set to {}",
+                            muted
+                        );
+                    
+                        if *muted {
+                            self.audio_agent.mute();
+                        } else {
+                            self.audio_agent.unmute();
+                        }
+                    
+                        processed += 1;
+                        out.push(ev.clone());
+                    }                    
 
                     _ => {
                         processed += 1;

@@ -33,4 +33,6 @@ pub enum EngineEvent {
     NetworkMetrics(NetworkMetrics),
     /// Request to update the encoder bitrate.
     UpdateBitrate(u32),
+    /// Event to stop audio
+    MuteAudio(bool),
 }
