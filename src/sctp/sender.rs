@@ -2,9 +2,10 @@ use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::protocol::SctpProtocolMessage;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_warn};
-use sctp_proto::{Association, Payload};
+use crate::{sink_error, sink_info, sink_trace, sink_warn};
+use sctp_proto::{Association, AssociationHandle, ClientConfig, Endpoint, Payload, PayloadProtocolIdentifier, Error};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -15,7 +16,9 @@ pub struct SctpSender {
     pub tx: Sender<SctpEvents>,
     pub rx: Receiver<SctpEvents>,
     pub association: Arc<Mutex<Option<Association>>>,
+    pub association_handle: Arc<Mutex<Option<AssociationHandle>>>,
     pub streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
+    pub endpoint: Arc<Mutex<Endpoint>>,
 }
 
 impl SctpSender {
@@ -24,29 +27,65 @@ impl SctpSender {
         tx: Sender<SctpEvents>,
         rx: Receiver<SctpEvents>,
         association: Arc<Mutex<Option<Association>>>,
+        association_handle: Arc<Mutex<Option<AssociationHandle>>>,
         streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
+        endpoint: Arc<Mutex<Endpoint>>,
     ) -> Self {
         Self {
             log_sink,
             tx,
             rx,
             association,
+            association_handle,
             streams,
+            endpoint,
         }
     }
 
     pub fn run(&self) {
-        while let Ok(event) = self.rx.recv() {
+        let mut pending_messages = Vec::new();
+        use std::time::Duration;
+
+        // Ensure SCTP association is started immediately
+        self.ensure_connection();
+
+        loop {
+            // Determine timeout for sctp
+            let timeout = {
+                let mut assoc_guard = self.association.lock().unwrap();
+                if let Some(assoc) = assoc_guard.as_mut() {
+                    assoc.poll_timeout().map(|inst| inst.saturating_duration_since(Instant::now()))
+                } else {
+                    None
+                }
+            };
+
+            // Wait for event or timeout
+            let wait_duration = timeout.unwrap_or(Duration::from_millis(100));
+            // Cap wait duration
+            let wait_duration = wait_duration.min(Duration::from_secs(1));
+
+            let event = self.rx.recv_timeout(wait_duration);
+
             match event {
-                SctpEvents::SendOffer { file_properties } => {
+                Ok(SctpEvents::SendOffer { file_properties }) => {
+                    sink_trace!(self.log_sink, "[SCTP_SENDER] Processing SendOffer for id: {}", file_properties.transaction_id);
+                    // Create Stream entry for tracking chunks
+                    {
+                         let stream = SctpStream::new(file_properties.clone());
+                         let mut streams = self.streams.write().unwrap();
+                         streams.insert(file_properties.transaction_id, stream);
+                    }
+
                     let msg = SctpProtocolMessage::Offer {
                         id: file_properties.transaction_id,
                         filename: file_properties.file_name,
                         file_size: file_properties.file_size,
                     };
-                    self.send_message(msg);
+                    self.send_message(msg, &mut pending_messages);
                 }
-                SctpEvents::SendAccept { id } => {
+                Ok(SctpEvents::SendAccept { id }) => {
+                     sink_trace!(self.log_sink, "[SCTP_SENDER] Processing SendAccept for id: {}", id);
                      // Create Stream
                      {
                          let props = crate::sctp::events::SctpFileProperties {
@@ -58,9 +97,10 @@ impl SctpSender {
                          let mut streams = self.streams.write().unwrap();
                          streams.insert(id, stream);
                      }
-                     self.send_message(SctpProtocolMessage::Accept { id });
+                     self.send_message(SctpProtocolMessage::Accept { id }, &mut pending_messages);
                 }
-                SctpEvents::ReceivedAccept { id } => {
+                Ok(SctpEvents::ReceivedAccept { id }) => {
+                     sink_trace!(self.log_sink, "[SCTP_SENDER] Processing ReceivedAccept for id: {}", id);
                      let props = crate::sctp::events::SctpFileProperties {
                          file_name: "".to_string(),
                          file_size: 0,
@@ -70,17 +110,19 @@ impl SctpSender {
                      let mut streams = self.streams.write().unwrap();
                      streams.insert(id, stream);
                 }
-                SctpEvents::SendReject { id } => {
-                     self.send_message(SctpProtocolMessage::Reject { id });
+                Ok(SctpEvents::SendReject { id }) => {
+                     sink_trace!(self.log_sink, "[SCTP_SENDER] Processing SendReject for id: {}", id);
+                     self.send_message(SctpProtocolMessage::Reject { id }, &mut pending_messages);
                 }
-                SctpEvents::SendCancel { id } => {
+                Ok(SctpEvents::SendCancel { id }) => {
+                     sink_trace!(self.log_sink, "[SCTP_SENDER] Processing SendCancel for id: {}", id);
                      {
                          let mut streams = self.streams.write().unwrap();
                          streams.remove(&id);
                      }
-                     self.send_message(SctpProtocolMessage::Cancel { id });
+                     self.send_message(SctpProtocolMessage::Cancel { id }, &mut pending_messages);
                 }
-                SctpEvents::SendChunk { file_id, payload } => {
+                Ok(SctpEvents::SendChunk { file_id, payload }) => {
                      let seq = {
                          let mut streams = self.streams.write().unwrap();
                          if let Some(stream) = streams.get_mut(&file_id) {
@@ -94,28 +136,97 @@ impl SctpSender {
                      };
                      
                      if let Some(s) = seq {
+                         sink_trace!(self.log_sink, "[SCTP_SENDER] Sending Chunk seq {} for file_id: {}", s, file_id);
                          self.send_message(SctpProtocolMessage::Chunk {
                              id: file_id,
                              seq: s,
                              payload,
-                         });
+                         }, &mut pending_messages);
                      } else {
-                         sink_warn!(self.log_sink, "Attempted to send chunk for unknown stream {}", file_id);
+                         sink_warn!(self.log_sink, "[SCTP_SENDER] Attempted to send chunk for unknown stream {}", file_id);
                      }
                 }
+                Ok(SctpEvents::SendEndFile { id }) => {
+                     sink_trace!(self.log_sink, "[SCTP_SENDER] Processing SendEndFile for id: {}", id);
+                     {
+                         let mut streams = self.streams.write().unwrap();
+                         streams.remove(&id);
+                     }
+                     self.send_message(SctpProtocolMessage::EndFile { id }, &mut pending_messages);
+                }
+                Ok(SctpEvents::SctpConnected) => {
+                     sink_info!(self.log_sink, "[SCTP_SENDER] SCTP Connected, flushing {} pending messages", pending_messages.len());
+                     let messages_to_send = std::mem::take(&mut pending_messages);
+                     for msg in messages_to_send {
+                         self.send_message(msg, &mut pending_messages);
+                     }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Timeout expired, poll association below
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
                 _ => {}
+            }
+
+            // Periodic poll for timeouts and retransmissions
+            {
+                let mut assoc_guard = self.association.lock().unwrap();
+                if let Some(assoc) = assoc_guard.as_mut() {
+                    let now = Instant::now();
+                    
+                    // Handle timeouts
+                    if let Some(next_timeout) = assoc.poll_timeout() {
+                        if now >= next_timeout {
+                            assoc.handle_timeout(now);
+                        }
+                    }
+
+                    // Poll transmit
+                    while let Some(transmit) = assoc.poll_transmit(now) {
+                         if let Payload::RawEncode(bytes_vec) = transmit.payload {
+                             let mut payload = Vec::new();
+                             for b in bytes_vec {
+                                 payload.extend_from_slice(&b);
+                             }
+                             let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
+                         }
+                    }
+                }
             }
         }
     }
 
-    fn send_message(&self, msg: SctpProtocolMessage) {
+    fn ensure_connection(&self) {
+        let mut assoc_guard = self.association.lock().unwrap();
+        if assoc_guard.is_none() {
+            sink_info!(self.log_sink, "[SCTP_SENDER] Initiating SCTP association (ensure_connection)...");
+            let mut endpoint = self.endpoint.lock().unwrap();
+            let remote: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+            match endpoint.connect(ClientConfig::default(), remote) {
+                Ok((handle, assoc)) => {
+                    *assoc_guard = Some(assoc);
+                    let mut handle_guard = self.association_handle.lock().unwrap();
+                    *handle_guard = Some(handle);
+                }
+                Err(e) => {
+                    sink_error!(self.log_sink, "[SCTP_SENDER] Failed to initiate SCTP association: {:?}", e);
+                }
+            }
+        }
+    }
+
+    fn send_message(&self, msg: SctpProtocolMessage, pending: &mut Vec<SctpProtocolMessage>) {
         let payload = match msg.serialize() {
             Ok(p) => p,
             Err(e) => {
-                sink_error!(self.log_sink, "Failed to serialize SCTP message: {:?}", e);
+                sink_error!(self.log_sink, "[SCTP_SENDER] Failed to serialize SCTP message: {:?}", e);
                 return;
             }
         };
+
+        self.ensure_connection();
 
         let mut assoc_guard = self.association.lock().unwrap();
         if let Some(assoc) = assoc_guard.as_mut() {
@@ -124,12 +235,23 @@ impl SctpSender {
             
             let bytes = Bytes::from(payload);
             
-            if let Ok(mut stream) = assoc.stream(stream_id) {
+            // Try to get stream, if not, open it
+            let stream_handle = match assoc.stream(stream_id) {
+                Ok(s) => Ok(s),
+                Err(_) => assoc.open_stream(stream_id, PayloadProtocolIdentifier::Binary),
+            };
+
+            if let Ok(mut stream) = stream_handle {
                  if let Err(e) = stream.write(&bytes) {
-                     sink_warn!(self.log_sink, "Error writing to SCTP stream: {:?}", e);
+                     if e == Error::ErrPayloadDataStateNotExist {
+                          sink_info!(self.log_sink, "[SCTP_SENDER] Connection not ready, queuing message");
+                          pending.push(msg);
+                     } else {
+                          sink_warn!(self.log_sink, "[SCTP_SENDER] Error writing to SCTP stream: {:?}", e);
+                     }
                  }
             } else {
-                 sink_warn!(self.log_sink, "Failed to get SCTP stream handle for stream {}", stream_id);
+                 sink_warn!(self.log_sink, "[SCTP_SENDER] Failed to get or open SCTP stream {}", stream_id);
             }
             
             // Poll transmit to send the packet
@@ -144,7 +266,8 @@ impl SctpSender {
                  }
             }
         } else {
-            sink_warn!(self.log_sink, "Attempted to send message but no SCTP association exists");
+            sink_warn!(self.log_sink, "[SCTP_SENDER] Attempted to send message but no SCTP association exists");
+            pending.push(msg);
         }
     }
 }

@@ -74,6 +74,7 @@ impl SctpProtocolMessage {
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, std::io::Error> {
+        // println!("[CLI DEBUG] SctpProtocolMessage::deserialize len={}", data.len());
         let mut cursor = Cursor::new(data);
         let msg_type = cursor.read_u8()?;
 
@@ -112,7 +113,10 @@ impl SctpProtocolMessage {
                 let id = cursor.read_u32::<BigEndian>()?;
                 Ok(SctpProtocolMessage::EndFile { id })
             }
-            _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unknown message type")),
+            unknown_type => {
+                println!("[CLI DEBUG] Unknown SCTP message type: {}", unknown_type);
+                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Unknown message type: {}", unknown_type)))
+            },
         }
     }
 }

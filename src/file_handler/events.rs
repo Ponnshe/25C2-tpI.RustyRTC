@@ -17,8 +17,10 @@ pub enum FileHandlerEvents {
     GetChunk(u32),
     ReadChunk { id: u32, payload: Vec<u8> },
     WriteChunk { id: u32, payload: Vec<u8> },
+    RemoteAccepted(u32),
     ReaderWorkerFinished(u32),
     WriterWorkerFinished(u32),
     Cancel(u32),
     Err(String),
+    DrainChunks,
 }

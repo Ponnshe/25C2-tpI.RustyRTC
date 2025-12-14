@@ -5,7 +5,7 @@ use std::sync::{mpsc::Receiver, mpsc::Sender, Arc};
 use std::time::Duration;
 use crate::file_handler::events::{FileHandlerEvents, WriterCommands};
 use crate::log::log_sink::LogSink;
-use crate::{sink_debug, sink_error, sink_info, sink_warn};
+use crate::{sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 
 const TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 
@@ -39,14 +39,15 @@ impl WriterWorker {
     }
 
     pub fn run(mut self) {
-        sink_info!(self.log_sink, "WriterWorker {} started", self.id);
+        sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} started", self.id);
         loop {
             match self.rx_cmd.recv_timeout(TIMEOUT_DURATION) {
                 Ok(WriterCommands::WriteChunk(payload)) => {
+                     sink_trace!(self.log_sink, "[WRITER_WORKER] Worker {} processing WriteChunk of size {}", self.id, payload.len());
                      if payload.is_empty() {
-                         sink_debug!(self.log_sink, "WriterWorker {} received EOF", self.id);
+                         sink_debug!(self.log_sink, "[WRITER_WORKER] Worker {} received EOF", self.id);
                          if let Err(e) = self.writer.flush() {
-                             sink_error!(self.log_sink, "WriterWorker {} flush error: {}", self.id, e);
+                             sink_error!(self.log_sink, "[WRITER_WORKER] Worker {} flush error: {}", self.id, e);
                              let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
                              self.cleanup();
                          } else {
@@ -56,45 +57,45 @@ impl WriterWorker {
                      }
 
                      if let Err(e) = self.writer.write_all(&payload) {
-                         sink_error!(self.log_sink, "WriterWorker {} write error: {}", self.id, e);
+                         sink_error!(self.log_sink, "[WRITER_WORKER] Worker {} write error: {}", self.id, e);
                          let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
                          self.cleanup();
                          break;
                      }
-                     sink_debug!(self.log_sink, "WriterWorker {} wrote {} bytes", self.id, payload.len());
+                     sink_debug!(self.log_sink, "[WRITER_WORKER] Worker {} wrote {} bytes", self.id, payload.len());
                      if let Err(e) = self.writer.flush() {
-                         sink_error!(self.log_sink, "WriterWorker {} flush error: {}", self.id, e);
+                         sink_error!(self.log_sink, "[WRITER_WORKER] Worker {} flush error: {}", self.id, e);
                          let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
                          self.cleanup();
                          break;
                      }
                 }
                 Ok(WriterCommands::Cancel) => {
-                    sink_info!(self.log_sink, "WriterWorker {} cancelled", self.id);
+                    sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} cancelled", self.id);
                     self.cleanup();
                     break;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    sink_warn!(self.log_sink, "WriterWorker {} timed out", self.id);
+                    sink_warn!(self.log_sink, "[WRITER_WORKER] Worker {} timed out", self.id);
                     self.cleanup();
                     break;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    sink_info!(self.log_sink, "WriterWorker {} channel disconnected", self.id);
+                    sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} channel disconnected", self.id);
                     self.cleanup();
                     break;
                 }
             }
         }
-        sink_info!(self.log_sink, "WriterWorker {} stopped", self.id);
+        sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} stopped", self.id);
     }
 
     fn cleanup(&self) {
         // Try to remove the file
         if let Err(e) = fs::remove_file(&self.path) {
-            sink_warn!(self.log_sink, "WriterWorker {} failed to remove file {:?}: {}", self.id, self.path, e);
+            sink_warn!(self.log_sink, "[WRITER_WORKER] Worker {} failed to remove file {:?}: {}", self.id, self.path, e);
         } else {
-             sink_info!(self.log_sink, "WriterWorker {} removed file {:?}", self.id, self.path);
+             sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} removed file {:?}", self.id, self.path);
         }
     }
 }

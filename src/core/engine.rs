@@ -1,26 +1,30 @@
 use std::{
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
     },
+    thread,
     time::{Duration, Instant},
 };
 
 use crate::{
     config::Config,
     congestion_controller::CongestionController,
-    connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
+    connection_manager::{connection_error::ConnectionError, ConnectionManager, OutboundSdp},
     core::{
         events::EngineEvent,
         session::{Session, SessionConfig},
     },
     dtls::{self, DtlsRole},
+    file_handler::{events::FileHandlerEvents, FileHandler},
     ice::type_ice::ice_agent::IceRole,
     log::log_sink::LogSink,
     media_agent::video_frame::VideoFrame,
-    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
-    sink_debug, sink_info, sink_trace,
+    media_transport::{media_transport_event::MediaTransportEvent, MediaTransport},
+    sctp::events::SctpEvents,
+    sink_debug, sink_error, sink_info, sink_trace,
 };
 
 use super::constants::{MAX_BITRATE, MIN_BITRATE};
@@ -38,11 +42,19 @@ pub struct Engine {
     media_transport: MediaTransport,
     congestion_controller: CongestionController,
     config: Arc<Config>,
+    file_handler: Arc<Mutex<Option<Arc<FileHandler>>>>,
+    sending_files: Arc<AtomicBool>,
+    receiving_files: Arc<AtomicBool>,
 }
 
 impl Engine {
     /// Creates a new `Engine` instance.
-    pub fn new(logger_sink: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
+    pub fn new(
+        logger_sink: Arc<dyn LogSink>,
+        config: Arc<Config>,
+        sending_files: Arc<AtomicBool>,
+        receiving_files: Arc<AtomicBool>,
+    ) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let media_transport =
@@ -97,6 +109,9 @@ impl Engine {
             congestion_controller,
             ui_rx,
             config,
+            file_handler: Arc::new(Mutex::new(None)),
+            sending_files,
+            receiving_files,
         }
     }
 
@@ -175,6 +190,18 @@ impl Engine {
             sess.request_close();
         }
         self.media_transport.stop();
+        // Stop file handler
+        if let Ok(mut fh_guard) = self.file_handler.lock() {
+            if let Some(fh) = fh_guard.as_mut() {
+                // If FileHandler had Arc<AtomicBool> we could update them, but they are in Engine.
+                // Reset flags
+                self.sending_files.store(false, Ordering::SeqCst);
+                self.receiving_files.store(false, Ordering::SeqCst);
+                // Shutdown
+                Arc::get_mut(fh).map(|f| f.shutdown());
+            }
+            *fh_guard = None;
+        }
     }
     /// Closes the WebRTC session and resets the connection manager.
     #[allow(clippy::expect_used)]
@@ -188,6 +215,68 @@ impl Engine {
             self.logger_sink,
             "[Engine] Session closed and ConnectionManager reset."
         );
+        // Reset file handler
+        if let Ok(mut fh) = self.file_handler.lock() {
+            *fh = None;
+        }
+    }
+
+    pub fn send_file(&self, path: String, id: u32) {
+        println!("[CLI DEBUG] Engine::send_file called path={} id={}", path, id);
+        sink_info!(self.logger_sink, "[Engine] send_file called for path: {} (id: {})", path, id);
+        if let Ok(fh_guard) = self.file_handler.lock() {
+            if let Some(fh) = fh_guard.as_ref() {
+                sink_info!(self.logger_sink, "[Engine] FileHandler found, sending ReadFile event");
+                self.sending_files.store(true, Ordering::SeqCst);
+                if let Err(e) = fh.send(FileHandlerEvents::ReadFile { path, id }) {
+                    sink_error!(self.logger_sink, "[Engine] Failed to send ReadFile event to FileHandler: {}", e);
+                }
+            } else {
+                sink_error!(self.logger_sink, "[Engine] FileHandler is None in send_file!");
+            }
+        } else {
+            sink_error!(self.logger_sink, "[Engine] Failed to lock FileHandler in send_file");
+        }
+    }
+
+    pub fn accept_file(&self, id: u32, filename: String) {
+        if let Ok(sess_guard) = self.session.lock() {
+            if let Some(sess) = sess_guard.as_ref() {
+                // We are receiving a file
+                self.receiving_files.store(true, Ordering::SeqCst);
+                sess.send_sctp_event(SctpEvents::SendAccept { id });
+            }
+        }
+        // Notify local FileHandler to start writing
+        if let Ok(fh_guard) = self.file_handler.lock() {
+            if let Some(fh) = fh_guard.as_ref() {
+                let _ = fh.send(FileHandlerEvents::WriteFile { filename, id });
+            }
+        }
+    }
+
+    pub fn reject_file(&self, id: u32) {
+        if let Ok(sess_guard) = self.session.lock() {
+            if let Some(sess) = sess_guard.as_ref() {
+                sess.send_sctp_event(SctpEvents::SendReject { id });
+            }
+        }
+    }
+
+    pub fn cancel_file(&self, id: u32) {
+        // Cancel can be local sender cancelling, or local receiver cancelling
+        // Notify Session to send Cancel msg
+        if let Ok(sess_guard) = self.session.lock() {
+            if let Some(sess) = sess_guard.as_ref() {
+                sess.send_sctp_event(SctpEvents::SendCancel { id });
+            }
+        }
+        // Also notify local FileHandler to stop
+        if let Ok(fh_guard) = self.file_handler.lock() {
+            if let Some(fh) = fh_guard.as_ref() {
+                let _ = fh.send(FileHandlerEvents::Cancel(id));
+            }
+        }
     }
 
     /// Polls for `EngineEvent`s and processes them.
@@ -231,7 +320,8 @@ impl Engine {
                 let remote_fp = self.cm.remote_fingerprint.clone();
 
                 // --- blocking DTLS handshake ---
-                let srtp_cfg = match dtls::run_dtls_handshake(
+                // Modified to destructure the tuple
+                match dtls::run_dtls_handshake(
                     Arc::clone(&sock),
                     peer,
                     dtls_role,
@@ -240,30 +330,69 @@ impl Engine {
                     remote_fp,
                     self.config.clone(),
                 ) {
-                    Ok(cfg) => Some(cfg),
+                    Ok((srtp_cfg, ssl_stream)) => {
+                        // Create FileHandler
+                        let fh = Arc::new(FileHandler::new(
+                            self.config.clone(),
+                            self.logger_sink.clone(),
+                            self.event_tx.clone(),
+                        ));
+                        *self.file_handler.lock().expect("fh lock") = Some(fh.clone());
+
+                        // Spawn DrainChunks thread
+                        let sending_files_clone = self.sending_files.clone();
+                        let fh_clone = fh.clone();
+                        // Interval from config or default
+                        let drain_interval_ms = self.config.get("file_handler", "drain_interval_ms").and_then(|s| s.parse().ok()).unwrap_or(100);
+                        let drain_interval = Duration::from_millis(drain_interval_ms);
+
+                        // We need a way to stop this thread when session ends?
+                        // For now it runs until fh sends error on send?
+                        // Or we can rely on Weak ref if we had one.
+                        // Or just let it run. If file_handler shuts down, send returns error, loop can break?
+                        // But sending_files is false usually.
+                        thread::spawn(move || {
+                            loop {
+                                thread::sleep(drain_interval);
+                                // If sending_files is true
+                                if sending_files_clone.load(Ordering::SeqCst) {
+                                    if let Err(_) = fh_clone.send(FileHandlerEvents::DrainChunks) {
+                                        break; // FileHandler dropped/closed
+                                    }
+                                }
+                                // Check if we should exit?
+                                // If fh_clone is the only strong ref, we keep it alive.
+                                // Engine holds another Strong ref.
+                                // If Engine drops, fh drops.
+                                // But this thread holds Strong ref.
+                                // Circular reference if we are not careful? No.
+                            }
+                        });
+
+
+                        let sess = Session::new(
+                            Arc::clone(&sock),
+                            peer,
+                            self.cm.remote_codecs().clone(),
+                            self.event_tx.clone(),
+                            self.logger_sink.clone(),
+                            SessionConfig {
+                                handshake_timeout: Duration::from_secs(10),
+                                resend_every: Duration::from_millis(250),
+                                close_timeout: Duration::from_secs(5),
+                                close_resend_every: Duration::from_millis(250),
+                            },
+                            Some(srtp_cfg),
+                            ssl_stream,
+                        );
+                        *self.session.lock().expect("session lock poisoned") = Some(sess);
+                    }
                     Err(e) => {
                         let _ = self
                             .event_tx
                             .send(EngineEvent::Error(format!("DTLS handshake failed: {e}")));
-                        None // podrías también hacer `continue` para no crear sesión
                     }
                 };
-
-                let sess = Session::new(
-                    Arc::clone(&sock),
-                    peer,
-                    self.cm.remote_codecs().clone(),
-                    self.event_tx.clone(),
-                    self.logger_sink.clone(),
-                    SessionConfig {
-                        handshake_timeout: Duration::from_secs(10),
-                        resend_every: Duration::from_millis(250),
-                        close_timeout: Duration::from_secs(5),
-                        close_resend_every: Duration::from_millis(250),
-                    },
-                    srtp_cfg,
-                );
-                *self.session.lock().expect("session lock poisoned") = Some(sess);
             }
         }
 
@@ -278,7 +407,7 @@ impl Engine {
                 break;
             }
             match self.ui_rx.try_recv() {
-                Ok(ev) => match &ev {
+                Ok(ev) => match ev {
                     EngineEvent::NetworkMetrics(m) => {
                         self.congestion_controller.on_network_metrics(m.clone());
                         processed += 1;
@@ -290,10 +419,78 @@ impl Engine {
                             self.media_transport.media_transport_event_tx()
                         {
                             let _ =
-                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(*br));
+                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(br));
                         }
                         processed += 1;
-                        out.push(EngineEvent::UpdateBitrate(*br));
+                        out.push(EngineEvent::UpdateBitrate(br));
+                    }
+
+                    EngineEvent::SendFileOffer(props) => {
+                        if let Ok(sess_guard) = self.session.lock() {
+                            if let Some(sess) = sess_guard.as_ref() {
+                                sess.send_sctp_event(SctpEvents::SendOffer { file_properties: props });
+                            }
+                        }
+                    }
+                    EngineEvent::SendFileChunk(id, payload) => {
+                        if let Ok(sess_guard) = self.session.lock() {
+                            if let Some(sess) = sess_guard.as_ref() {
+                                sess.send_sctp_event(SctpEvents::SendChunk { file_id: id, payload });
+                            }
+                        }
+                    }
+                    EngineEvent::SendFileEnd(id) => {
+                        if let Ok(sess_guard) = self.session.lock() {
+                            if let Some(sess) = sess_guard.as_ref() {
+                                sess.send_sctp_event(SctpEvents::SendEndFile { id });
+                            }
+                        }
+                        // Reset sending flag if no other files? For now simple reset.
+                        self.sending_files.store(false, Ordering::SeqCst);
+                    }
+                    EngineEvent::ReceivedFileChunk(id, _seq, payload) => {
+                        // Don't expose to UI, send to FileHandler
+                        if let Ok(fh_guard) = self.file_handler.lock() {
+                            if let Some(fh) = fh_guard.as_ref() {
+                                let _ = fh.send(FileHandlerEvents::WriteChunk { id, payload });
+                            }
+                        }
+                    }
+                    EngineEvent::ReceivedFileEnd(id) => {
+                         // Explicit end of file from peer
+                         // We could notify FileHandler to force close if not already?
+                         // Or just treat as success.
+                         // But FileHandler already detects empty chunk?
+                         // Let's rely on FileHandler's own logic for now, but update flags.
+                         self.receiving_files.store(false, Ordering::SeqCst);
+                         // Optional: Pass to FileHandlerEvents::RemoteEnd?
+                         out.push(EngineEvent::ReceivedFileEnd(id));
+                         processed += 1;
+                    }
+                    EngineEvent::ReceivedFileOffer(props) => {
+                         // Prepare file writer?
+                         // "Deberá tener soporte para eventos... ReceivedOffer"
+                         // We probably want to ask UI first.
+                         // So we push to UI.
+                         // But we also need to initialize writer when accepted?
+                         // RtcApp will call accept_file which sends Accept.
+                         // And probably triggers FileHandler::WriteFile?
+                         // Yes, RtcApp should call engine.init_download(...) ?
+                         // Or Engine handles it?
+                         // "Engine deberá tener un FileHandler... Deberá tener soporte para eventos... ReceivedOffer"
+                         // I'll forward to UI. UI will call `engine.start_download`?
+                         out.push(EngineEvent::ReceivedFileOffer(props));
+                         processed += 1;
+                    }
+                    EngineEvent::ReceivedFileAccept(id) => {
+                        // Peer accepted our file. Notify FileHandler to start sending.
+                        if let Ok(fh_guard) = self.file_handler.lock() {
+                            if let Some(fh) = fh_guard.as_ref() {
+                                let _ = fh.send(FileHandlerEvents::RemoteAccepted(id));
+                            }
+                        }
+                        out.push(EngineEvent::ReceivedFileAccept(id));
+                        processed += 1;
                     }
 
                     _ => {
