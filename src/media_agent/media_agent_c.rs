@@ -5,6 +5,7 @@ use crate::{
     core::events::EngineEvent,
     log::log_sink::LogSink,
     media_agent::{
+        audio_capture_worker::{spawn_audio_capture_worker, AudioCaptureEvent},
         camera_worker::spawn_camera_worker,
         decoder_event::DecoderEvent,
         decoder_worker::spawn_decoder_worker,
@@ -54,6 +55,7 @@ pub struct MediaAgent {
     encoder_handle: Option<JoinHandle<()>>,
     listener_handle: Option<JoinHandle<()>>,
     camera_handle: Option<JoinHandle<()>>,
+    audio_handle: Option<JoinHandle<()>>,
     
     /// Flag to track if we have successfully sent at least one keyframe.
     sent_any_frame: Arc<AtomicBool>,
@@ -90,6 +92,7 @@ impl MediaAgent {
             encoder_handle: None,
             listener_handle: None,
             camera_handle: None,
+            audio_handle: None,
             sent_any_frame,
             media_agent_event_tx: None,
             ma_encoder_event_tx: None,
@@ -150,6 +153,12 @@ impl MediaAgent {
         }
         self.camera_handle = handle;
 
+        // --- Start Audio Capture Worker ---
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Audio Capture Worker...");
+        let (audio_frame_rx, audio_handle) = spawn_audio_capture_worker(logger.clone(), running.clone());
+        self.audio_handle = audio_handle;
+        sink_debug!(logger.clone(), "[MediaAgent] Audio Capture Worker Started");
+
         // Setup internal channels
         let (ma_decoder_event_tx, ma_decoder_event_rx) = mpsc::channel::<DecoderEvent>();
         let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel::<MediaAgentEvent>();
@@ -189,6 +198,7 @@ impl MediaAgent {
         let listener_handle = Self::spawn_listener_thread(
             logger.clone(),
             local_frame_rx,
+            audio_frame_rx,
             media_agent_event_rx,
             ma_decoder_event_tx,
             ma_encoder_event_tx,
@@ -227,6 +237,10 @@ impl MediaAgent {
         }
 
         if let Some(handle) = self.camera_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.audio_handle.take() {
             let _ = handle.join();
         }
 
@@ -287,6 +301,7 @@ impl MediaAgent {
     fn spawn_listener_thread(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
+        audio_frame_rx: Receiver<AudioCaptureEvent>,
         media_agent_event_rx: Receiver<MediaAgentEvent>,
         ma_decoder_event_tx: Sender<DecoderEvent>,
         ma_encoder_event_tx: Sender<EncoderInstruction>,
@@ -304,6 +319,7 @@ impl MediaAgent {
                 Self::listener_loop(
                     logger,
                     local_frame_rx,
+                    audio_frame_rx,
                     media_agent_event_rx,
                     ma_decoder_event_tx,
                     ma_encoder_event_tx,
@@ -327,6 +343,7 @@ impl MediaAgent {
     fn listener_loop(
         logger: Arc<dyn LogSink>,
         local_frame_rx: Receiver<VideoFrame>,
+        audio_frame_rx: Receiver<AudioCaptureEvent>,
         media_agent_event_rx: Receiver<MediaAgentEvent>,
         ma_decoder_event_tx: Sender<DecoderEvent>,
         ma_encoder_event_tx: Sender<EncoderInstruction>,
@@ -346,6 +363,8 @@ impl MediaAgent {
                 &local_frame,
                 &sent_any_frame,
             );
+            
+            Self::drain_audio_frames(&logger, &audio_frame_rx);
 
             // Poll for other events with a short timeout to keep the loop responsive
             match media_agent_event_rx.recv_timeout(Duration::from_millis(5)) {
@@ -398,6 +417,29 @@ impl MediaAgent {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     sink_debug!(logger, "[MediaAgent] camera worker disconnected");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn drain_audio_frames(
+        logger: &Arc<dyn LogSink>,
+        audio_frame_rx: &Receiver<AudioCaptureEvent>,
+    ) {
+        loop {
+            match audio_frame_rx.try_recv() {
+                Ok(event) => match event {
+                    AudioCaptureEvent::Frame(frame) => {
+                        sink_trace!(logger, "[MediaAgent] Received AudioFrame: ts={}, samples={}", frame.timestamp_ms, frame.samples);
+                    }
+                    AudioCaptureEvent::Error(e) => {
+                        sink_warn!(logger, "[MediaAgent] Audio capture error: {}", e);
+                    }
+                },
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    sink_debug!(logger, "[MediaAgent] audio capture worker disconnected");
                     break;
                 }
             }
