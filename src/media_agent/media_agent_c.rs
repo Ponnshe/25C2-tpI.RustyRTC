@@ -7,6 +7,7 @@ use crate::{
     media_agent::{
         audio_capture_worker::{spawn_audio_capture_worker, AudioCaptureEvent},
         audio_codec,
+        audio_player_worker::{spawn_audio_player_worker, AudioPlayerCommand},
         camera_worker::spawn_camera_worker,
         decoder_event::DecoderEvent,
         decoder_worker::spawn_decoder_worker,
@@ -57,6 +58,7 @@ pub struct MediaAgent {
     listener_handle: Option<JoinHandle<()>>,
     camera_handle: Option<JoinHandle<()>>,
     audio_handle: Option<JoinHandle<()>>,
+    audio_player_handle: Option<JoinHandle<()>>,
     
     /// Flag to track if we have successfully sent at least one keyframe.
     sent_any_frame: Arc<AtomicBool>,
@@ -66,6 +68,8 @@ pub struct MediaAgent {
     media_agent_event_tx: Option<Sender<MediaAgentEvent>>,
     /// Channel to send instructions to the encoder worker.
     ma_encoder_event_tx: Option<Sender<EncoderInstruction>>,
+    /// Channel to send instructions to the audio player worker.
+    audio_player_tx: Option<Sender<AudioPlayerCommand>>,
     
     running: Arc<AtomicBool>,
     config: Arc<Config>,
@@ -100,9 +104,11 @@ impl MediaAgent {
             listener_handle: None,
             camera_handle: None,
             audio_handle: None,
+            audio_player_handle: None,
             sent_any_frame,
             media_agent_event_tx: None,
             ma_encoder_event_tx: None,
+            audio_player_tx: None,
             running: Arc::new(AtomicBool::new(false)),
             config,
         }
@@ -166,6 +172,15 @@ impl MediaAgent {
         self.audio_handle = audio_handle;
         sink_debug!(logger.clone(), "[MediaAgent] Audio Capture Worker Started");
 
+        // --- Start Audio Player Worker ---
+        let (audio_player_tx, audio_player_rx) = mpsc::channel();
+        self.audio_player_tx = Some(audio_player_tx.clone());
+        
+        sink_debug!(logger.clone(), "[MediaAgent] Starting Audio Player Worker...");
+        let audio_player_handle = spawn_audio_player_worker(logger.clone(), audio_player_rx, running.clone());
+        self.audio_player_handle = Some(audio_player_handle);
+        sink_debug!(logger.clone(), "[MediaAgent] Audio Player Worker Started");
+
         // Setup internal channels
         let (ma_decoder_event_tx, ma_decoder_event_rx) = mpsc::channel::<DecoderEvent>();
         let (media_agent_event_tx, media_agent_event_rx) = mpsc::channel::<MediaAgentEvent>();
@@ -209,6 +224,7 @@ impl MediaAgent {
             media_agent_event_rx,
             ma_decoder_event_tx,
             ma_encoder_event_tx,
+            audio_player_tx,
             media_transport_event_tx,
             local_frame,
             remote_frame,
@@ -248,6 +264,10 @@ impl MediaAgent {
         }
 
         if let Some(handle) = self.audio_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(handle) = self.audio_player_handle.take() {
             let _ = handle.join();
         }
 
@@ -312,6 +332,7 @@ impl MediaAgent {
         media_agent_event_rx: Receiver<MediaAgentEvent>,
         ma_decoder_event_tx: Sender<DecoderEvent>,
         ma_encoder_event_tx: Sender<EncoderInstruction>,
+        audio_player_tx: Sender<AudioPlayerCommand>,
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -330,6 +351,7 @@ impl MediaAgent {
                     media_agent_event_rx,
                     ma_decoder_event_tx,
                     ma_encoder_event_tx,
+                    audio_player_tx,
                     media_transport_event_tx,
                     local_frame,
                     remote_frame,
@@ -354,6 +376,7 @@ impl MediaAgent {
         media_agent_event_rx: Receiver<MediaAgentEvent>,
         ma_decoder_event_tx: Sender<DecoderEvent>,
         ma_encoder_event_tx: Sender<EncoderInstruction>,
+        audio_player_tx: Sender<AudioPlayerCommand>,
         media_transport_event_tx: Sender<MediaTransportEvent>,
         local_frame: Arc<Mutex<Option<VideoFrame>>>,
         remote_frame: Arc<Mutex<Option<VideoFrame>>>,
@@ -381,6 +404,7 @@ impl MediaAgent {
                         event,
                         &ma_decoder_event_tx,
                         &ma_encoder_event_tx,
+                        &audio_player_tx,
                         &media_transport_event_tx,
                         &remote_frame,
                         &config,
@@ -504,6 +528,7 @@ impl MediaAgent {
         event: MediaAgentEvent,
         ma_decoder_event_tx: &Sender<DecoderEvent>,
         ma_encoder_event_tx: &Sender<EncoderInstruction>,
+        audio_player_tx: &Sender<AudioPlayerCommand>,
         media_transport_event_tx: &Sender<MediaTransportEvent>,
         remote_frame: &Arc<Mutex<Option<VideoFrame>>>,
         config: &Arc<Config>,
@@ -592,8 +617,10 @@ impl MediaAgent {
             }
             MediaAgentEvent::EncodedAudioFrame { payload, codec_spec } => {
                 sink_trace!(logger, "[MediaAgent] Decoding audio frame ({:?})", codec_spec);
-                let _decoded_samples = audio_codec::decode(&payload);
-                // In the future, this would be sent to an AudioPlaybackWorker.
+                let decoded_samples = audio_codec::decode(&payload);
+                if let Err(e) = audio_player_tx.send(AudioPlayerCommand::PlayFrame(decoded_samples)) {
+                     sink_error!(logger, "[MediaAgent] Failed to send PlayFrame command: {}", e);
+                }
             }
         }
     }
