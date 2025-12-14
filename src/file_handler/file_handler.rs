@@ -19,7 +19,7 @@ enum WorkerTx {
 
 pub struct FileHandler {
     _config: Arc<Config>,
-    tx_listener: Option<mpsc::Sender<FileHandlerEvents>>,
+    tx_listener: Mutex<Option<mpsc::Sender<FileHandlerEvents>>>,
     workers: Arc<Mutex<HashMap<u32, WorkerTx>>>,
     log_sink: Arc<dyn LogSink>,
 }
@@ -51,21 +51,22 @@ impl FileHandler {
 
         Self {
             _config: config,
-            tx_listener: Some(tx),
+            tx_listener: Mutex::new(Some(tx)),
             workers,
             log_sink,
         }
     }
 
     pub fn send(&self, event: FileHandlerEvents) -> Result<(), String> {
-        if let Some(tx) = &self.tx_listener {
+        let guard = self.tx_listener.lock().map_err(|e| e.to_string())?;
+        if let Some(tx) = &*guard {
             tx.send(event).map_err(|e| e.to_string())
         } else {
             Err("FileHandler is shut down".to_string())
         }
     }
 
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(&self) {
         sink_info!(self.log_sink, "[FILE_HANDLER] Shutting down");
 
         // 1. Cancel all workers
@@ -83,7 +84,9 @@ impl FileHandler {
         }
 
         // 2. Drop the listener sender to signal the listener loop to potentially stop (once workers drop theirs)
-        self.tx_listener = None;
+        if let Ok(mut guard) = self.tx_listener.lock() {
+            *guard = None;
+        }
     }
 
     fn listener_loop(
