@@ -145,6 +145,9 @@ pub fn spawn_decoder_worker(
                                             }
                                         }
                                     },
+                                    _ => {
+                                        logger_error!(logger, "[Decoder] Unsupported codec for decoder worker: {:?}", codec_spec);
+                                    }
                                 }
                             },
                         }

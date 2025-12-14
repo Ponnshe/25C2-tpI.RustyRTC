@@ -83,6 +83,16 @@ impl DepacketizerEventLoop {
                                 media_agent_event_tx
                                     .send(MediaAgentEvent::AnnexBFrameReady { codec_spec, bytes })
                             }
+                            DepacketizerEvent::EncodedAudioFrameReady { codec_spec, payload } => {
+                                sink_trace!(
+                                    logger,
+                                    "[DepacketizerEventLoop (MT)] Received EncodedAudioFrameReady. Sending it to MediaAgent"
+                                );
+                                media_agent_event_tx.send(MediaAgentEvent::EncodedAudioFrame {
+                                    codec_spec,
+                                    payload,
+                                })
+                            }
                         };
                     }
 

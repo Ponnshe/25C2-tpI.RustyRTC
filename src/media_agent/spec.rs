@@ -1,13 +1,13 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MediaType {
     Video,
-    // Audio,
+    Audio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodecSpec {
     H264,
-    // Opus,
+    G711U,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

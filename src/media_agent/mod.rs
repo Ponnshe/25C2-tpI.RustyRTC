@@ -1,5 +1,6 @@
-pub mod audio_capture_worker;
 pub mod audio_capture_error;
+pub mod audio_capture_worker;
+pub mod audio_codec;
 pub mod audio_frame;
 pub mod camera_worker;
 pub mod constants;

@@ -6,6 +6,7 @@ use crate::{
     log::log_sink::LogSink,
     media_agent::{
         audio_capture_worker::{spawn_audio_capture_worker, AudioCaptureEvent},
+        audio_codec,
         camera_worker::spawn_camera_worker,
         decoder_event::DecoderEvent,
         decoder_worker::spawn_decoder_worker,
@@ -78,10 +79,16 @@ impl MediaAgent {
     pub fn new(logger: Arc<dyn LogSink>, config: Arc<Config>) -> Self {
         let sent_any_frame = Arc::new(AtomicBool::new(false));
 
-        let supported_media = vec![MediaSpec {
-            media_type: MediaType::Video,
-            codec_spec: CodecSpec::H264,
-        }];
+        let supported_media = vec![
+            MediaSpec {
+                media_type: MediaType::Video,
+                codec_spec: CodecSpec::H264,
+            },
+            MediaSpec {
+                media_type: MediaType::Audio,
+                codec_spec: CodecSpec::G711U,
+            },
+        ];
 
         Self {
             logger,
@@ -364,7 +371,7 @@ impl MediaAgent {
                 &sent_any_frame,
             );
             
-            Self::drain_audio_frames(&logger, &audio_frame_rx);
+            Self::drain_audio_frames(&logger, &audio_frame_rx, &media_transport_event_tx);
 
             // Poll for other events with a short timeout to keep the loop responsive
             match media_agent_event_rx.recv_timeout(Duration::from_millis(5)) {
@@ -426,12 +433,21 @@ impl MediaAgent {
     fn drain_audio_frames(
         logger: &Arc<dyn LogSink>,
         audio_frame_rx: &Receiver<AudioCaptureEvent>,
+        media_transport_event_tx: &Sender<MediaTransportEvent>,
     ) {
         loop {
             match audio_frame_rx.try_recv() {
                 Ok(event) => match event {
                     AudioCaptureEvent::Frame(frame) => {
                         sink_trace!(logger, "[MediaAgent] Received AudioFrame: ts={}, samples={}", frame.timestamp_ms, frame.samples);
+                        
+                        let encoded_payload = audio_codec::encode(&frame.data);
+                        
+                        let _ = media_transport_event_tx.send(MediaTransportEvent::SendEncodedAudioFrame {
+                            payload: encoded_payload,
+                            timestamp_ms: frame.timestamp_ms,
+                            codec_spec: CodecSpec::G711U,
+                        });
                     }
                     AudioCaptureEvent::Error(e) => {
                         sink_warn!(logger, "[MediaAgent] Audio capture error: {}", e);
@@ -573,6 +589,11 @@ impl MediaAgent {
                 if ma_encoder_event_tx.send(instruction).is_ok() {
                     sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
                 }
+            }
+            MediaAgentEvent::EncodedAudioFrame { payload, codec_spec } => {
+                sink_trace!(logger, "[MediaAgent] Decoding audio frame ({:?})", codec_spec);
+                let _decoded_samples = audio_codec::decode(&payload);
+                // In the future, this would be sent to an AudioPlaybackWorker.
             }
         }
     }
