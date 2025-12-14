@@ -11,6 +11,10 @@ pub enum MediaAgentEvent {
         timestamp_ms: u128,
         codec_spec: CodecSpec,
     },
+    EncodedAudioFrame {
+        payload: Vec<u8>,
+        codec_spec: CodecSpec,
+    },
     DecodedVideoFrame(Box<VideoFrame>),
     UpdateBitrate(u32),
 }

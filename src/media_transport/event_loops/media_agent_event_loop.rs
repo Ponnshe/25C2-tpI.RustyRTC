@@ -89,8 +89,11 @@ impl MediaAgentEventLoop {
 
         let handle = std::thread::spawn(move || {
             let mut last_received_local_ts_ms = None;
+            let mut last_received_audio_ts_ms = None;
+            
             // Initialize random start timestamp for security/standard compliance.
-            let mut rtp_ts = rand::random::<u32>();
+            let mut video_rtp_ts = rand::random::<u32>();
+            let mut audio_rtp_ts = rand::random::<u32>();
 
             while !stop_flag.load(Ordering::SeqCst) {
                 match media_transport_event_rx.recv_timeout(Duration::from_millis(RECV_TIMEOUT)) {
@@ -113,8 +116,8 @@ impl MediaAgentEventLoop {
 
                             // Construct the order for the packetizer worker
                             let order = PacketizeOrder {
-                                annexb_frame,
-                                rtp_ts, // Assign the monotonic RTP timestamp
+                                payload: annexb_frame,
+                                rtp_ts: video_rtp_ts, // Assign the monotonic RTP timestamp
                                 codec_spec,
                             };
                             
@@ -125,7 +128,34 @@ impl MediaAgentEventLoop {
                             
                             // Send to Packetizer and increment timestamp for the next frame
                             if packetizer_order_tx.send(order).is_ok() {
-                                rtp_ts = rtp_ts.wrapping_add(rtp_ts_step);
+                                video_rtp_ts = video_rtp_ts.wrapping_add(rtp_ts_step);
+                            }
+                        }
+
+                        // --- Egress Audio Path ---
+                        MediaTransportEvent::SendEncodedAudioFrame {
+                            payload,
+                            timestamp_ms,
+                            codec_spec,
+                        } => {
+                             sink_debug!(
+                                logger.clone(),
+                                "[MT Event Loop MA] Received SendEncodedAudioFrame."
+                            );
+                            if last_received_audio_ts_ms == Some(timestamp_ms) {
+                                continue;
+                            }
+                            last_received_audio_ts_ms = Some(timestamp_ms);
+
+                            let order = PacketizeOrder {
+                                payload,
+                                rtp_ts: audio_rtp_ts,
+                                codec_spec,
+                            };
+                            
+                            if packetizer_order_tx.send(order).is_ok() {
+                                // 960 samples per frame for 20ms @ 48kHz
+                                audio_rtp_ts = audio_rtp_ts.wrapping_add(960);
                             }
                         }
                         

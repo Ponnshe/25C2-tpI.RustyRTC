@@ -17,6 +17,11 @@ pub enum MediaTransportEvent {
         timestamp_ms: u128,
         codec_spec: CodecSpec,
     },
+    SendEncodedAudioFrame {
+        payload: Vec<u8>,
+        timestamp_ms: u128,
+        codec_spec: CodecSpec,
+    },
     UpdateBitrate(u32),
     Established,
     Closed,

@@ -15,8 +15,8 @@ use crate::{log::log_sink::LogSink, media_agent::spec::CodecSpec, sink_trace};
 /// Represents a request sent to the Packetizer worker to process a frame.
 #[derive(Debug)]
 pub struct PacketizeOrder {
-    /// The raw encoded video data (e.g., H.264 Annex B stream with Start Codes).
-    pub annexb_frame: Vec<u8>,
+    /// The raw encoded media data (Video: Annex B, Audio: Raw payload).
+    pub payload: Vec<u8>,
     /// The RTP timestamp assigned to this frame.
     /// This timestamp will be shared by all RTP packets generated from this single frame.
     pub rtp_ts: u32,
@@ -81,7 +81,7 @@ pub fn spawn_packetizer_worker(
                     CodecSpec::H264 => {
                         // Performs the slicing (identifies NAL boundaries, handles FU-A)
                         let chunks =
-                            h264_packetizer.packetize_annexb_to_payloads(&order.annexb_frame);
+                            h264_packetizer.packetize_annexb_to_payloads(&order.payload);
                         
                         if !chunks.is_empty() {
                             let packetized_frame = PacketizedFrame {
@@ -99,6 +99,23 @@ pub fn spawn_packetizer_worker(
                             let _ =
                                 event_tx.send(PacketizerEvent::FramePacketized(packetized_frame));
                         }
+                    }
+                    CodecSpec::G711U => {
+                         let packetized_frame = PacketizedFrame {
+                            chunks: vec![RtpPayloadChunk {
+                                bytes: order.payload,
+                                marker: true, 
+                            }],
+                            rtp_ts: order.rtp_ts,
+                            codec_spec: order.codec_spec,
+                        };
+                        
+                        sink_trace!(
+                            logger.clone(),
+                            "[Packetizer] Sending Audio PacketizedFrame"
+                        );
+                        
+                        let _ = event_tx.send(PacketizerEvent::FramePacketized(packetized_frame));
                     }
                 }
             }

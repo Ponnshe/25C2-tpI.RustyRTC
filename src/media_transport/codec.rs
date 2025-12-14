@@ -52,4 +52,13 @@ impl CodecDescriptor {
             spec: CodecSpec::H264,
         }
     }
+
+    pub fn pcmu_dynamic(pt: u8) -> Self {
+        Self {
+            codec_name: "PCMU",
+            rtp_representation: RtpCodec::with_name(pt, 8000, "PCMU"),
+            sdp_fmtp: None,
+            spec: CodecSpec::G711U,
+        }
+    }
 }

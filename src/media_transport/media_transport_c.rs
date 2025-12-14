@@ -151,6 +151,7 @@ impl MediaTransport {
         for spec in self.media_agent.supported_media() {
             let codec_descriptor = match spec.codec_spec {
                 CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
+                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(current_pt),
             };
             payload_map_inner.insert(current_pt, codec_descriptor);
             current_pt += 1;
