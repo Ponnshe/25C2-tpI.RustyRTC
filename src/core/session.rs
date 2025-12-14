@@ -20,9 +20,12 @@ use crate::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
+    dtls::buffered_udp_channel::BufferedUdpChannel,
     log::log_sink::LogSink,
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
+    sctp::{events::SctpEvents, sctp_session::SctpSession},
 };
+use openssl::ssl::SslStream;
 
 #[derive(Clone, Copy)]
 /// Configuration for a `Session`.
@@ -82,6 +85,8 @@ pub struct Session {
 
     //SRTP config
     srtp_cfg: Option<SrtpSessionConfig>,
+
+    sctp_session: Arc<SctpSession>,
 }
 
 impl Session {
@@ -107,7 +112,49 @@ impl Session {
         logger: Arc<dyn LogSink>,
         cfg: SessionConfig,
         srtp_cfg: Option<SrtpSessionConfig>,
+        ssl_stream: SslStream<BufferedUdpChannel>,
     ) -> Self {
+        let (sctp_parent_tx, sctp_parent_rx) = mpsc::channel();
+        let sctp_session = Arc::new(SctpSession::new(
+            logger.clone(),
+            sctp_parent_tx,
+            ssl_stream,
+        ));
+
+        // Spawn thread to forward SCTP events to EngineEvent
+        let evt_tx_clone = event_tx.clone();
+        thread::spawn(move || {
+            while let Ok(ev) = sctp_parent_rx.recv() {
+                let engine_ev = match ev {
+                    SctpEvents::ReceivedOffer { file_properties } => {
+                        Some(EngineEvent::ReceivedFileOffer(file_properties))
+                    }
+                    SctpEvents::ReceivedAccept { id } => Some(EngineEvent::ReceivedFileAccept(id)),
+                    SctpEvents::ReceivedReject { id } => Some(EngineEvent::ReceivedFileReject(id)),
+                    SctpEvents::ReceivedCancel { id } => Some(EngineEvent::ReceivedFileCancel(id)),
+                    SctpEvents::ReceivedChunk { id, seq, payload } => {
+                        Some(EngineEvent::ReceivedFileChunk(id, seq, payload))
+                    }
+                    SctpEvents::ReceivedEndFile { id } => Some(EngineEvent::ReceivedFileEnd(id)),
+                    SctpEvents::SendOffer { file_properties } => {
+                        Some(EngineEvent::SendFileOffer(file_properties))
+                    }
+                    SctpEvents::SendAccept { id } => Some(EngineEvent::SendFileAccept(id)),
+                    SctpEvents::SendReject { id } => Some(EngineEvent::SendFileReject(id)),
+                    SctpEvents::SendCancel { id } => Some(EngineEvent::SendFileCancel(id)),
+                    SctpEvents::SendChunk { file_id, payload } => {
+                        Some(EngineEvent::SendFileChunk(file_id, payload))
+                    }
+                    SctpEvents::SendEndFile { id } => Some(EngineEvent::SendFileEnd(id)),
+                    SctpEvents::SctpErr(e) => Some(EngineEvent::Error(format!("SCTP Error: {e}"))),
+                    _ => None,
+                };
+                if let Some(e) = engine_ev {
+                    let _ = evt_tx_clone.send(e);
+                }
+            }
+        });
+
         Self {
             sock,
             peer,
@@ -127,6 +174,7 @@ impl Session {
             hs_got_syn: Arc::new(AtomicBool::new(false)),
             hs_sent_synack: Arc::new(AtomicBool::new(false)),
             srtp_cfg,
+            sctp_session,
         }
     }
 
@@ -216,29 +264,54 @@ impl Session {
         let rtp_session_handle = Arc::clone(&self.rtp_session);
         let hs_got_syn = Arc::clone(&self.hs_got_syn);
         let hs_sent_synack = Arc::clone(&self.hs_sent_synack);
+        let sctp_session = self.sctp_session.clone();
 
         thread::spawn(move || {
             let mut buf = [0u8; 1500];
             while rx_run.load(Ordering::SeqCst) {
                 match rx_sock.recv(&mut buf) {
                     Ok(n) => {
-                        let msg = protocol::parse_app_msg(&buf[..n]);
-                        let args = HandleAppMsgArgs {
-                            msg,
-                            rx_sock: &rx_sock,
-                            rx_tok_peer: &rx_tok_peer,
-                            rx_est: &rx_est,
-                            rx_close_done: &rx_close_done,
-                            rx_peer_init: &rx_peer_init,
-                            local_token,
-                            tx: &tx,
-                            logger: &logger,
-                            rtp_media_tx: &rtp_media_tx,
-                            rtp_session_handle: &rtp_session_handle,
-                            hs_got_syn: &hs_got_syn,
-                            hs_sent_synack: &hs_sent_synack,
-                        };
-                        handle_app_msg(args);
+                        let pkt = &buf[..n];
+                        if n == 0 { continue; }
+                        let first_byte = pkt[0];
+
+                        if (20..=63).contains(&first_byte) {
+                            // DTLS (SCTP)
+                            sctp_session.handle_sctp_packet(pkt.to_vec());
+                        } else if (128..=191).contains(&first_byte) {
+                            // RTP/RTCP
+                            if rx_est.load(Ordering::SeqCst) {
+                                let maybe_tx = rtp_media_tx
+                                    .lock()
+                                    .ok()
+                                    .and_then(|guard| guard.as_ref().cloned());
+                                if let Some(tx_media) = maybe_tx {
+                                    let _ = tx_media.send(pkt.to_vec());
+                                }
+                            }
+                        } else {
+                            // AppMsg
+                            if let Some(msg) = protocol::parse_app_msg(pkt) {
+                                let args = HandleAppMsgArgs {
+                                    msg,
+                                    rx_sock: &rx_sock,
+                                    rx_tok_peer: &rx_tok_peer,
+                                    rx_est: &rx_est,
+                                    rx_close_done: &rx_close_done,
+                                    rx_peer_init: &rx_peer_init,
+                                    local_token,
+                                    tx: &tx,
+                                    logger: &logger,
+                                    rtp_media_tx: &rtp_media_tx,
+                                    rtp_session_handle: &rtp_session_handle,
+                                    hs_got_syn: &hs_got_syn,
+                                    hs_sent_synack: &hs_sent_synack,
+                                };
+                                handle_app_msg(args);
+                            } else {
+                                sink_debug!(&logger, "Ignored unknown packet (len={})", pkt.len());
+                            }
+                        }
                     }
                     Err(ref e)
                         if e.kind() == std::io::ErrorKind::WouldBlock
@@ -390,6 +463,16 @@ impl Session {
     /// Tears down the RTP session.
     fn teardown_rtp(&self) {
         stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
+    }
+
+    pub fn send_sctp_event(&self, event: SctpEvents) {
+        let _ = self.sctp_session.tx.send(event);
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.sctp_session.shutdown();
     }
 }
 
@@ -569,22 +652,6 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 sink_info!(args.logger, "[CLOSE] graceful close complete",);
             } else {
                 sink_debug!(args.logger, "[CLOSE] recv FIN-ACK2 not for us -> ignored");
-            }
-        }
-
-        AppMsg::Other(pkt) => {
-            // Only deliver media once established
-            if args.rx_est.load(Ordering::SeqCst) {
-                let maybe_tx = args
-                    .rtp_media_tx
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.as_ref().cloned());
-                if let Some(tx_media) = maybe_tx {
-                    let _ = tx_media.send(pkt);
-                }
-            } else {
-                sink_debug!(args.logger, "[HS] recv media before established -> ignored");
             }
         }
     }

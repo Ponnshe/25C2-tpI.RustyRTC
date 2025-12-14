@@ -1,7 +1,7 @@
 use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_info, sink_warn};
+use crate::{sink_error, sink_info, sink_trace, sink_warn};
 use sctp_proto::{Association, AssociationHandle, DatagramEvent, Endpoint, Event, Payload, StreamEvent};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -63,7 +63,7 @@ impl SctpReceiver {
             let event = self.rx.recv_timeout(wait_duration);
             
             match event {
-                Ok(SctpEvents::IncomingSctpPacket { sctp_packet }) => {
+                Ok(SctpEvents::ReadableSctpPacket { sctp_packet }) => {
                     self.handle_packet(sctp_packet);
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -102,12 +102,14 @@ impl SctpReceiver {
         }
         
         for id in timed_out_ids {
-            sink_warn!(self.log_sink, "Stream {} timed out, sending Cancel", id);
+            sink_warn!(self.log_sink, "[SCTP_RECEIVER] Stream {} timed out, sending Cancel", id);
             let _ = self.tx.send(SctpEvents::SendCancel { id });
         }
     }
 
     fn handle_packet(&self, packet: Vec<u8>) {
+        // println!("[CLI DEBUG] SctpReceiver::handle_packet len={}", packet.len());
+        sink_trace!(self.log_sink, "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}", packet.len());
         let mut endpoint = self.endpoint.lock().expect("Failed to lock endpoint");
         let now = Instant::now();
         // Use a dummy address as we are tunneling over DTLS
@@ -117,7 +119,7 @@ impl SctpReceiver {
         
         match endpoint.handle(now, remote, None, None, bytes) {
             Some((handle, DatagramEvent::NewAssociation(assoc))) => {
-                sink_info!(self.log_sink, "New SCTP Association created");
+                sink_info!(self.log_sink, "[SCTP_RECEIVER] New SCTP Association created");
                 {
                     let mut my_assoc = self.association.lock().unwrap();
                     *my_assoc = Some(assoc);
@@ -133,7 +135,7 @@ impl SctpReceiver {
                  if let Some(assoc) = my_assoc_guard.as_mut() {
                      assoc.handle_event(event);
                  } else {
-                     sink_warn!(self.log_sink, "Received AssociationEvent but no association exists");
+                     sink_warn!(self.log_sink, "[SCTP_RECEIVER] Received AssociationEvent but no association exists");
                  }
                  drop(my_assoc_guard); // unlock to poll
                  self.poll_association();
@@ -164,10 +166,11 @@ impl SctpReceiver {
             while let Some(event) = assoc.poll() {
                 match event {
                     Event::Connected => {
-                        sink_info!(self.log_sink, "SCTP Association connected");
+                        sink_info!(self.log_sink, "[SCTP_RECEIVER] SCTP Association connected");
+                        let _ = self.tx.send(SctpEvents::SctpConnected);
                     }
                     Event::AssociationLost { reason } => {
-                        sink_error!(self.log_sink, "SCTP Association lost: {:?}", reason);
+                        sink_error!(self.log_sink, "[SCTP_RECEIVER] SCTP Association lost: {:?}", reason);
                     }
                     Event::Stream(StreamEvent::Readable { id }) => {
                         // Read from stream
@@ -177,21 +180,22 @@ impl SctpReceiver {
                                     let mut buf = vec![0u8; 65535]; 
                                     match chunks.read(&mut buf) {
                                         Ok(len) => {
+                                            sink_trace!(self.log_sink, "[SCTP_RECEIVER] Stream {} readable. Read {} bytes.", id, len);
                                             let data = Bytes::copy_from_slice(&buf[..len]);
                                             self.handle_chunk_data(data);
                                         }
                                         Err(e) => {
-                                            sink_warn!(self.log_sink, "Error reading chunks: {:?}", e);
+                                            sink_warn!(self.log_sink, "[SCTP_RECEIVER] Error reading chunks: {:?}", e);
                                         }
                                     }
                                 }
                                 Ok(None) => {} 
                                 Err(e) => {
-                                    sink_warn!(self.log_sink, "Error reading from stream {}: {:?}", id, e);
+                                    sink_warn!(self.log_sink, "[SCTP_RECEIVER] Error reading from stream {}: {:?}", id, e);
                                 }
                             }
                         } else {
-                             sink_warn!(self.log_sink, "Stream {} readable but failed to get stream handle", id);
+                             sink_warn!(self.log_sink, "[SCTP_RECEIVER] Stream {} readable but failed to get stream handle", id);
                         }
                     }
                     _ => {}
@@ -205,8 +209,10 @@ impl SctpReceiver {
          
          match SctpProtocolMessage::deserialize(&data) {
              Ok(msg) => {
+                 sink_trace!(self.log_sink, "[SCTP_RECEIVER] Deserialized message: {:?}", msg);
                  match msg {
                      SctpProtocolMessage::Offer { id, filename, file_size } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received Offer for file_id: {}", id);
                           let props = crate::sctp::events::SctpFileProperties {
                               file_name: filename,
                               file_size,
@@ -215,15 +221,19 @@ impl SctpReceiver {
                           let _ = self.tx.send(SctpEvents::ReceivedOffer { file_properties: props });
                      }
                      SctpProtocolMessage::Accept { id } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received Accept for file_id: {}", id);
                           let _ = self.tx.send(SctpEvents::ReceivedAccept { id });
                      }
                      SctpProtocolMessage::Reject { id } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received Reject for file_id: {}", id);
                           let _ = self.tx.send(SctpEvents::ReceivedReject { id });
                      }
                      SctpProtocolMessage::Cancel { id } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received Cancel for file_id: {}", id);
                           let _ = self.tx.send(SctpEvents::ReceivedCancel { id });
                      }
                      SctpProtocolMessage::Chunk { id, seq, payload } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received Chunk for file_id: {} seq: {}", id, seq);
                           {
                               let mut streams = self.streams.write().unwrap();
                               if let Some(stream) = streams.get_mut(&id) {
@@ -232,12 +242,14 @@ impl SctpReceiver {
                           }
                           let _ = self.tx.send(SctpEvents::ReceivedChunk { id, seq: seq as u32, payload });
                      }
-                     SctpProtocolMessage::EndFile { id: _ } => {
+                     SctpProtocolMessage::EndFile { id } => {
+                          sink_trace!(self.log_sink, "[SCTP_RECEIVER] Received EndFile for file_id: {}", id);
+                          let _ = self.tx.send(SctpEvents::ReceivedEndFile { id });
                      }
                  }
              }
              Err(e) => {
-                 sink_warn!(self.log_sink, "Failed to deserialize SCTP message: {:?}", e);
+                 sink_warn!(self.log_sink, "[SCTP_RECEIVER] Failed to deserialize SCTP message: {:?}", e);
              }
          }
     }
