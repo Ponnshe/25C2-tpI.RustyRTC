@@ -1227,6 +1227,12 @@ impl RtcApp {
         // 2) Tear down media (safe to call even if session never started)
         self.engine.stop();
 
+        // Reset file transfer state
+        self.file_transfer_state = FileTransferState::Idle;
+        self.file_path_input.clear();
+        self.sending_files.store(false, Ordering::SeqCst);
+        self.receiving_files.store(false, Ordering::SeqCst);
+
         // 3) Re-initialize the Engine for the next call.
         // The Engine (and its internal MediaTransport) consumes one-time resources (channels)
         // during startup. To support a second call, we must create a fresh instance.

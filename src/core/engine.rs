@@ -192,13 +192,13 @@ impl Engine {
         self.media_transport.stop();
         // Stop file handler
         if let Ok(mut fh_guard) = self.file_handler.lock() {
-            if let Some(fh) = fh_guard.as_mut() {
+            if let Some(fh) = fh_guard.as_ref() {
                 // If FileHandler had Arc<AtomicBool> we could update them, but they are in Engine.
                 // Reset flags
                 self.sending_files.store(false, Ordering::SeqCst);
                 self.receiving_files.store(false, Ordering::SeqCst);
                 // Shutdown
-                Arc::get_mut(fh).map(|f| f.shutdown());
+                fh.shutdown();
             }
             *fh_guard = None;
         }
@@ -341,7 +341,7 @@ impl Engine {
 
                         // Spawn DrainChunks thread
                         let sending_files_clone = self.sending_files.clone();
-                        let fh_clone = fh.clone();
+                        let fh_weak = Arc::downgrade(&fh);
                         // Interval from config or default
                         let drain_interval_ms = self.config.get("file_handler", "drain_interval_ms").and_then(|s| s.parse().ok()).unwrap_or(100);
                         let drain_interval = Duration::from_millis(drain_interval_ms);
@@ -356,16 +356,19 @@ impl Engine {
                                 thread::sleep(drain_interval);
                                 // If sending_files is true
                                 if sending_files_clone.load(Ordering::SeqCst) {
-                                    if let Err(_) = fh_clone.send(FileHandlerEvents::DrainChunks) {
-                                        break; // FileHandler dropped/closed
+                                    if let Some(fh) = fh_weak.upgrade() {
+                                        if let Err(_) = fh.send(FileHandlerEvents::DrainChunks) {
+                                            break; // FileHandler stopped
+                                        }
+                                    } else {
+                                        break; // FileHandler dropped
+                                    }
+                                } else {
+                                    // Check if we are orphaned
+                                    if fh_weak.strong_count() == 0 {
+                                        break;
                                     }
                                 }
-                                // Check if we should exit?
-                                // If fh_clone is the only strong ref, we keep it alive.
-                                // Engine holds another Strong ref.
-                                // If Engine drops, fh drops.
-                                // But this thread holds Strong ref.
-                                // Circular reference if we are not careful? No.
                             }
                         });
 
