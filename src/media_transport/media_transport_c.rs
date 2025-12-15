@@ -93,6 +93,24 @@ impl MediaTransport {
         let media_transport_event_tx = Some(mt_event_tx);
         let media_transport_event_rx = Some(mt_event_rx);
 
+        // Build Payload Map (Negotiate Codecs)
+        let mut payload_map_inner = HashMap::new();
+        let mut current_pt = DYNAMIC_PAYLOAD_TYPE_START;
+
+        for spec in media_agent.supported_media() {
+            let codec_descriptor = match spec.codec_spec {
+                CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
+                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(DEFAULT_AUDIO_PT),
+            };
+            let pt = codec_descriptor.rtp_representation.payload_type;
+            payload_map_inner.insert(pt, codec_descriptor);
+
+            if pt >= DYNAMIC_PAYLOAD_TYPE_START {
+                current_pt += 1;
+            }
+        }
+        let payload_map = Arc::new(payload_map_inner);
+
         Self {
             logger,
             media_agent,
@@ -103,7 +121,7 @@ impl MediaTransport {
             rtp_tx: None,
             depacketizer_handle: None,
             packetizer_handle: None,
-            payload_map: Arc::new(HashMap::new()),
+            payload_map,
             outbound_tracks: Arc::new(Mutex::new(HashMap::new())),
             allowed_pts: None,
             media_transport_event_tx,
@@ -146,23 +164,9 @@ impl MediaTransport {
         }
 
         // 2. Build Payload Map (Negotiate Codecs)
-        let mut payload_map_inner = HashMap::new();
-        let mut current_pt = DYNAMIC_PAYLOAD_TYPE_START;
+        // Already built in new()
+        let payload_map = self.payload_map.clone();
 
-        for spec in self.media_agent.supported_media() {
-            let codec_descriptor = match spec.codec_spec {
-                CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
-                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(DEFAULT_AUDIO_PT),
-            };
-            let pt = codec_descriptor.rtp_representation.payload_type;
-            payload_map_inner.insert(pt, codec_descriptor);
-
-            if pt >= DYNAMIC_PAYLOAD_TYPE_START {
-                current_pt += 1;
-            }
-        }
-
-        let payload_map = Arc::new(payload_map_inner);
         let (rtp_tx, rtp_rx) = mpsc::sync_channel::<RtpIn>(RTP_TX_CHANNEL_SIZE);
         let rtp_tx_clone = rtp_tx;
         self.rtp_tx = Some(rtp_tx_clone);
@@ -174,7 +178,7 @@ impl MediaTransport {
         self.allowed_pts = Some(allowed_pts_clone);
 
         let payload_map_for_worker = payload_map.clone();
-        self.payload_map = payload_map;
+
 
         // 3. Start Depacketizer (Ingress)
         let (depacketizer_event_tx, depacketizer_event_rx) = mpsc::channel();
