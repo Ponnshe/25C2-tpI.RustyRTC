@@ -22,7 +22,7 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
-use crate::sink_error;
+use crate::{sink_error, sink_info};
 use crate::tls_utils::get_local_fingerprint_sha256;
 use std::collections::HashSet;
 use std::{
@@ -106,6 +106,7 @@ impl ConnectionManager {
         match self.signaling {
             SignalingState::Stable => {
                 let offer = self.build_local_sdp();
+                sink_info!(&self.logger_handle, "Generated Local SDP Offer:\n{}", offer.encode());
                 self.local_description = Some(offer.clone());
                 self.signaling = SignalingState::HaveLocalOffer;
                 self.set_ice_role_from_signaling(true, false);
@@ -131,6 +132,7 @@ impl ConnectionManager {
     /// - If SDP parsing fails
     /// - If negotiation state is invalid
     pub fn apply_remote_sdp(&mut self, remote: &str) -> Result<OutboundSdp, ConnectionError> {
+        sink_info!(&self.logger_handle, "Received Remote SDP:\n{}", remote);
         let sdp = Sdp::parse(remote).map_err(ConnectionError::Sdp)?;
         let out = match self.signaling {
             SignalingState::Stable => {
@@ -142,6 +144,7 @@ impl ConnectionManager {
                 self.signaling = SignalingState::HaveRemoteOffer;
 
                 let answer = self.build_local_sdp();
+                sink_info!(&self.logger_handle, "Generated Local SDP Answer:\n{}", answer.encode());
                 self.local_description = Some(answer.clone());
                 self.set_ice_role_from_signaling(false, remote_is_ice_lite);
 
