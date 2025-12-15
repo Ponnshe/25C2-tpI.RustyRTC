@@ -22,7 +22,11 @@ use eframe::{App, Frame, egui, egui_wgpu::RenderState};
 use std::{
     collections::VecDeque,
     io,
-    sync::{Arc, mpsc::TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::TrySendError,
+    },
     time::Instant,
 };
 
@@ -48,6 +52,25 @@ enum CallFlow {
     },
     Active {
         peer: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum FileTransferState {
+    Idle,
+    RemoteOffered {
+        props: crate::sctp::events::SctpFileProperties,
+    },
+    Sending {
+        id: u32,
+        filename: String,
+    },
+    Receiving {
+        id: u32,
+        filename: String,
+    },
+    Finished {
+        msg: String,
     },
 }
 
@@ -106,6 +129,14 @@ pub struct RtcApp {
     //Network Metrics
     last_metrics: Option<NetworkMetrics>,
     current_bitrate: Option<u32>,
+
+    // File Transfer
+    sending_files: Arc<AtomicBool>,
+    receiving_files: Arc<AtomicBool>,
+    file_transfer_state: FileTransferState,
+    file_path_input: String,
+
+    is_muted: bool,
 }
 
 impl RtcApp {
@@ -148,12 +179,20 @@ impl RtcApp {
             },
         );
 
+        let sending_files = Arc::new(AtomicBool::new(false));
+        let receiving_files = Arc::new(AtomicBool::new(false));
+
         Self {
             remote_sdp_text: String::new(),
             local_sdp_text: String::new(),
             pending_remote_sdp: None,
             status_line: "Ready.".into(),
-            engine: Engine::new(logger_handle, config.clone()),
+            engine: Engine::new(
+                logger_handle,
+                config.clone(),
+                sending_files.clone(),
+                receiving_files.clone(),
+            ),
             has_remote_description: false,
             has_local_description: false,
             is_local_offerer: false,
@@ -183,6 +222,11 @@ impl RtcApp {
             config,
             last_metrics: None,
             current_bitrate: None,
+            sending_files,
+            receiving_files,
+            file_transfer_state: FileTransferState::Idle,
+            file_path_input: String::new(),
+            is_muted: false,
         }
     }
 
@@ -618,6 +662,11 @@ impl RtcApp {
                     self.background_log(LogLevel::Info, &s);
                     // keep a small echo in UI:
                     self.push_ui_log(&s);
+
+                    if s.contains("File download complete") {
+                        self.file_transfer_state = FileTransferState::Finished { msg: s.clone() };
+                        self.receiving_files.store(false, Ordering::SeqCst);
+                    }
                 }
                 Established => {
                     self.conn_state = ConnState::Running;
@@ -662,6 +711,161 @@ impl RtcApp {
                     // Update the bitrate being used by the Encoder
                     self.current_bitrate = Some(bps);
                 }
+                EngineEvent::ReceivedFileOffer(props) => {
+                    self.status_line =
+                        format!("File offer: {} ({})", props.file_name, props.file_size);
+                    self.file_transfer_state = FileTransferState::RemoteOffered { props };
+                    // If we were busy, we might want to auto-reject?
+                    // But for now assume one file at a time.
+                }
+                EngineEvent::ReceivedFileAccept(id) => {
+                    self.status_line = format!("Peer accepted file (id: {id}). Sending...");
+                    // state is already Sending likely
+                }
+                EngineEvent::ReceivedFileReject(id) => {
+                    self.status_line = format!("Peer rejected file (id: {id}).");
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.sending_files.store(false, Ordering::SeqCst);
+                }
+                EngineEvent::ReceivedFileCancel(id) => {
+                    self.status_line = format!("File transfer cancelled (id: {id}).");
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.sending_files.store(false, Ordering::SeqCst);
+                    self.receiving_files.store(false, Ordering::SeqCst);
+                }
+                EngineEvent::SendFileOffer(props) => {
+                    // We initiated sending
+                    self.file_transfer_state = FileTransferState::Sending {
+                        id: props.transaction_id,
+                        filename: props.file_name,
+                    };
+                }
+                EngineEvent::SendFileChunk(..)
+                | EngineEvent::SendFileAccept(..)
+                | EngineEvent::SendFileReject(..)
+                | EngineEvent::SendFileCancel(..) => {
+                    // Internal events, ignore
+                }
+                EngineEvent::ReceivedFileChunk(..) => {
+                    // Internal
+                }
+                EngineEvent::SendFileEnd(_) => {
+                    self.status_line = "File transfer finished (sent).".into();
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.sending_files.store(false, Ordering::SeqCst);
+                }
+                EngineEvent::ReceivedFileEnd(_) => {
+                    self.status_line = "File transfer finished (received).".into();
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.receiving_files.store(false, Ordering::SeqCst);
+                }
+                EngineEvent::ToggleAudio(muted) => {
+                    self.is_muted = muted;
+                }
+            }
+        }
+    }
+
+    fn render_file_transfer(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("File Transfer");
+
+        // Check atomic flags for active state
+        let sending = self.sending_files.load(Ordering::SeqCst);
+        let receiving = self.receiving_files.load(Ordering::SeqCst);
+
+        // Debug info to diagnose button visibility issues
+        ui.collapsing("Debug State", |ui| {
+            ui.label(format!("ConnState: {:?}", self.conn_state));
+            ui.label(format!("Sending: {}", sending));
+            ui.label(format!("Receiving: {}", receiving));
+            ui.label(format!("TransferState: {:?}", self.file_transfer_state));
+        });
+
+        match &self.file_transfer_state {
+            FileTransferState::Idle => {
+                if matches!(self.conn_state, ConnState::Running) && !sending && !receiving {
+                    ui.horizontal(|ui| {
+                        ui.label("Path:");
+                        ui.text_edit_singleline(&mut self.file_path_input);
+                        if ui.button("Send File").clicked() {
+                            println!("[CLI DEBUG] Send File button clicked!"); // Force output to console
+                            let path = self.file_path_input.trim().to_string();
+                            if !path.is_empty() {
+                                self.background_log(
+                                    LogLevel::Info,
+                                    format!("[UI] User clicked Send File for path: {}", path),
+                                );
+                                // Use a random ID or sequential
+                                let id = rand::random::<u32>();
+                                self.engine.send_file(path, id);
+                                self.status_line = "Preparing file...".into();
+                                // We wait for SendFileOffer event to switch state
+                            } else {
+                                self.background_log(
+                                    LogLevel::Warn,
+                                    "[UI] User clicked Send File but path is empty",
+                                );
+                            }
+                        }
+                    });
+                } else if sending || receiving {
+                    ui.label("Transfer in progress...");
+                    if ui.button("Cancel").clicked() {
+                        self.engine.cancel_file(0);
+                        self.sending_files.store(false, Ordering::SeqCst);
+                        self.receiving_files.store(false, Ordering::SeqCst);
+                    }
+                } else {
+                    ui.label("Connect to a peer to transfer files.");
+                }
+            }
+            FileTransferState::RemoteOffered {
+                props: remote_props,
+            } => {
+                ui.label(format!(
+                    "Incoming file: {} ({} bytes)",
+                    remote_props.file_name, remote_props.file_size
+                ));
+                let id_to_accept = remote_props.transaction_id;
+                let filename_to_receive = remote_props.file_name.clone();
+
+                ui.horizontal(|ui| {
+                    if ui.button("Accept").clicked() {
+                        self.engine
+                            .accept_file(id_to_accept, filename_to_receive.clone());
+                        self.file_transfer_state = FileTransferState::Receiving {
+                            id: id_to_accept,
+                            filename: filename_to_receive,
+                        };
+                    }
+                    if ui.button("Reject").clicked() {
+                        self.engine.reject_file(id_to_accept);
+                        self.file_transfer_state = FileTransferState::Idle;
+                    }
+                });
+            }
+            FileTransferState::Sending { id, filename } => {
+                ui.label(format!("Sending {}...", filename));
+                if ui.button("Cancel").clicked() {
+                    self.engine.cancel_file(*id);
+                    self.sending_files.store(false, Ordering::SeqCst);
+                    self.file_transfer_state = FileTransferState::Idle;
+                }
+            }
+            FileTransferState::Receiving { id, filename } => {
+                ui.label(format!("Receiving {}...", filename));
+                if ui.button("Cancel").clicked() {
+                    self.engine.cancel_file(*id);
+                    self.receiving_files.store(false, Ordering::SeqCst);
+                    self.file_transfer_state = FileTransferState::Idle;
+                }
+            }
+            FileTransferState::Finished { msg } => {
+                ui.label(msg);
+                if ui.button("OK").clicked() {
+                    self.file_transfer_state = FileTransferState::Idle;
+                }
             }
         }
     }
@@ -672,12 +876,6 @@ impl RtcApp {
         _local_frame: Option<&VideoFrame>,
         _remote_frame: Option<&VideoFrame>,
     ) {
-        sink_debug!(
-            self.logger.handle(),
-            "[UI] remote_camera_texture exists? {} (id={:?})",
-            self.remote_camera_texture.is_some(),
-            self.remote_camera_texture.map(|(id, _)| id)
-        );
         // show the window if we are running OR we already have any texture
         let have_any_texture =
             self.local_camera_texture.is_some() || self.remote_camera_texture.is_some();
@@ -917,6 +1115,13 @@ impl RtcApp {
             {
                 self.teardown_call(Some("stopped".into()), true);
             }
+
+            let mute_label = if self.is_muted { "Unmute" } else { "Mute" };
+            if ui.button(mute_label).clicked() {
+                self.is_muted = !self.is_muted;
+                self.engine.set_audio_mute(self.is_muted);
+            }
+
             ui.label(format!("State: {:?}", self.conn_state));
         });
     }
@@ -1062,17 +1267,24 @@ impl RtcApp {
         // 2) Tear down media (safe to call even if session never started)
         self.engine.stop();
 
+        // Reset file transfer state
+        self.file_transfer_state = FileTransferState::Idle;
+        self.file_path_input.clear();
+        self.sending_files.store(false, Ordering::SeqCst);
+        self.receiving_files.store(false, Ordering::SeqCst);
+
         // 3) Re-initialize the Engine for the next call.
-        // The Engine (and its internal MediaTransport) consumes one-time resources (channels)
-        // during startup. To support a second call, we must create a fresh instance.
         let logger_handle = Arc::new(self.logger.handle());
-        self.engine = Engine::new(logger_handle, self.config.clone());
+        self.engine = Engine::new(
+            logger_handle,
+            self.config.clone(),
+            self.sending_files.clone(),
+            self.receiving_files.clone(),
+        );
 
         // 4) Reset call-related state
         self.call_flow = CallFlow::Idle;
 
-        // Since we dropped the old engine, we will never receive its "Closed" event,
-        // so we must force the state to Idle to enable the "Start Connection" button.
         self.conn_state = ConnState::Idle;
 
         self.pending_remote_sdp = None;
@@ -1172,6 +1384,7 @@ impl App for RtcApp {
                 return;
             }
             Self::render_video_summary(ui, local_frame.as_ref(), remote_frame.as_ref());
+            self.render_file_transfer(ui);
             self.render_network_stats(ui);
             self.render_connection_controls(ui);
             self.render_status_line(ui);

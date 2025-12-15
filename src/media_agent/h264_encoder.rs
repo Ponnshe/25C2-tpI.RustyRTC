@@ -101,7 +101,7 @@ impl H264Encoder {
 
         let w = frame.width as usize;
         let h = frame.height as usize;
-        
+
         // Prepare source slice for conversion
         let rgb_slice = match &frame.data {
             crate::media_agent::video_frame::VideoFrameData::Rgb(buf) => {

@@ -21,6 +21,8 @@ pub mod connection_manager;
 pub mod core;
 /// DTLS (Datagram Transport Layer Security) implementation.
 pub mod dtls;
+/// File handler for P2P file transfer.
+pub mod file_handler;
 /// ICE (Interactive Connectivity Establishment) implementation for NAT traversal.
 pub mod ice;
 /// Logging utilities for the application.
@@ -35,6 +37,8 @@ pub mod rtcp;
 pub mod rtp;
 /// Manages RTP sessions for sending and receiving media.
 pub mod rtp_session;
+/// SCTP implementation for file transfer.
+pub mod sctp;
 /// SDP (Session Description Protocol) parsing and building.
 pub mod sdp;
 /// Signaling server implementation for coordinating WebRTC connections.

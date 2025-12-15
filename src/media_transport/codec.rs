@@ -9,17 +9,17 @@ use crate::{media_agent::spec::CodecSpec, rtp_session::rtp_codec::RtpCodec};
 pub struct CodecDescriptor {
     /// The human-readable name of the codec (e.g., "H264", "OPUS").
     pub codec_name: &'static str,
-    
+
     /// The RTP-specific configuration (Payload Type, Clock Rate, etc.).
     pub rtp_representation: RtpCodec,
-    
+
     /// The SDP `fmtp` (Format Parameter) line.
     ///
     /// This string contains specific configuration parameters negotiated via SDP.
     /// For H.264, this includes the Profile-Level-ID and Packetization Mode.
     /// Example: `"profile-level-id=42e01f;packetization-mode=1"`
     pub sdp_fmtp: Option<String>,
-    
+
     /// The internal enum identifier used by the `MediaAgent` logic.
     pub spec: CodecSpec,
 }
@@ -50,6 +50,15 @@ impl CodecDescriptor {
             // Packetization mode 1 is required for FU-A fragmentation support.
             sdp_fmtp: Some("profile-level-id=42e01f;packetization-mode=1".into()),
             spec: CodecSpec::H264,
+        }
+    }
+
+    pub fn pcmu_dynamic(pt: u8) -> Self {
+        Self {
+            codec_name: "PCMU",
+            rtp_representation: RtpCodec::with_name(pt, 8000, "PCMU"),
+            sdp_fmtp: None,
+            spec: CodecSpec::G711U,
         }
     }
 }

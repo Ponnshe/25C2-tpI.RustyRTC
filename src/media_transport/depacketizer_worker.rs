@@ -10,6 +10,7 @@ use std::{
 use crate::media_transport::{codec::CodecDescriptor, events::DepacketizerEvent};
 use crate::{
     log::log_sink::LogSink,
+    media_agent::spec::CodecSpec,
     media_transport::{
         depacketizer::h264_depacketizer::H264Depacketizer, media_transport_event::RtpIn,
     },
@@ -66,7 +67,7 @@ pub fn spawn_depacketizer_worker(
                     pkt.ssrc,
                     pkt.seq
                 );
-                
+
                 // 1. Verify if this Payload Type is currently negotiated/allowed.
                 let ok_pt = allowed_pts
                     .read()
@@ -92,19 +93,29 @@ pub fn spawn_depacketizer_worker(
                     pkt.seq
                 );
 
-                // 3. Feed the packet into the reassembly logic.
-                // The depacketizer returns `Some(bytes)` only when a full frame is complete.
-                if let Some(annex_b_frame) =
-                    depacketizer.push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
-                {
-                    sink_trace!(
-                        logger,
-                        "[Depacketizer] AnnexBFrameReady sending it to DepcketizerEventLoop (MT)"
-                    );
-                    let _ = event_tx.send(DepacketizerEvent::AnnexBFrameReady {
-                        codec_spec: codec_desc.spec,
-                        bytes: annex_b_frame,
-                    });
+                match codec_desc.spec {
+                    CodecSpec::H264 => {
+                        // 3. Feed the packet into the reassembly logic.
+                        // The depacketizer returns `Some(bytes)` only when a full frame is complete.
+                        if let Some(annex_b_frame) =
+                            depacketizer.push_rtp(&pkt.payload, pkt.marker, pkt.timestamp_90khz, pkt.seq)
+                        {
+                            sink_trace!(
+                                logger,
+                                "[Depacketizer] AnnexBFrameReady sending it to DepcketizerEventLoop (MT)"
+                            );
+                            let _ = event_tx.send(DepacketizerEvent::AnnexBFrameReady {
+                                codec_spec: codec_desc.spec,
+                                bytes: annex_b_frame,
+                            });
+                        }
+                    }
+                    CodecSpec::G711U => {
+                         let _ = event_tx.send(DepacketizerEvent::EncodedAudioFrameReady {
+                            codec_spec: codec_desc.spec,
+                            payload: pkt.payload,
+                        });
+                    }
                 }
             }
         })
