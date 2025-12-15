@@ -27,6 +27,7 @@ use std::{
     thread::JoinHandle,
 };
 
+const DEFAULT_AUDIO_PT: u8 = 0;
 /// The high-level orchestrator that bridges the Application Layer (`MediaAgent`)
 /// and the Network Layer (`RtpSession`).
 ///
@@ -39,10 +40,10 @@ pub struct MediaTransport {
     logger: Arc<dyn LogSink>,
     /// Channel to bubble up critical status events to the main engine.
     event_tx: Sender<EngineEvent>,
-    
+
     /// The application-side logic (Camera, Encoder, Decoder).
     media_agent: MediaAgent,
-    
+
     // --- Event Loops (Logic Processors) ---
     media_agent_event_loop: MediaAgentEventLoop,
     depacketizer_event_loop: DepacketizerEventLoop,
@@ -83,7 +84,7 @@ impl MediaTransport {
             .get("Media", "fps")
             .and_then(|s| s.parse().ok())
             .unwrap_or(TARGET_FPS);
-        
+
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
         let depacketizer_event_loop = DepacketizerEventLoop::new(logger.clone());
         let packetizer_event_loop = PacketizerEventLoop::new(logger.clone());
@@ -151,17 +152,21 @@ impl MediaTransport {
         for spec in self.media_agent.supported_media() {
             let codec_descriptor = match spec.codec_spec {
                 CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
-                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(current_pt),
+                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(DEFAULT_AUDIO_PT),
             };
-            payload_map_inner.insert(current_pt, codec_descriptor);
-            current_pt += 1;
+            let pt = codec_descriptor.rtp_representation.payload_type;
+            payload_map_inner.insert(pt, codec_descriptor);
+
+            if pt >= DYNAMIC_PAYLOAD_TYPE_START {
+                current_pt += 1;
+            }
         }
 
         let payload_map = Arc::new(payload_map_inner);
         let (rtp_tx, rtp_rx) = mpsc::sync_channel::<RtpIn>(RTP_TX_CHANNEL_SIZE);
         let rtp_tx_clone = rtp_tx;
         self.rtp_tx = Some(rtp_tx_clone);
-        
+
         let allowed_pts = Arc::new(RwLock::new(
             payload_map.keys().copied().collect::<HashSet<u8>>(),
         ));
@@ -180,7 +185,7 @@ impl MediaTransport {
             depacketizer_event_tx,
             payload_map_for_worker.clone(),
         ));
-        
+
         // Connect Depacketizer output -> MediaAgent input
         if let Some(media_agent_event_tx) = self.media_agent.media_agent_event_tx() {
             self.depacketizer_event_loop

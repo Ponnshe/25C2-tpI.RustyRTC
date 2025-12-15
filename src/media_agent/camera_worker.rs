@@ -116,6 +116,7 @@ fn convert_to_videoframe(mat: &Mat, w: u32, h: u32) -> Result<VideoFrame> {
         &mut rgb_mat,
         imgproc::COLOR_BGR2RGB,
         0,
+        opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
     )
     .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
     
