@@ -51,11 +51,11 @@ fn run_audio_capture(
 
     let config = cpal::StreamConfig {
         channels: 1,
-        sample_rate: cpal::SampleRate(48000),
+        sample_rate: cpal::SampleRate(8000),
         buffer_size: cpal::BufferSize::Default,
     };
 
-    let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(1920)));
+    let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(320)));
     let buffer_clone = buffer.clone();
     
     let logger_clone = logger.clone();
@@ -73,12 +73,12 @@ fn run_audio_capture(
             let mut buf = buffer_clone.lock().expect("Failed to lock audio buffer");
             buf.extend(data.iter().cloned());
             
-            while buf.len() >= 960 {
-                let chunk: Vec<f32> = buf.drain(0..960).collect();
+            while buf.len() >= 160 {
+                let chunk: Vec<f32> = buf.drain(0..160).collect();
                 let frame = AudioFrame {
                     data: Arc::new(chunk),
-                    samples: 960,
-                    sample_rate: 48000,
+                    samples: 160,
+                    sample_rate: 8000,
                     channels: 1,
                     timestamp_ms: now_millis(),
                 };

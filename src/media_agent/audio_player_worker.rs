@@ -23,8 +23,8 @@ pub enum AudioPlayerCommand {
 }
 
 /// Max buffer size in samples before dropping data to reduce latency.
-/// 48kHz * 0.5s = 24000 samples.
-const MAX_BUFFER_SIZE: usize = 24000;
+/// 8kHz * 0.5s = 4000 samples.
+const MAX_BUFFER_SIZE: usize = 4000;
 
 /// Spawns the audio player worker.
 ///
@@ -63,7 +63,7 @@ pub fn spawn_audio_player_worker(
 
             let config = cpal::StreamConfig {
                 channels: 1,
-                sample_rate: cpal::SampleRate(48000),
+                sample_rate: cpal::SampleRate(8000),
                 buffer_size: cpal::BufferSize::Default,
             };
 

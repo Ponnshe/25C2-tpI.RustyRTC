@@ -154,8 +154,8 @@ impl MediaAgentEventLoop {
                             };
                             
                             if packetizer_order_tx.send(order).is_ok() {
-                                // 960 samples per frame for 20ms @ 48kHz
-                                audio_rtp_ts = audio_rtp_ts.wrapping_add(960);
+                                // 160 samples per frame for 20ms @ 8kHz
+                                audio_rtp_ts = audio_rtp_ts.wrapping_add(160);
                             }
                         }
                         
