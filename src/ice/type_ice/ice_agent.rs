@@ -677,7 +677,7 @@ impl IceAgent {
                     };
 
                     if should_nominate {
-                        sink_info!(
+                        sink_debug!(
                             self.logger,
                             "[ICE] Nominating pair: [local={}, remote={}]",
                             pair.local.address,
@@ -690,14 +690,14 @@ impl IceAgent {
                             if let Err(e) =
                                 local_sock.send_to(NOMINATION_REQUEST, pair.remote.address)
                             {
-                                sink_error!(
+                                sink_debug!(
                                     self.logger,
                                     "[ICE] Error sending NOMINATION_REQUEST to {}: {}",
                                     pair.remote.address,
                                     e
                                 );
                             } else {
-                                sink_info!(
+                                sink_debug!(
                                     self.logger,
                                     "[ICE] Sent NOMINATION_REQUEST to {}",
                                     pair.remote.address
@@ -714,7 +714,7 @@ impl IceAgent {
             }
         } else if packet == BINDING_REQUEST || packet == NOMINATION_REQUEST {
             if self.role == IceRole::Controlled && packet == NOMINATION_REQUEST {
-                sink_info!(
+                sink_debug!(
                     self.logger,
                     "[ICE] Received NOMINATION_REQUEST from {}",
                     from_addr
@@ -726,7 +726,7 @@ impl IceAgent {
                     pair.is_nominated = true;
                     pair.state = CandidatePairState::Succeeded;
                     self.nominated_pair = Some(pair.clone_light());
-                    sink_info!(
+                    sink_debug!(
                         self.logger,
                         "[ICE] Pair nominated by peer: [local={}, remote={}]",
                         pair.local.address,

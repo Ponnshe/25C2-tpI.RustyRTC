@@ -5,9 +5,9 @@ use crate::{
     core::events::EngineEvent,
     log::log_sink::LogSink,
     media_agent::{
-        audio_capture_worker::{spawn_audio_capture_worker, AudioCaptureEvent},
+        audio_capture_worker::{AudioCaptureEvent, spawn_audio_capture_worker},
         audio_codec,
-        audio_player_worker::{spawn_audio_player_worker, AudioPlayerCommand},
+        audio_player_worker::{AudioPlayerCommand, spawn_audio_player_worker},
         camera_worker::spawn_camera_worker,
         decoder_event::DecoderEvent,
         decoder_worker::spawn_decoder_worker,
@@ -51,7 +51,7 @@ pub struct MediaAgent {
     remote_frame: Arc<Mutex<Option<VideoFrame>>>,
     /// List of supported codecs and media types.
     supported_media: Vec<MediaSpec>,
-    
+
     // --- Thread Handles ---
     decoder_handle: Option<JoinHandle<()>>,
     encoder_handle: Option<JoinHandle<()>>,
@@ -59,10 +59,10 @@ pub struct MediaAgent {
     camera_handle: Option<JoinHandle<()>>,
     audio_handle: Option<JoinHandle<()>>,
     audio_player_handle: Option<JoinHandle<()>>,
-    
+
     /// Flag to track if we have successfully sent at least one keyframe.
     sent_any_frame: Arc<AtomicBool>,
-    
+
     // --- Channels ---
     /// Channel to send events back to the listener loop from outside.
     media_agent_event_tx: Option<Sender<MediaAgentEvent>>,
@@ -70,7 +70,7 @@ pub struct MediaAgent {
     ma_encoder_event_tx: Option<Sender<EncoderInstruction>>,
     /// Channel to send instructions to the audio player worker.
     audio_player_tx: Option<Sender<AudioPlayerCommand>>,
-    
+
     running: Arc<AtomicBool>,
     is_audio_muted: Arc<AtomicBool>,
     config: Arc<Config>,
@@ -136,7 +136,7 @@ impl MediaAgent {
     ) -> Result<(), MediaAgentError> {
         let logger = self.logger.clone();
         sink_debug!(logger, "[MediaAgent] Starting MediaAgent");
-        
+
         self.running.store(true, Ordering::SeqCst);
         let logger = self.logger.clone();
         let running = self.running.clone();
@@ -162,24 +162,35 @@ impl MediaAgent {
         let (local_frame_rx, status, handle) =
             spawn_camera_worker(target_fps, logger.clone(), camera_id, running.clone());
         sink_debug!(logger.clone(), "[MediaAgent] Camera Worker Started");
-        
+
         if let Some(msg) = status {
             let _ = event_tx.send(EngineEvent::Status(format!("[MediaAgent] {msg}")));
         }
         self.camera_handle = handle;
 
         // --- Start Audio Capture Worker ---
-        sink_debug!(logger.clone(), "[MediaAgent] Starting Audio Capture Worker...");
-        let (audio_frame_rx, audio_handle) = spawn_audio_capture_worker(logger.clone(), running.clone(), self.is_audio_muted.clone());
+        sink_debug!(
+            logger.clone(),
+            "[MediaAgent] Starting Audio Capture Worker..."
+        );
+        let (audio_frame_rx, audio_handle) = spawn_audio_capture_worker(
+            logger.clone(),
+            running.clone(),
+            self.is_audio_muted.clone(),
+        );
         self.audio_handle = audio_handle;
         sink_debug!(logger.clone(), "[MediaAgent] Audio Capture Worker Started");
 
         // --- Start Audio Player Worker ---
         let (audio_player_tx, audio_player_rx) = mpsc::channel();
         self.audio_player_tx = Some(audio_player_tx.clone());
-        
-        sink_debug!(logger.clone(), "[MediaAgent] Starting Audio Player Worker...");
-        let audio_player_handle = spawn_audio_player_worker(logger.clone(), audio_player_rx, running.clone());
+
+        sink_debug!(
+            logger.clone(),
+            "[MediaAgent] Starting Audio Player Worker..."
+        );
+        let audio_player_handle =
+            spawn_audio_player_worker(logger.clone(), audio_player_rx, running.clone());
         self.audio_player_handle = Some(audio_player_handle);
         sink_debug!(logger.clone(), "[MediaAgent] Audio Player Worker Started");
 
@@ -204,7 +215,7 @@ impl MediaAgent {
         let (ma_encoder_event_tx, ma_encoder_event_rx) = mpsc::channel::<EncoderInstruction>();
         let ma_encoder_event_tx_clone = ma_encoder_event_tx.clone();
         self.ma_encoder_event_tx = Some(ma_encoder_event_tx_clone);
-        
+
         sink_debug!(logger.clone(), "[MediaAgent] Starting Encoder Worker...");
         let encoder_handle = spawn_encoder_worker(
             logger.clone(),
@@ -401,7 +412,7 @@ impl MediaAgent {
                 &local_frame,
                 &sent_any_frame,
             );
-            
+
             Self::drain_audio_frames(&logger, &audio_frame_rx, &media_transport_event_tx);
 
             // Poll for other events with a short timeout to keep the loop responsive
@@ -471,15 +482,22 @@ impl MediaAgent {
             match audio_frame_rx.try_recv() {
                 Ok(event) => match event {
                     AudioCaptureEvent::Frame(frame) => {
-                        sink_trace!(logger, "[MediaAgent] Received AudioFrame: ts={}, samples={}", frame.timestamp_ms, frame.samples);
-                        
+                        sink_trace!(
+                            logger,
+                            "[MediaAgent] Received AudioFrame: ts={}, samples={}",
+                            frame.timestamp_ms,
+                            frame.samples
+                        );
+
                         let encoded_payload = audio_codec::encode(&frame.data);
-                        
-                        let _ = media_transport_event_tx.send(MediaTransportEvent::SendEncodedAudioFrame {
-                            payload: encoded_payload,
-                            timestamp_ms: frame.timestamp_ms,
-                            codec_spec: CodecSpec::G711U,
-                        });
+
+                        let _ = media_transport_event_tx.send(
+                            MediaTransportEvent::SendEncodedAudioFrame {
+                                payload: encoded_payload,
+                                timestamp_ms: frame.timestamp_ms,
+                                codec_spec: CodecSpec::G711U,
+                            },
+                        );
                     }
                     AudioCaptureEvent::Error(e) => {
                         sink_warn!(logger, "[MediaAgent] Audio capture error: {}", e);
@@ -514,7 +532,7 @@ impl MediaAgent {
 
         let ts = frame.timestamp_ms;
         let instruction = EncoderInstruction::Encode(frame, force_keyframe);
-        
+
         if ma_encoder_event_tx.send(instruction).is_err() {
             sink_error!(
                 logger,
@@ -543,10 +561,10 @@ impl MediaAgent {
     ) {
         match event {
             MediaAgentEvent::DecodedVideoFrame(frame) => {
-                sink_info!(logger, "[MediaAgent] Received DecodedVideoFrame");
+                sink_trace!(logger, "[MediaAgent] Received DecodedVideoFrame");
                 let frame = *frame;
                 let ts = frame.timestamp_ms;
-                
+
                 // Update remote UI snapshot
                 if let Ok(mut guard) = remote_frame.lock() {
                     *guard = Some(frame);
@@ -613,7 +631,7 @@ impl MediaAgent {
                     .get("Media", "keyframe_interval")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(KEYINT);
-                    
+
                 let instruction = EncoderInstruction::SetConfig {
                     fps,
                     bitrate: b,
@@ -623,11 +641,23 @@ impl MediaAgent {
                     sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
                 }
             }
-            MediaAgentEvent::EncodedAudioFrame { payload, codec_spec } => {
-                sink_trace!(logger, "[MediaAgent] Decoding audio frame ({:?})", codec_spec);
+            MediaAgentEvent::EncodedAudioFrame {
+                payload,
+                codec_spec,
+            } => {
+                sink_trace!(
+                    logger,
+                    "[MediaAgent] Decoding audio frame ({:?})",
+                    codec_spec
+                );
                 let decoded_samples = audio_codec::decode(&payload);
-                if let Err(e) = audio_player_tx.send(AudioPlayerCommand::PlayFrame(decoded_samples)) {
-                     sink_error!(logger, "[MediaAgent] Failed to send PlayFrame command: {}", e);
+                if let Err(e) = audio_player_tx.send(AudioPlayerCommand::PlayFrame(decoded_samples))
+                {
+                    sink_error!(
+                        logger,
+                        "[MediaAgent] Failed to send PlayFrame command: {}",
+                        e
+                    );
                 }
             }
         }
