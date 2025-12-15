@@ -42,7 +42,7 @@ use crate::sdp::time_desc::TimeDesc;
 /// - `i=`, `c=`, `b=`, `a=` lines are applied to the **current media** if we are
 ///   inside an `m=` section; otherwise they apply at the **session** level.
 /// - `r=` and `z=` are attached to the **last** `t=` block.
-/// - Any unknown session-level lines are preserved verbatim in [`extra_lines`].
+/// - Any unknown session-level lines are preserved verbatim in [`Sdp::extra_lines`].
 #[derive(Debug, Clone)]
 pub struct Sdp {
     /// `v=` — SDP version (per spec this is always `0`).

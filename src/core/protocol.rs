@@ -17,8 +17,6 @@ pub enum AppMsg {
     FinAck { your: u64, mine: u64 },
     /// FIN-ACK2 message for graceful session termination completion, acknowledging peer's token.
     FinAck2 { your: u64 },
-    /// Any other message (e.g., media data) which is not part of the handshake/teardown.
-    Other(Vec<u8>),
 }
 
 /// Encodes a SYN message.
@@ -58,15 +56,13 @@ fn parse_hex(t: &str) -> Option<u64> {
 
 /// Parses a byte slice into an `AppMsg`.
 #[must_use]
-pub fn parse_app_msg(bytes: &[u8]) -> AppMsg {
+pub fn parse_app_msg(bytes: &[u8]) -> Option<AppMsg> {
     let s = String::from_utf8_lossy(bytes);
     let s = s.trim();
     let mut it = s.split_whitespace();
-    let Some(kind) = it.next() else {
-        return AppMsg::Other(bytes.to_vec());
-    };
+    let kind = it.next()?;
 
-    let msg = match kind {
+    match kind {
         "SYN" => {
             let token = it.next().and_then(parse_hex);
             token.map(|token| AppMsg::Syn { token })
@@ -100,7 +96,5 @@ pub fn parse_app_msg(bytes: &[u8]) -> AppMsg {
             your.map(|your| AppMsg::FinAck2 { your })
         }
         _ => None,
-    };
-
-    msg.unwrap_or_else(|| AppMsg::Other(bytes.to_vec()))
+    }
 }

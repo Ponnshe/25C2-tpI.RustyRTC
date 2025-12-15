@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use crate::{
     congestion_controller::NetworkMetrics, log::log_msg::LogMsg,
-    media_transport::media_transport_event::RtpIn,
+    media_transport::media_transport_event::RtpIn, sctp::events::SctpFileProperties,
 };
 
 /// Represents events that can be emitted by the `Engine` to the UI or other components.
@@ -33,4 +33,21 @@ pub enum EngineEvent {
     NetworkMetrics(NetworkMetrics),
     /// Request to update the encoder bitrate.
     UpdateBitrate(u32),
+
+    // File Transfer Events
+    SendFileOffer(SctpFileProperties),
+    SendFileAccept(u32),
+    SendFileReject(u32),
+    SendFileCancel(u32),
+    SendFileChunk(u32, Vec<u8>),
+    SendFileEnd(u32),
+    ReceivedFileOffer(SctpFileProperties),
+    ReceivedFileAccept(u32),
+    ReceivedFileReject(u32),
+    ReceivedFileCancel(u32),
+    ReceivedFileChunk(u32, u32, Vec<u8>),
+    ReceivedFileEnd(u32),
+
+    /// Updates the mute state of the audio capture (true = muted, false = active).
+    ToggleAudio(bool),
 }

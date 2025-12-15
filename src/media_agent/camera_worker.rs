@@ -59,7 +59,7 @@ pub fn camera_loop(
                 let h = cam.height();
                 // Propagates conversion errors immediately
                 let vf = convert_to_videoframe(&frame, w, h)?;
-                
+
                 // If the receiver hangs up, we exit the loop gracefully
                 if tx.send(vf).is_err() {
                     break;
@@ -116,9 +116,10 @@ fn convert_to_videoframe(mat: &Mat, w: u32, h: u32) -> Result<VideoFrame> {
         &mut rgb_mat,
         imgproc::COLOR_BGR2RGB,
         0,
+        opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
     )
     .map_err(|e| MediaAgentError::Io(format!("cvtColor: {e}")))?;
-    
+
     let bytes = tight_rgb_bytes(&rgb_mat, w, h)
         .map_err(|e| MediaAgentError::Io(format!("pack RGB: {e}")))?;
 
@@ -149,11 +150,11 @@ pub fn synthetic_loop(
     let fps = target_fps.clamp(1, 120);
     let period = Duration::from_millis(1_000 / fps as u64);
     let mut phase = 0u8;
-    
+
     while running.load(Ordering::SeqCst) {
         let frame = VideoFrame::synthetic_rgb(320, 240, phase);
         phase = phase.wrapping_add(1);
-        
+
         if tx.send(frame).is_err() {
             logger_error!(logger, "[Synthethic Loop]: an error occured, exiting!");
             break;
@@ -190,7 +191,7 @@ pub fn spawn_camera_worker(
 ) -> (Receiver<VideoFrame>, Option<String>, Option<JoinHandle<()>>) {
     sink_info!(logger, "[CameraWorker] Starting camera worker");
     let (local_frame_tx, local_frame_rx) = mpsc::channel();
-    
+
     // Attempt to initialize physical hardware
     let camera_manager = CameraManager::new(camera_id, logger.clone());
 

@@ -27,6 +27,7 @@ use std::{
     thread::JoinHandle,
 };
 
+const DEFAULT_AUDIO_PT: u8 = 0;
 /// The high-level orchestrator that bridges the Application Layer (`MediaAgent`)
 /// and the Network Layer (`RtpSession`).
 ///
@@ -39,10 +40,10 @@ pub struct MediaTransport {
     logger: Arc<dyn LogSink>,
     /// Channel to bubble up critical status events to the main engine.
     event_tx: Sender<EngineEvent>,
-    
+
     /// The application-side logic (Camera, Encoder, Decoder).
     media_agent: MediaAgent,
-    
+
     // --- Event Loops (Logic Processors) ---
     media_agent_event_loop: MediaAgentEventLoop,
     depacketizer_event_loop: DepacketizerEventLoop,
@@ -83,7 +84,7 @@ impl MediaTransport {
             .get("Media", "fps")
             .and_then(|s| s.parse().ok())
             .unwrap_or(TARGET_FPS);
-        
+
         let media_agent_event_loop = MediaAgentEventLoop::new(target_fps, logger.clone());
         let depacketizer_event_loop = DepacketizerEventLoop::new(logger.clone());
         let packetizer_event_loop = PacketizerEventLoop::new(logger.clone());
@@ -91,6 +92,24 @@ impl MediaTransport {
         let (mt_event_tx, mt_event_rx) = mpsc::channel();
         let media_transport_event_tx = Some(mt_event_tx);
         let media_transport_event_rx = Some(mt_event_rx);
+
+        // Build Payload Map (Negotiate Codecs)
+        let mut payload_map_inner = HashMap::new();
+        let mut current_pt = DYNAMIC_PAYLOAD_TYPE_START;
+
+        for spec in media_agent.supported_media() {
+            let codec_descriptor = match spec.codec_spec {
+                CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
+                CodecSpec::G711U => CodecDescriptor::pcmu_dynamic(DEFAULT_AUDIO_PT),
+            };
+            let pt = codec_descriptor.rtp_representation.payload_type;
+            payload_map_inner.insert(pt, codec_descriptor);
+
+            if pt >= DYNAMIC_PAYLOAD_TYPE_START {
+                current_pt += 1;
+            }
+        }
+        let payload_map = Arc::new(payload_map_inner);
 
         Self {
             logger,
@@ -102,7 +121,7 @@ impl MediaTransport {
             rtp_tx: None,
             depacketizer_handle: None,
             packetizer_handle: None,
-            payload_map: Arc::new(HashMap::new()),
+            payload_map,
             outbound_tracks: Arc::new(Mutex::new(HashMap::new())),
             allowed_pts: None,
             media_transport_event_tx,
@@ -145,22 +164,13 @@ impl MediaTransport {
         }
 
         // 2. Build Payload Map (Negotiate Codecs)
-        let mut payload_map_inner = HashMap::new();
-        let mut current_pt = DYNAMIC_PAYLOAD_TYPE_START;
+        // Already built in new()
+        let payload_map = self.payload_map.clone();
 
-        for spec in self.media_agent.supported_media() {
-            let codec_descriptor = match spec.codec_spec {
-                CodecSpec::H264 => CodecDescriptor::h264_dynamic(current_pt),
-            };
-            payload_map_inner.insert(current_pt, codec_descriptor);
-            current_pt += 1;
-        }
-
-        let payload_map = Arc::new(payload_map_inner);
         let (rtp_tx, rtp_rx) = mpsc::sync_channel::<RtpIn>(RTP_TX_CHANNEL_SIZE);
         let rtp_tx_clone = rtp_tx;
         self.rtp_tx = Some(rtp_tx_clone);
-        
+
         let allowed_pts = Arc::new(RwLock::new(
             payload_map.keys().copied().collect::<HashSet<u8>>(),
         ));
@@ -168,7 +178,6 @@ impl MediaTransport {
         self.allowed_pts = Some(allowed_pts_clone);
 
         let payload_map_for_worker = payload_map.clone();
-        self.payload_map = payload_map;
 
         // 3. Start Depacketizer (Ingress)
         let (depacketizer_event_tx, depacketizer_event_rx) = mpsc::channel();
@@ -179,7 +188,7 @@ impl MediaTransport {
             depacketizer_event_tx,
             payload_map_for_worker.clone(),
         ));
-        
+
         // Connect Depacketizer output -> MediaAgent input
         if let Some(media_agent_event_tx) = self.media_agent.media_agent_event_tx() {
             self.depacketizer_event_loop
@@ -252,6 +261,10 @@ impl MediaTransport {
     /// Clones the sender channel for internal event routing.
     pub fn media_transport_event_tx(&self) -> Option<Sender<MediaTransportEvent>> {
         self.media_transport_event_tx.clone()
+    }
+
+    pub fn set_audio_mute(&self, mute: bool) {
+        self.media_agent.set_audio_mute(mute);
     }
 
     /// Stops all threads and cleans up resources.

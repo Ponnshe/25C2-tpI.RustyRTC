@@ -68,7 +68,7 @@ impl DepacketizerEventLoop {
         let handle = std::thread::spawn(move || {
             while !stop_flag.load(Ordering::SeqCst) {
                 const TIMEOUT: Duration = Duration::from_millis(RECV_TIMEOUT);
-                
+
                 // Use recv_timeout to ensure we can check the `stop_flag` periodically
                 // even if no video traffic is incoming.
                 match depacketizer_event_rx.recv_timeout(TIMEOUT) {
@@ -82,6 +82,19 @@ impl DepacketizerEventLoop {
                                 // Forward the reassembled frame to the upper layer
                                 media_agent_event_tx
                                     .send(MediaAgentEvent::AnnexBFrameReady { codec_spec, bytes })
+                            }
+                            DepacketizerEvent::EncodedAudioFrameReady {
+                                codec_spec,
+                                payload,
+                            } => {
+                                sink_trace!(
+                                    logger,
+                                    "[DepacketizerEventLoop (MT)] Received EncodedAudioFrameReady. Sending it to MediaAgent"
+                                );
+                                media_agent_event_tx.send(MediaAgentEvent::EncodedAudioFrame {
+                                    codec_spec,
+                                    payload,
+                                })
                             }
                         };
                     }
@@ -110,7 +123,7 @@ impl DepacketizerEventLoop {
             );
             running_flag.store(false, Ordering::SeqCst);
         });
-        
+
         self.running_flag.store(true, Ordering::SeqCst);
         self.event_loop_handler = Some(handle);
     }

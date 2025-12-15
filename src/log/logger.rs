@@ -190,7 +190,7 @@ impl Logger {
                 while let Ok(m) = rx.recv() {
                     let _ = writeln!(&mut out, "[{:?}] {} | {}", m.level, m.ts_ms, m.text);
                     lines_written = lines_written.wrapping_add(1);
-                    
+
                     // Flush periodically to ensure data persists on crash.
                     if lines_written.is_multiple_of(FLUSH_BATCH_SIZE) {
                         let _ = out.flush();
@@ -238,7 +238,7 @@ impl Logger {
     /// This method sends the message to the logger’s internal synchronous channel.
     /// If the channel is full, the message is **dropped** and an error is returned.
     ///
-    /// This function never blocks — use [`log`](Self::log) for the blocking variant.
+    /// This function never blocks.
     ///
     /// # Parameters
     /// - `level`: The severity level of the message (e.g. `Info`, `Warn`, `Error`).

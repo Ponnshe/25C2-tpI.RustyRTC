@@ -1,3 +1,8 @@
+//! Session management module.
+//!
+//! Handles the life cycle of a WebRTC session, including handshake, keep-alive,
+//! data transmission (RTP/SCTP), and tear-down.
+
 use crate::{sink_debug, sink_error, sink_info, srtp::SrtpSessionConfig};
 use rand::{RngCore, rngs::OsRng};
 use std::{
@@ -20,10 +25,14 @@ use crate::{
         events::EngineEvent,
         protocol::{self, AppMsg},
     },
+    dtls::buffered_udp_channel::BufferedUdpChannel,
     log::log_sink::LogSink,
     media_transport::payload::rtp_payload_chunk::RtpPayloadChunk,
+    sctp::{events::SctpEvents, sctp_session::SctpSession},
 };
+use openssl::ssl::SslStream;
 
+#[allow(unused_variables)]
 #[derive(Clone, Copy)]
 /// Configuration for a `Session`.
 pub struct SessionConfig {
@@ -82,36 +91,78 @@ pub struct Session {
 
     //SRTP config
     srtp_cfg: Option<SrtpSessionConfig>,
+
+    sctp_session: Arc<SctpSession>,
+}
+
+/// Arguments for initializing a new `Session`.
+pub struct SessionInitArgs {
+    /// The UDP socket to use for communication.
+    pub sock: Arc<UdpSocket>,
+    /// The address of the remote peer.
+    pub peer: std::net::SocketAddr,
+    /// A list of RTP codecs supported by the remote peer.
+    pub remote_codecs: Vec<RtpCodec>,
+    /// A sender for `EngineEvent`s to communicate with the engine.
+    pub event_tx: Sender<EngineEvent>,
+    /// A logger instance for logging session events.
+    pub logger: Arc<dyn LogSink>,
+    /// The session configuration.
+    pub cfg: SessionConfig,
+    /// Optional SRTP configuration.
+    pub srtp_cfg: Option<SrtpSessionConfig>,
+    /// The DTLS stream over UDP.
+    pub ssl_stream: SslStream<BufferedUdpChannel>,
 }
 
 impl Session {
     /// Creates a new `Session` instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `sock` - The UDP socket to use for communication.
-    /// * `peer` - The address of the remote peer.
-    /// * `remote_codecs` - A list of RTP codecs supported by the remote peer.
-    /// * `event_tx` - A sender for `EngineEvent`s to communicate with the engine.
-    /// * `logger` - A logger instance for logging session events.
-    /// * `cfg` - The session configuration.
-    ///
-    /// # Returns
-    ///
-    /// A new `Session` instance.
-    pub fn new(
-        sock: Arc<UdpSocket>,
-        peer: std::net::SocketAddr,
-        remote_codecs: Vec<RtpCodec>,
-        event_tx: Sender<EngineEvent>,
-        logger: Arc<dyn LogSink>,
-        cfg: SessionConfig,
-        srtp_cfg: Option<SrtpSessionConfig>,
-    ) -> Self {
+    pub fn new(args: SessionInitArgs) -> Self {
+        let (sctp_parent_tx, sctp_parent_rx) = mpsc::channel();
+        let sctp_session = Arc::new(SctpSession::new(
+            args.logger.clone(),
+            sctp_parent_tx,
+            args.ssl_stream,
+        ));
+
+        // Spawn thread to forward SCTP events to EngineEvent
+        let evt_tx_clone = args.event_tx.clone();
+        thread::spawn(move || {
+            while let Ok(ev) = sctp_parent_rx.recv() {
+                let engine_ev = match ev {
+                    SctpEvents::ReceivedOffer { file_properties } => {
+                        Some(EngineEvent::ReceivedFileOffer(file_properties))
+                    }
+                    SctpEvents::ReceivedAccept { id } => Some(EngineEvent::ReceivedFileAccept(id)),
+                    SctpEvents::ReceivedReject { id } => Some(EngineEvent::ReceivedFileReject(id)),
+                    SctpEvents::ReceivedCancel { id } => Some(EngineEvent::ReceivedFileCancel(id)),
+                    SctpEvents::ReceivedChunk { id, seq, payload } => {
+                        Some(EngineEvent::ReceivedFileChunk(id, seq, payload))
+                    }
+                    SctpEvents::ReceivedEndFile { id } => Some(EngineEvent::ReceivedFileEnd(id)),
+                    SctpEvents::SendOffer { file_properties } => {
+                        Some(EngineEvent::SendFileOffer(file_properties))
+                    }
+                    SctpEvents::SendAccept { id } => Some(EngineEvent::SendFileAccept(id)),
+                    SctpEvents::SendReject { id } => Some(EngineEvent::SendFileReject(id)),
+                    SctpEvents::SendCancel { id } => Some(EngineEvent::SendFileCancel(id)),
+                    SctpEvents::SendChunk { file_id, payload } => {
+                        Some(EngineEvent::SendFileChunk(file_id, payload))
+                    }
+                    SctpEvents::SendEndFile { id } => Some(EngineEvent::SendFileEnd(id)),
+                    SctpEvents::SctpErr(e) => Some(EngineEvent::Error(format!("SCTP Error: {e}"))),
+                    _ => None,
+                };
+                if let Some(e) = engine_ev {
+                    let _ = evt_tx_clone.send(e);
+                }
+            }
+        });
+
         Self {
-            sock,
-            peer,
-            remote_codecs,
+            sock: args.sock,
+            peer: args.peer,
+            remote_codecs: args.remote_codecs,
             run_flag: Arc::new(AtomicBool::new(false)),
             established: Arc::new(AtomicBool::new(false)),
             token_local: 0,
@@ -119,14 +170,15 @@ impl Session {
             we_initiated_close: Arc::new(AtomicBool::new(false)),
             peer_initiated_close: Arc::new(AtomicBool::new(false)),
             close_done: Arc::new(AtomicBool::new(false)),
-            tx_evt: event_tx,
-            logger,
-            cfg,
+            tx_evt: args.event_tx,
+            logger: args.logger,
+            cfg: args.cfg,
             rtp_session: Arc::new(Mutex::new(None)),
             rtp_media_tx: Arc::new(Mutex::new(None)),
             hs_got_syn: Arc::new(AtomicBool::new(false)),
             hs_sent_synack: Arc::new(AtomicBool::new(false)),
-            srtp_cfg,
+            srtp_cfg: args.srtp_cfg,
+            sctp_session,
         }
     }
 
@@ -216,29 +268,56 @@ impl Session {
         let rtp_session_handle = Arc::clone(&self.rtp_session);
         let hs_got_syn = Arc::clone(&self.hs_got_syn);
         let hs_sent_synack = Arc::clone(&self.hs_sent_synack);
+        let sctp_session = self.sctp_session.clone();
 
         thread::spawn(move || {
             let mut buf = [0u8; 1500];
             while rx_run.load(Ordering::SeqCst) {
                 match rx_sock.recv(&mut buf) {
                     Ok(n) => {
-                        let msg = protocol::parse_app_msg(&buf[..n]);
-                        let args = HandleAppMsgArgs {
-                            msg,
-                            rx_sock: &rx_sock,
-                            rx_tok_peer: &rx_tok_peer,
-                            rx_est: &rx_est,
-                            rx_close_done: &rx_close_done,
-                            rx_peer_init: &rx_peer_init,
-                            local_token,
-                            tx: &tx,
-                            logger: &logger,
-                            rtp_media_tx: &rtp_media_tx,
-                            rtp_session_handle: &rtp_session_handle,
-                            hs_got_syn: &hs_got_syn,
-                            hs_sent_synack: &hs_sent_synack,
-                        };
-                        handle_app_msg(args);
+                        let pkt = &buf[..n];
+                        if n == 0 {
+                            continue;
+                        }
+                        let first_byte = pkt[0];
+
+                        if (20..=63).contains(&first_byte) {
+                            // DTLS (SCTP)
+                            sctp_session.handle_sctp_packet(pkt.to_vec());
+                        } else if (128..=191).contains(&first_byte) {
+                            // RTP/RTCP
+                            if rx_est.load(Ordering::SeqCst) {
+                                let maybe_tx = rtp_media_tx
+                                    .lock()
+                                    .ok()
+                                    .and_then(|guard| guard.as_ref().cloned());
+                                if let Some(tx_media) = maybe_tx {
+                                    let _ = tx_media.send(pkt.to_vec());
+                                }
+                            }
+                        } else {
+                            // AppMsg
+                            if let Some(msg) = protocol::parse_app_msg(pkt) {
+                                let args = HandleAppMsgArgs {
+                                    msg,
+                                    rx_sock: &rx_sock,
+                                    rx_tok_peer: &rx_tok_peer,
+                                    rx_est: &rx_est,
+                                    rx_close_done: &rx_close_done,
+                                    rx_peer_init: &rx_peer_init,
+                                    local_token,
+                                    tx: &tx,
+                                    logger: &logger,
+                                    rtp_media_tx: &rtp_media_tx,
+                                    rtp_session_handle: &rtp_session_handle,
+                                    hs_got_syn: &hs_got_syn,
+                                    hs_sent_synack: &hs_sent_synack,
+                                };
+                                handle_app_msg(args);
+                            } else {
+                                sink_debug!(&logger, "Ignored unknown packet (len={})", pkt.len());
+                            }
+                        }
                     }
                     Err(ref e)
                         if e.kind() == std::io::ErrorKind::WouldBlock
@@ -353,7 +432,10 @@ impl Session {
         });
     }
 
+    /// Registers a new outbound track with the session.
+    ///
     /// # Errors
+    ///
     /// Returns an error if the rtp session is not running or the lock is poisoned.
     pub fn register_outbound_track(&self, codec: RtpCodec) -> Result<OutboundTrackHandle, String> {
         let guard = self
@@ -368,7 +450,10 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    /// Sends RTP chunks for a video frame.
+    ///
     /// # Errors
+    ///
     /// Returns an error if the rtp session is not running or the lock is poisoned.
     pub fn send_rtp_chunks_for_frame(
         &self,
@@ -390,6 +475,16 @@ impl Session {
     /// Tears down the RTP session.
     fn teardown_rtp(&self) {
         stop_rtp_session(&self.rtp_session, &self.rtp_media_tx);
+    }
+
+    pub fn send_sctp_event(&self, event: SctpEvents) {
+        let _ = self.sctp_session.tx.send(event);
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.sctp_session.shutdown();
     }
 }
 
@@ -569,22 +664,6 @@ fn handle_app_msg(args: HandleAppMsgArgs) {
                 sink_info!(args.logger, "[CLOSE] graceful close complete",);
             } else {
                 sink_debug!(args.logger, "[CLOSE] recv FIN-ACK2 not for us -> ignored");
-            }
-        }
-
-        AppMsg::Other(pkt) => {
-            // Only deliver media once established
-            if args.rx_est.load(Ordering::SeqCst) {
-                let maybe_tx = args
-                    .rtp_media_tx
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.as_ref().cloned());
-                if let Some(tx_media) = maybe_tx {
-                    let _ = tx_media.send(pkt);
-                }
-            } else {
-                sink_debug!(args.logger, "[HS] recv media before established -> ignored");
             }
         }
     }

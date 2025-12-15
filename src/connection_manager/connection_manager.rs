@@ -4,24 +4,26 @@ use super::{
 };
 use crate::config::Config;
 use crate::connection_manager::config::{
-    DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_MEDIA_KIND, DEFAULT_NET_TYPE,
-    DEFAULT_PORT, DEFAULT_PROTO,
+    DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_NET_TYPE, DEFAULT_PORT,
+    DEFAULT_PROTO,
 };
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::gathering_service;
 use crate::ice::type_ice::ice_agent::{IceAgent, IceRole};
 use crate::log::log_sink::LogSink;
+use crate::media_agent::spec::MediaType;
 use crate::media_transport::codec::CodecDescriptor;
 use crate::rtp_session::rtp_codec::RtpCodec;
 use crate::sdp::attribute::Attribute as SDPAttribute;
 use crate::sdp::connection::Connection as SDPConnection;
 use crate::sdp::media::Media as SDPMedia;
+use crate::sdp::media::MediaKind;
 use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
-use crate::sink_error;
 use crate::tls_utils::get_local_fingerprint_sha256;
+use crate::{sink_error, sink_info};
 use std::collections::HashSet;
 use std::{
     io::ErrorKind,
@@ -104,6 +106,11 @@ impl ConnectionManager {
         match self.signaling {
             SignalingState::Stable => {
                 let offer = self.build_local_sdp();
+                sink_info!(
+                    &self.logger_handle,
+                    "Generated Local SDP Offer:\n{}",
+                    offer.encode()
+                );
                 self.local_description = Some(offer.clone());
                 self.signaling = SignalingState::HaveLocalOffer;
                 self.set_ice_role_from_signaling(true, false);
@@ -129,6 +136,7 @@ impl ConnectionManager {
     /// - If SDP parsing fails
     /// - If negotiation state is invalid
     pub fn apply_remote_sdp(&mut self, remote: &str) -> Result<OutboundSdp, ConnectionError> {
+        sink_info!(&self.logger_handle, "Received Remote SDP:\n{}", remote);
         let sdp = Sdp::parse(remote).map_err(ConnectionError::Sdp)?;
         let out = match self.signaling {
             SignalingState::Stable => {
@@ -140,6 +148,11 @@ impl ConnectionManager {
                 self.signaling = SignalingState::HaveRemoteOffer;
 
                 let answer = self.build_local_sdp();
+                sink_info!(
+                    &self.logger_handle,
+                    "Generated Local SDP Answer:\n{}",
+                    answer.encode()
+                );
                 self.local_description = Some(answer.clone());
                 self.set_ice_role_from_signaling(false, remote_is_ice_lite);
 
@@ -251,7 +264,45 @@ impl ConnectionManager {
 
     /// Constructs a local SDP description (offer or answer) based on current local codecs and ICE info.
     fn build_local_sdp(&mut self) -> Sdp {
-        let media: Vec<SDPMedia> = vec![self.build_media_description()];
+        // Gather candidates once to avoid duplication side-effects
+        let candidates_attrs = get_local_candidates_as_attributes(self);
+
+        // Group codecs by MediaType
+        let mut audio_codecs = Vec::new();
+        let mut video_codecs = Vec::new();
+
+        for c in &self.local_codecs {
+            match c.spec.media_type() {
+                MediaType::Audio => audio_codecs.push(c.clone()),
+                MediaType::Video => video_codecs.push(c.clone()),
+            }
+        }
+
+        let mut media = Vec::new();
+
+        // Add Audio m-line if present
+        if !audio_codecs.is_empty() {
+            media.push(self.build_media_description(
+                MediaType::Audio,
+                &audio_codecs,
+                &candidates_attrs,
+            ));
+        }
+
+        // Add Video m-line if present
+        if !video_codecs.is_empty() {
+            media.push(self.build_media_description(
+                MediaType::Video,
+                &video_codecs,
+                &candidates_attrs,
+            ));
+        }
+
+        // Fallback: if no codecs found (e.g. init), default to Video
+        if media.is_empty() {
+            media.push(self.build_media_description(MediaType::Video, &[], &candidates_attrs));
+        }
+
         Sdp::new(
             0,
             SDPOrigin::new_blank(),
@@ -456,16 +507,25 @@ impl ConnectionManager {
     }
 
     /// Builds a media description SDP with ICE candidates, codecs, and connection info.
-    fn build_media_description(&mut self) -> SDPMedia {
+    fn build_media_description(
+        &mut self,
+        media_type: MediaType,
+        codecs: &[CodecDescriptor],
+        candidates: &[SDPAttribute],
+    ) -> SDPMedia {
         let mut media_desc = SDPMedia::new_blank();
-        media_desc.set_kind(DEFAULT_MEDIA_KIND);
+        let kind = match media_type {
+            MediaType::Audio => MediaKind::Audio,
+            MediaType::Video => MediaKind::Video,
+        };
+        media_desc.set_kind(kind);
         media_desc.set_port(SDPPortSpec::new(DEFAULT_PORT, None));
         media_desc.set_proto(DEFAULT_PROTO);
 
-        let formats = if self.local_codecs.is_empty() {
+        let formats = if codecs.is_empty() {
             vec![DEFAULT_FMT.to_owned()]
         } else {
-            self.local_codecs
+            codecs
                 .iter()
                 .map(|c| c.rtp_representation.payload_type.to_string())
                 .collect()
@@ -477,7 +537,10 @@ impl ConnectionManager {
             DEFAULT_CONN_ADDR,
         )));
 
-        let mut attrs = get_local_candidates_as_attributes(self);
+        let mut attrs = Vec::new();
+        // Add candidates
+        attrs.extend_from_slice(candidates);
+
         let (ufrag, pwd) = self.ice_agent.local_credentials();
         attrs.push(SDPAttribute::new("ice-ufrag", ufrag));
         attrs.push(SDPAttribute::new("ice-pwd", pwd));
@@ -495,16 +558,20 @@ impl ConnectionManager {
             attrs.push(SDPAttribute::new("setup", Some("active".into())));
         }
 
-        if self.local_codecs.is_empty() {
+        if codecs.is_empty() {
+            // Default fallback if absolutely no codecs provided
             attrs.push(SDPAttribute::new(
                 "rtpmap",
                 Some("96 H264/90000".to_owned()),
             ));
         } else {
-            for descriptor in &self.local_codecs {
+            for descriptor in codecs {
                 let codec = &descriptor.rtp_representation;
                 let name = if codec.name.is_empty() {
-                    "H264"
+                    match media_type {
+                        MediaType::Audio => "PCMU",
+                        MediaType::Video => "H264",
+                    }
                 } else {
                     &codec.name
                 };

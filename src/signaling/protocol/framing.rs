@@ -1,7 +1,7 @@
 use super::{PROTO_VERSION, ProtoError, errors::FrameError, msg_type::MsgType};
 use std::io::{self, Read, Write};
 
-/// Write a single frame: [ver][type][reserved u16=0][len u32][body...]
+/// Write a single frame: `[ver][type][reserved u16=0][len u32][body...]`
 ///
 /// # Errors
 ///

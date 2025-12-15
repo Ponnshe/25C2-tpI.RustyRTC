@@ -56,7 +56,7 @@ pub fn run_dtls_handshake(
     timeout: Duration,
     expected_fingerprint: Option<String>,
     config: Arc<Config>,
-) -> Result<SrtpSessionConfig, DtlsError> {
+) -> Result<(SrtpSessionConfig, SslStream<BufferedUdpChannel>), DtlsError> {
     // Draining socket (nonblocking)
     sock.set_nonblocking(true).ok();
     let mut drain_buf = [0u8; 4096];
@@ -115,7 +115,7 @@ pub fn run_dtls_handshake(
     })?;
 
     sink_info!(&logger, "[DTLS] Handshake Success! SRTP keys derived.");
-    Ok(cfg)
+    Ok((cfg, dtls_stream))
 }
 
 /// Initiates a DTLS client handshake using OpenSSL.

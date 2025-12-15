@@ -111,7 +111,7 @@ pub fn spawn_decoder_worker(
                                             &bytes[..bytes.len().min(12)]
                                         );
                                         let t0 = std::time::Instant::now();
-                                        
+
                                         match h264_decoder.decode_frame(&bytes, FRAME_FORMAT) {
                                             Ok(Some(frame)) => {
                                                 let took = t0.elapsed();
@@ -145,6 +145,9 @@ pub fn spawn_decoder_worker(
                                             }
                                         }
                                     },
+                                    _ => {
+                                        logger_error!(logger, "[Decoder] Unsupported codec for decoder worker: {:?}", codec_spec);
+                                    }
                                 }
                             },
                         }

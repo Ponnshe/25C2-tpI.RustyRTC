@@ -125,7 +125,7 @@ impl PacketizerEventLoop {
                                 logger,
                                 "[Packetizer Event Loop (MT)] Using Session to send frame"
                             );
-                            
+
                             // Actual network IO happens here
                             if let Some(sess) = sess_guard.as_mut()
                                 && let Err(e) = sess.send_rtp_chunks_for_frame(
@@ -167,7 +167,7 @@ impl PacketizerEventLoop {
             );
             running_flag.store(false, Ordering::SeqCst);
         });
-        
+
         self.running_flag.store(true, Ordering::SeqCst);
         self.event_loop_handler = Some(handle);
     }

@@ -82,7 +82,7 @@ impl H264Decoder {
                 let t1 = std::time::Instant::now();
                 let frame = yuv_to_videoframe(&yuv, frame_format);
                 let t_conv = t1.elapsed();
-                
+
                 sink_debug!(
                     self.logger,
                     "[Decoder timing] decode: {:?}, yuv_convertion: {:?}",
@@ -211,6 +211,6 @@ fn yuv_to_yuv420frame(yuv: &DecodedYUV<'_>) -> VideoFrame {
 ///
 /// Current standard: `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT` is 256 bytes.
 fn aligned_stride(width: usize) -> usize {
-    const ALIGNMENT: usize = 256; 
+    const ALIGNMENT: usize = 256;
     width.div_ceil(ALIGNMENT) * ALIGNMENT
 }

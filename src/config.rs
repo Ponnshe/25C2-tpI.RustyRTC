@@ -1,3 +1,7 @@
+//! Configuration management module.
+//!
+//! Handles loading and parsing of INI-style configuration files.
+
 use std::collections::HashMap;
 use std::fs;
 
@@ -13,9 +17,14 @@ pub struct Config {
 impl Config {
     /// Loads a configuration from a file.
     ///
+    /// The file format is a simple INI-style format.
+    /// Lines starting with `#` are comments.
+    /// Sections are denoted by `[section_name]`.
+    /// Key-value pairs are `key = value`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read.
+    /// Returns an error string if the file cannot be read or accessed.
     pub fn load(path: &str) -> Result<Self, String> {
         let content =
             fs::read_to_string(path).map_err(|e| format!("Error reading file {path}: {e}"))?;

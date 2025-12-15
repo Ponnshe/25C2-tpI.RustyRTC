@@ -8,6 +8,10 @@ pub enum DepacketizerEvent {
         codec_spec: CodecSpec,
         bytes: Vec<u8>,
     },
+    EncodedAudioFrameReady {
+        codec_spec: CodecSpec,
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
