@@ -279,6 +279,10 @@ impl Engine {
         }
     }
 
+    pub fn set_audio_mute(&mut self, mute: bool) {
+        self.media_transport.set_audio_mute(mute);
+    }
+
     /// Polls for `EngineEvent`s and processes them.
     /// This method is called repeatedly to drive the engine's state.
     #[allow(clippy::expect_used)]
@@ -493,6 +497,12 @@ impl Engine {
                             }
                         }
                         out.push(EngineEvent::ReceivedFileAccept(id));
+                        processed += 1;
+                    }
+                    EngineEvent::ToggleAudio(mute) => {
+                        self.media_transport.set_audio_mute(mute);
+                        // We push it out so the UI can update its state if the event came from elsewhere
+                        out.push(EngineEvent::ToggleAudio(mute));
                         processed += 1;
                     }
 

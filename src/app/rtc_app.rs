@@ -124,6 +124,8 @@ pub struct RtcApp {
     receiving_files: Arc<AtomicBool>,
     file_transfer_state: FileTransferState,
     file_path_input: String,
+    
+    is_muted: bool,
 }
 
 impl RtcApp {
@@ -213,6 +215,7 @@ impl RtcApp {
             receiving_files,
             file_transfer_state: FileTransferState::Idle,
             file_path_input: String::new(),
+            is_muted: false,
         }
     }
 
@@ -738,6 +741,9 @@ impl RtcApp {
                     self.file_transfer_state = FileTransferState::Idle;
                     self.receiving_files.store(false, Ordering::SeqCst);
                 }
+                EngineEvent::ToggleAudio(muted) => {
+                    self.is_muted = muted;
+                }
             }
         }
     }
@@ -1082,6 +1088,13 @@ impl RtcApp {
             {
                 self.teardown_call(Some("stopped".into()), true);
             }
+            
+            let mute_label = if self.is_muted { "Unmute" } else { "Mute" };
+            if ui.button(mute_label).clicked() {
+                self.is_muted = !self.is_muted;
+                self.engine.set_audio_mute(self.is_muted);
+            }
+            
             ui.label(format!("State: {:?}", self.conn_state));
         });
     }

@@ -23,13 +23,14 @@ pub enum AudioCaptureEvent {
 pub fn spawn_audio_capture_worker(
     logger: Arc<dyn LogSink>,
     running: Arc<AtomicBool>,
+    is_muted: Arc<AtomicBool>,
 ) -> (std::sync::mpsc::Receiver<AudioCaptureEvent>, Option<thread::JoinHandle<()>>) {
     let (tx, rx) = std::sync::mpsc::channel();
     
     let handle = thread::Builder::new()
         .name("media-agent-audio-capture".into())
         .spawn(move || {
-            if let Err(e) = run_audio_capture(logger.clone(), tx.clone(), running) {
+            if let Err(e) = run_audio_capture(logger.clone(), tx.clone(), running, is_muted) {
                 sink_error!(logger, "[AudioCaptureWorker] Error: {}", e);
                 let _ = tx.send(AudioCaptureEvent::Error(AudioCaptureError::Runtime(e.to_string())));
             }
@@ -43,6 +44,7 @@ fn run_audio_capture(
     logger: Arc<dyn LogSink>,
     tx: Sender<AudioCaptureEvent>,
     running: Arc<AtomicBool>,
+    is_muted: Arc<AtomicBool>,
 ) -> Result<()> {
     let host = cpal::default_host();
     let device = host.default_input_device().expect("Failed to get default input device");
@@ -61,6 +63,7 @@ fn run_audio_capture(
     let logger_clone = logger.clone();
     let tx_err = tx.clone();
     let tx_data = tx.clone();
+    let is_muted_clone = is_muted.clone();
     
     let err_fn = move |err: cpal::StreamError| {
         sink_warn!(logger_clone, "[AudioCaptureWorker] Stream error: {}", err);
@@ -71,7 +74,14 @@ fn run_audio_capture(
         &config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             let mut buf = buffer_clone.lock().expect("Failed to lock audio buffer");
-            buf.extend(data.iter().cloned());
+            
+            if is_muted_clone.load(Ordering::Relaxed) {
+                // If muted, fill with silence (zeros)
+                buf.extend(std::iter::repeat(0.0).take(data.len()));
+            } else {
+                // If not muted, copy captured data
+                buf.extend(data.iter().cloned());
+            }
             
             while buf.len() >= 160 {
                 let chunk: Vec<f32> = buf.drain(0..160).collect();

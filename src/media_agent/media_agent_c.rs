@@ -72,6 +72,7 @@ pub struct MediaAgent {
     audio_player_tx: Option<Sender<AudioPlayerCommand>>,
     
     running: Arc<AtomicBool>,
+    is_audio_muted: Arc<AtomicBool>,
     config: Arc<Config>,
 }
 
@@ -110,6 +111,7 @@ impl MediaAgent {
             ma_encoder_event_tx: None,
             audio_player_tx: None,
             running: Arc::new(AtomicBool::new(false)),
+            is_audio_muted: Arc::new(AtomicBool::new(false)),
             config,
         }
     }
@@ -168,7 +170,7 @@ impl MediaAgent {
 
         // --- Start Audio Capture Worker ---
         sink_debug!(logger.clone(), "[MediaAgent] Starting Audio Capture Worker...");
-        let (audio_frame_rx, audio_handle) = spawn_audio_capture_worker(logger.clone(), running.clone());
+        let (audio_frame_rx, audio_handle) = spawn_audio_capture_worker(logger.clone(), running.clone(), self.is_audio_muted.clone());
         self.audio_handle = audio_handle;
         sink_debug!(logger.clone(), "[MediaAgent] Audio Capture Worker Started");
 
@@ -287,6 +289,12 @@ impl MediaAgent {
     #[must_use]
     pub fn supported_media(&self) -> &[MediaSpec] {
         &self.supported_media
+    }
+
+    pub fn set_audio_mute(&self, mute: bool) {
+        self.is_audio_muted.store(mute, Ordering::SeqCst);
+        let status = if mute { "muted" } else { "unmuted" };
+        sink_info!(self.logger, "[MediaAgent] Microphone {}", status);
     }
 
     /// Enqueues an event into the MediaAgent's internal processing loop.

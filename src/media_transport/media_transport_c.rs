@@ -264,6 +264,10 @@ impl MediaTransport {
         self.media_transport_event_tx.clone()
     }
 
+    pub fn set_audio_mute(&self, mute: bool) {
+        self.media_agent.set_audio_mute(mute);
+    }
+
     /// Stops all threads and cleans up resources.
     ///
     /// This stops the `MediaAgent` first, then the transport event loops,
