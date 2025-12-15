@@ -4,8 +4,8 @@ use super::{
 };
 use crate::config::Config;
 use crate::connection_manager::config::{
-    DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_NET_TYPE,
-    DEFAULT_PORT, DEFAULT_PROTO,
+    DEFAULT_ADDR_TYPE, DEFAULT_CONN_ADDR, DEFAULT_FMT, DEFAULT_NET_TYPE, DEFAULT_PORT,
+    DEFAULT_PROTO,
 };
 use crate::connection_manager::ice_worker::IceWorker;
 use crate::ice::gathering_service;
@@ -22,8 +22,8 @@ use crate::sdp::origin::Origin as SDPOrigin;
 use crate::sdp::port_spec::PortSpec as SDPPortSpec;
 use crate::sdp::sdpc::Sdp;
 use crate::sdp::time_desc::TimeDesc as SDPTimeDesc;
-use crate::{sink_error, sink_info};
 use crate::tls_utils::get_local_fingerprint_sha256;
+use crate::{sink_error, sink_info};
 use std::collections::HashSet;
 use std::{
     io::ErrorKind,
@@ -106,7 +106,11 @@ impl ConnectionManager {
         match self.signaling {
             SignalingState::Stable => {
                 let offer = self.build_local_sdp();
-                sink_info!(&self.logger_handle, "Generated Local SDP Offer:\n{}", offer.encode());
+                sink_info!(
+                    &self.logger_handle,
+                    "Generated Local SDP Offer:\n{}",
+                    offer.encode()
+                );
                 self.local_description = Some(offer.clone());
                 self.signaling = SignalingState::HaveLocalOffer;
                 self.set_ice_role_from_signaling(true, false);
@@ -144,7 +148,11 @@ impl ConnectionManager {
                 self.signaling = SignalingState::HaveRemoteOffer;
 
                 let answer = self.build_local_sdp();
-                sink_info!(&self.logger_handle, "Generated Local SDP Answer:\n{}", answer.encode());
+                sink_info!(
+                    &self.logger_handle,
+                    "Generated Local SDP Answer:\n{}",
+                    answer.encode()
+                );
                 self.local_description = Some(answer.clone());
                 self.set_ice_role_from_signaling(false, remote_is_ice_lite);
 
@@ -292,11 +300,7 @@ impl ConnectionManager {
 
         // Fallback: if no codecs found (e.g. init), default to Video
         if media.is_empty() {
-            media.push(self.build_media_description(
-                MediaType::Video,
-                &[],
-                &candidates_attrs,
-            ));
+            media.push(self.build_media_description(MediaType::Video, &[], &candidates_attrs));
         }
 
         Sdp::new(

@@ -1,3 +1,8 @@
+//! Session management module.
+//!
+//! Handles the life cycle of a WebRTC session, including handshake, keep-alive,
+//! data transmission (RTP/SCTP), and tear-down.
+
 use crate::{sink_debug, sink_error, sink_info, srtp::SrtpSessionConfig};
 use rand::{RngCore, rngs::OsRng};
 use std::{
@@ -27,6 +32,7 @@ use crate::{
 };
 use openssl::ssl::SslStream;
 
+#[allow(unused_variables)]
 #[derive(Clone, Copy)]
 /// Configuration for a `Session`.
 pub struct SessionConfig {
@@ -89,40 +95,38 @@ pub struct Session {
     sctp_session: Arc<SctpSession>,
 }
 
+/// Arguments for initializing a new `Session`.
+pub struct SessionInitArgs {
+    /// The UDP socket to use for communication.
+    pub sock: Arc<UdpSocket>,
+    /// The address of the remote peer.
+    pub peer: std::net::SocketAddr,
+    /// A list of RTP codecs supported by the remote peer.
+    pub remote_codecs: Vec<RtpCodec>,
+    /// A sender for `EngineEvent`s to communicate with the engine.
+    pub event_tx: Sender<EngineEvent>,
+    /// A logger instance for logging session events.
+    pub logger: Arc<dyn LogSink>,
+    /// The session configuration.
+    pub cfg: SessionConfig,
+    /// Optional SRTP configuration.
+    pub srtp_cfg: Option<SrtpSessionConfig>,
+    /// The DTLS stream over UDP.
+    pub ssl_stream: SslStream<BufferedUdpChannel>,
+}
+
 impl Session {
     /// Creates a new `Session` instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `sock` - The UDP socket to use for communication.
-    /// * `peer` - The address of the remote peer.
-    /// * `remote_codecs` - A list of RTP codecs supported by the remote peer.
-    /// * `event_tx` - A sender for `EngineEvent`s to communicate with the engine.
-    /// * `logger` - A logger instance for logging session events.
-    /// * `cfg` - The session configuration.
-    ///
-    /// # Returns
-    ///
-    /// A new `Session` instance.
-    pub fn new(
-        sock: Arc<UdpSocket>,
-        peer: std::net::SocketAddr,
-        remote_codecs: Vec<RtpCodec>,
-        event_tx: Sender<EngineEvent>,
-        logger: Arc<dyn LogSink>,
-        cfg: SessionConfig,
-        srtp_cfg: Option<SrtpSessionConfig>,
-        ssl_stream: SslStream<BufferedUdpChannel>,
-    ) -> Self {
+    pub fn new(args: SessionInitArgs) -> Self {
         let (sctp_parent_tx, sctp_parent_rx) = mpsc::channel();
         let sctp_session = Arc::new(SctpSession::new(
-            logger.clone(),
+            args.logger.clone(),
             sctp_parent_tx,
-            ssl_stream,
+            args.ssl_stream,
         ));
 
         // Spawn thread to forward SCTP events to EngineEvent
-        let evt_tx_clone = event_tx.clone();
+        let evt_tx_clone = args.event_tx.clone();
         thread::spawn(move || {
             while let Ok(ev) = sctp_parent_rx.recv() {
                 let engine_ev = match ev {
@@ -156,9 +160,9 @@ impl Session {
         });
 
         Self {
-            sock,
-            peer,
-            remote_codecs,
+            sock: args.sock,
+            peer: args.peer,
+            remote_codecs: args.remote_codecs,
             run_flag: Arc::new(AtomicBool::new(false)),
             established: Arc::new(AtomicBool::new(false)),
             token_local: 0,
@@ -166,14 +170,14 @@ impl Session {
             we_initiated_close: Arc::new(AtomicBool::new(false)),
             peer_initiated_close: Arc::new(AtomicBool::new(false)),
             close_done: Arc::new(AtomicBool::new(false)),
-            tx_evt: event_tx,
-            logger,
-            cfg,
+            tx_evt: args.event_tx,
+            logger: args.logger,
+            cfg: args.cfg,
             rtp_session: Arc::new(Mutex::new(None)),
             rtp_media_tx: Arc::new(Mutex::new(None)),
             hs_got_syn: Arc::new(AtomicBool::new(false)),
             hs_sent_synack: Arc::new(AtomicBool::new(false)),
-            srtp_cfg,
+            srtp_cfg: args.srtp_cfg,
             sctp_session,
         }
     }
@@ -272,7 +276,9 @@ impl Session {
                 match rx_sock.recv(&mut buf) {
                     Ok(n) => {
                         let pkt = &buf[..n];
-                        if n == 0 { continue; }
+                        if n == 0 {
+                            continue;
+                        }
                         let first_byte = pkt[0];
 
                         if (20..=63).contains(&first_byte) {
@@ -426,7 +432,10 @@ impl Session {
         });
     }
 
+    /// Registers a new outbound track with the session.
+    ///
     /// # Errors
+    ///
     /// Returns an error if the rtp session is not running or the lock is poisoned.
     pub fn register_outbound_track(&self, codec: RtpCodec) -> Result<OutboundTrackHandle, String> {
         let guard = self
@@ -441,7 +450,10 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    /// Sends RTP chunks for a video frame.
+    ///
     /// # Errors
+    ///
     /// Returns an error if the rtp session is not running or the lock is poisoned.
     pub fn send_rtp_chunks_for_frame(
         &self,

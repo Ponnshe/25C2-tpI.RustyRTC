@@ -90,7 +90,7 @@ impl VideoFrame {
     pub fn synthetic_yuv420(width: u32, height: u32, tick: u8) -> Self {
         let w = width as usize;
         let h = height as usize;
-        
+
         // Calculate dimensions and strides (tightly packed)
         let y_stride = w;
         let uv_w = w.div_ceil(2);

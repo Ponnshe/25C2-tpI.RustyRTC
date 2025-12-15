@@ -23,8 +23,9 @@ use std::{
     collections::VecDeque,
     io,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        Arc, mpsc::TrySendError,
+        mpsc::TrySendError,
     },
     time::Instant,
 };
@@ -57,10 +58,20 @@ enum CallFlow {
 #[derive(Debug, Clone)]
 enum FileTransferState {
     Idle,
-    RemoteOffered { props: crate::sctp::events::SctpFileProperties },
-    Sending { id: u32, filename: String },
-    Receiving { id: u32, filename: String },
-    Finished { msg: String },
+    RemoteOffered {
+        props: crate::sctp::events::SctpFileProperties,
+    },
+    Sending {
+        id: u32,
+        filename: String,
+    },
+    Receiving {
+        id: u32,
+        filename: String,
+    },
+    Finished {
+        msg: String,
+    },
 }
 
 /// The main application struct for the RoomRTC client.
@@ -124,7 +135,7 @@ pub struct RtcApp {
     receiving_files: Arc<AtomicBool>,
     file_transfer_state: FileTransferState,
     file_path_input: String,
-    
+
     is_muted: bool,
 }
 
@@ -653,8 +664,8 @@ impl RtcApp {
                     self.push_ui_log(&s);
 
                     if s.contains("File download complete") {
-                         self.file_transfer_state = FileTransferState::Finished { msg: s.clone() };
-                         self.receiving_files.store(false, Ordering::SeqCst);
+                        self.file_transfer_state = FileTransferState::Finished { msg: s.clone() };
+                        self.receiving_files.store(false, Ordering::SeqCst);
                     }
                 }
                 Established => {
@@ -701,31 +712,38 @@ impl RtcApp {
                     self.current_bitrate = Some(bps);
                 }
                 EngineEvent::ReceivedFileOffer(props) => {
-                    self.status_line = format!("File offer: {} ({})", props.file_name, props.file_size);
+                    self.status_line =
+                        format!("File offer: {} ({})", props.file_name, props.file_size);
                     self.file_transfer_state = FileTransferState::RemoteOffered { props };
                     // If we were busy, we might want to auto-reject?
                     // But for now assume one file at a time.
                 }
                 EngineEvent::ReceivedFileAccept(id) => {
-                     self.status_line = format!("Peer accepted file (id: {id}). Sending...");
-                     // state is already Sending likely
+                    self.status_line = format!("Peer accepted file (id: {id}). Sending...");
+                    // state is already Sending likely
                 }
                 EngineEvent::ReceivedFileReject(id) => {
-                     self.status_line = format!("Peer rejected file (id: {id}).");
-                     self.file_transfer_state = FileTransferState::Idle;
-                     self.sending_files.store(false, Ordering::SeqCst);
+                    self.status_line = format!("Peer rejected file (id: {id}).");
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.sending_files.store(false, Ordering::SeqCst);
                 }
                 EngineEvent::ReceivedFileCancel(id) => {
-                     self.status_line = format!("File transfer cancelled (id: {id}).");
-                     self.file_transfer_state = FileTransferState::Idle;
-                     self.sending_files.store(false, Ordering::SeqCst);
-                     self.receiving_files.store(false, Ordering::SeqCst);
+                    self.status_line = format!("File transfer cancelled (id: {id}).");
+                    self.file_transfer_state = FileTransferState::Idle;
+                    self.sending_files.store(false, Ordering::SeqCst);
+                    self.receiving_files.store(false, Ordering::SeqCst);
                 }
                 EngineEvent::SendFileOffer(props) => {
                     // We initiated sending
-                    self.file_transfer_state = FileTransferState::Sending { id: props.transaction_id, filename: props.file_name };
+                    self.file_transfer_state = FileTransferState::Sending {
+                        id: props.transaction_id,
+                        filename: props.file_name,
+                    };
                 }
-                EngineEvent::SendFileChunk(..) | EngineEvent::SendFileAccept(..) | EngineEvent::SendFileReject(..) | EngineEvent::SendFileCancel(..) => {
+                EngineEvent::SendFileChunk(..)
+                | EngineEvent::SendFileAccept(..)
+                | EngineEvent::SendFileReject(..)
+                | EngineEvent::SendFileCancel(..) => {
                     // Internal events, ignore
                 }
                 EngineEvent::ReceivedFileChunk(..) => {
@@ -774,42 +792,51 @@ impl RtcApp {
                             println!("[CLI DEBUG] Send File button clicked!"); // Force output to console
                             let path = self.file_path_input.trim().to_string();
                             if !path.is_empty() {
-                                self.background_log(LogLevel::Info, format!("[UI] User clicked Send File for path: {}", path));
+                                self.background_log(
+                                    LogLevel::Info,
+                                    format!("[UI] User clicked Send File for path: {}", path),
+                                );
                                 // Use a random ID or sequential
                                 let id = rand::random::<u32>();
                                 self.engine.send_file(path, id);
                                 self.status_line = "Preparing file...".into();
                                 // We wait for SendFileOffer event to switch state
                             } else {
-                                self.background_log(LogLevel::Warn, "[UI] User clicked Send File but path is empty");
+                                self.background_log(
+                                    LogLevel::Warn,
+                                    "[UI] User clicked Send File but path is empty",
+                                );
                             }
                         }
                     });
                 } else if sending || receiving {
-                     ui.label("Transfer in progress...");
-                     if ui.button("Cancel").clicked() {
-                         // We don't have ID here easily if state is Idle but atomic is true?
-                         // Should not happen if we track state correctly.
-                         // But if we do:
-                         self.engine.cancel_file(0); // 0 as wildcard? Or store current ID.
-                         self.sending_files.store(false, Ordering::SeqCst);
-                         self.receiving_files.store(false, Ordering::SeqCst);
-                     }
+                    ui.label("Transfer in progress...");
+                    if ui.button("Cancel").clicked() {
+                        self.engine.cancel_file(0);
+                        self.sending_files.store(false, Ordering::SeqCst);
+                        self.receiving_files.store(false, Ordering::SeqCst);
+                    }
                 } else {
                     ui.label("Connect to a peer to transfer files.");
                 }
             }
-            FileTransferState::RemoteOffered { props: remote_props } => {
-                ui.label(format!("Incoming file: {} ({} bytes)", remote_props.file_name, remote_props.file_size));
+            FileTransferState::RemoteOffered {
+                props: remote_props,
+            } => {
+                ui.label(format!(
+                    "Incoming file: {} ({} bytes)",
+                    remote_props.file_name, remote_props.file_size
+                ));
                 let id_to_accept = remote_props.transaction_id;
                 let filename_to_receive = remote_props.file_name.clone();
 
                 ui.horizontal(|ui| {
                     if ui.button("Accept").clicked() {
-                        self.engine.accept_file(id_to_accept, filename_to_receive.clone());
+                        self.engine
+                            .accept_file(id_to_accept, filename_to_receive.clone());
                         self.file_transfer_state = FileTransferState::Receiving {
                             id: id_to_accept,
-                            filename: filename_to_receive
+                            filename: filename_to_receive,
                         };
                     }
                     if ui.button("Reject").clicked() {
@@ -1088,13 +1115,13 @@ impl RtcApp {
             {
                 self.teardown_call(Some("stopped".into()), true);
             }
-            
+
             let mute_label = if self.is_muted { "Unmute" } else { "Mute" };
             if ui.button(mute_label).clicked() {
                 self.is_muted = !self.is_muted;
                 self.engine.set_audio_mute(self.is_muted);
             }
-            
+
             ui.label(format!("State: {:?}", self.conn_state));
         });
     }
@@ -1247,8 +1274,6 @@ impl RtcApp {
         self.receiving_files.store(false, Ordering::SeqCst);
 
         // 3) Re-initialize the Engine for the next call.
-        // The Engine (and its internal MediaTransport) consumes one-time resources (channels)
-        // during startup. To support a second call, we must create a fresh instance.
         let logger_handle = Arc::new(self.logger.handle());
         self.engine = Engine::new(
             logger_handle,
@@ -1260,8 +1285,6 @@ impl RtcApp {
         // 4) Reset call-related state
         self.call_flow = CallFlow::Idle;
 
-        // Since we dropped the old engine, we will never receive its "Closed" event,
-        // so we must force the state to Idle to enable the "Start Connection" button.
         self.conn_state = ConnState::Idle;
 
         self.pending_remote_sdp = None;

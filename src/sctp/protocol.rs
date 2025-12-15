@@ -38,7 +38,11 @@ impl SctpProtocolMessage {
     pub fn serialize(&self) -> Result<Vec<u8>, std::io::Error> {
         let mut buf = Vec::new();
         match self {
-            SctpProtocolMessage::Offer { id, filename, file_size } => {
+            SctpProtocolMessage::Offer {
+                id,
+                filename,
+                file_size,
+            } => {
                 buf.write_u8(Self::TYPE_OFFER)?;
                 buf.write_u32::<BigEndian>(*id)?;
                 buf.write_u64::<BigEndian>(*file_size)?;
@@ -87,7 +91,11 @@ impl SctpProtocolMessage {
                 cursor.read_exact(&mut filename_bytes)?;
                 let filename = String::from_utf8(filename_bytes)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                Ok(SctpProtocolMessage::Offer { id, filename, file_size })
+                Ok(SctpProtocolMessage::Offer {
+                    id,
+                    filename,
+                    file_size,
+                })
             }
             Self::TYPE_ACCEPT => {
                 let id = cursor.read_u32::<BigEndian>()?;
@@ -115,8 +123,11 @@ impl SctpProtocolMessage {
             }
             unknown_type => {
                 println!("[CLI DEBUG] Unknown SCTP message type: {}", unknown_type);
-                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Unknown message type: {}", unknown_type)))
-            },
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unknown message type: {}", unknown_type),
+                ))
+            }
         }
     }
 }

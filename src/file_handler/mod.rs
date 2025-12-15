@@ -1,4 +1,5 @@
 pub mod events;
+#[allow(clippy::module_inception)]
 pub mod file_handler;
 pub mod reader_worker;
 pub mod writer_worker;

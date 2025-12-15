@@ -76,6 +76,16 @@ pub struct MediaAgent {
     config: Arc<Config>,
 }
 
+struct MediaAgentContext<'a> {
+    logger: &'a Arc<dyn LogSink>,
+    ma_decoder_event_tx: &'a Sender<DecoderEvent>,
+    ma_encoder_event_tx: &'a Sender<EncoderInstruction>,
+    audio_player_tx: &'a Sender<AudioPlayerCommand>,
+    media_transport_event_tx: &'a Sender<MediaTransportEvent>,
+    remote_frame: &'a Arc<Mutex<Option<VideoFrame>>>,
+    config: &'a Arc<Config>,
+}
+
 impl MediaAgent {
     /// Creates a new `MediaAgent` instance.
     ///
@@ -418,16 +428,16 @@ impl MediaAgent {
             // Poll for other events with a short timeout to keep the loop responsive
             match media_agent_event_rx.recv_timeout(Duration::from_millis(5)) {
                 Ok(event) => {
-                    Self::handle_media_agent_event(
-                        &logger,
-                        event,
-                        &ma_decoder_event_tx,
-                        &ma_encoder_event_tx,
-                        &audio_player_tx,
-                        &media_transport_event_tx,
-                        &remote_frame,
-                        &config,
-                    );
+                    let ctx = MediaAgentContext {
+                        logger: &logger,
+                        ma_decoder_event_tx: &ma_decoder_event_tx,
+                        ma_encoder_event_tx: &ma_encoder_event_tx,
+                        audio_player_tx: &audio_player_tx,
+                        media_transport_event_tx: &media_transport_event_tx,
+                        remote_frame: &remote_frame,
+                        config: &config,
+                    };
+                    Self::handle_media_agent_event(ctx, event);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -549,31 +559,22 @@ impl MediaAgent {
     }
 
     /// Routes system events to their appropriate destinations.
-    fn handle_media_agent_event(
-        logger: &Arc<dyn LogSink>,
-        event: MediaAgentEvent,
-        ma_decoder_event_tx: &Sender<DecoderEvent>,
-        ma_encoder_event_tx: &Sender<EncoderInstruction>,
-        audio_player_tx: &Sender<AudioPlayerCommand>,
-        media_transport_event_tx: &Sender<MediaTransportEvent>,
-        remote_frame: &Arc<Mutex<Option<VideoFrame>>>,
-        config: &Arc<Config>,
-    ) {
+    fn handle_media_agent_event(ctx: MediaAgentContext, event: MediaAgentEvent) {
         match event {
             MediaAgentEvent::DecodedVideoFrame(frame) => {
-                sink_trace!(logger, "[MediaAgent] Received DecodedVideoFrame");
+                sink_trace!(ctx.logger, "[MediaAgent] Received DecodedVideoFrame");
                 let frame = *frame;
                 let ts = frame.timestamp_ms;
 
                 // Update remote UI snapshot
-                if let Ok(mut guard) = remote_frame.lock() {
+                if let Ok(mut guard) = ctx.remote_frame.lock() {
                     *guard = Some(frame);
                 } else {
-                    sink_warn!(logger, "[MediaAgent] failed to update remote frame");
+                    sink_warn!(ctx.logger, "[MediaAgent] failed to update remote frame");
                     return;
                 }
                 sink_debug!(
-                    logger,
+                    ctx.logger,
                     "[MediaAgent] updated remote frame snapshot (ts={ts})"
                 );
             }
@@ -583,15 +584,16 @@ impl MediaAgent {
                 codec_spec,
             } => {
                 sink_trace!(
-                    logger,
+                    ctx.logger,
                     "[MediaAgent] encoded frame ready for transport (ts={timestamp_ms})"
                 );
                 sink_debug!(
-                    logger,
+                    ctx.logger,
                     "[MediaAgent] Received EncodedVideoFrame from Encoder. Now sending SendEncodedFrame to Media Transport"
                 );
                 // Forward to network layer
-                if media_transport_event_tx
+                if ctx
+                    .media_transport_event_tx
                     .send(MediaTransportEvent::SendEncodedFrame {
                         annexb_frame,
                         timestamp_ms,
@@ -600,34 +602,37 @@ impl MediaAgent {
                     .is_err()
                 {
                     sink_warn!(
-                        logger,
+                        ctx.logger,
                         "[MediaAgent] media transport channel dropped encoded frame"
                     );
                 }
             }
             MediaAgentEvent::AnnexBFrameReady { codec_spec, bytes } => {
                 sink_trace!(
-                    logger,
+                    ctx.logger,
                     "[MediaAgent] forwarding AnnexB payload to decoder ({:?})",
                     codec_spec
                 );
                 // Forward to decoder worker
-                if ma_decoder_event_tx
+                if ctx
+                    .ma_decoder_event_tx
                     .send(DecoderEvent::AnnexBFrameReady { codec_spec, bytes })
                     .is_err()
                 {
                     sink_warn!(
-                        logger,
+                        ctx.logger,
                         "[MediaAgent] decoder worker offline, dropping AnnexB frame"
                     );
                 }
             }
             MediaAgentEvent::UpdateBitrate(b) => {
-                let fps = config
+                let fps = ctx
+                    .config
                     .get("Media", "fps")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(TARGET_FPS);
-                let keyint = config
+                let keyint = ctx
+                    .config
                     .get("Media", "keyframe_interval")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(KEYINT);
@@ -637,8 +642,8 @@ impl MediaAgent {
                     bitrate: b,
                     keyint,
                 };
-                if ma_encoder_event_tx.send(instruction).is_ok() {
-                    sink_debug!(logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
+                if ctx.ma_encoder_event_tx.send(instruction).is_ok() {
+                    sink_debug!(ctx.logger, "Reconfigured H264 encoder: bitrate={}bps", b,);
                 }
             }
             MediaAgentEvent::EncodedAudioFrame {
@@ -646,15 +651,17 @@ impl MediaAgent {
                 codec_spec,
             } => {
                 sink_trace!(
-                    logger,
+                    ctx.logger,
                     "[MediaAgent] Decoding audio frame ({:?})",
                     codec_spec
                 );
                 let decoded_samples = audio_codec::decode(&payload);
-                if let Err(e) = audio_player_tx.send(AudioPlayerCommand::PlayFrame(decoded_samples))
+                if let Err(e) = ctx
+                    .audio_player_tx
+                    .send(AudioPlayerCommand::PlayFrame(decoded_samples))
                 {
                     sink_error!(
-                        logger,
+                        ctx.logger,
                         "[MediaAgent] Failed to send PlayFrame command: {}",
                         e
                     );

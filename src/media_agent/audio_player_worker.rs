@@ -11,10 +11,7 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::{
-    log::log_sink::LogSink,
-    sink_debug, sink_error, sink_info, sink_trace, sink_warn,
-};
+use crate::{log::log_sink::LogSink, sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 
 /// Commands sent from the MediaAgent to the AudioPlayerWorker.
 pub enum AudioPlayerCommand {
@@ -26,6 +23,7 @@ pub enum AudioPlayerCommand {
 /// 8kHz * 0.5s = 4000 samples.
 const MAX_BUFFER_SIZE: usize = 4000;
 
+#[allow(clippy::expect_used)]
 /// Spawns the audio player worker.
 ///
 /// This worker manages the audio output device and a jitter buffer.
@@ -58,7 +56,7 @@ pub fn spawn_audio_player_worker(
                     return;
                 }
             };
-            
+
             sink_info!(logger, "[AudioPlayer] Using output device: {}", device.name().unwrap_or_default());
 
             let config = cpal::StreamConfig {
@@ -70,7 +68,7 @@ pub fn spawn_audio_player_worker(
             // Shared buffer between the event loop (producer) and the audio callback (consumer).
             let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_BUFFER_SIZE * 2)));
             let buffer_cb = buffer.clone();
-            
+
             let logger_cb = logger.clone();
 
             let err_fn = move |err| {
@@ -113,18 +111,18 @@ pub fn spawn_audio_player_worker(
                     Ok(cmd) => match cmd {
                         AudioPlayerCommand::PlayFrame(samples) => {
                             let mut buf = buffer.lock().expect("audio buffer lock poisoned");
-                            
+
                             // Latency control: if buffer is too full, drop old data
                             let current_len = buf.len();
                             let incoming_len = samples.len();
-                            
+
                             if current_len + incoming_len > MAX_BUFFER_SIZE {
                                 let drop_count = (current_len + incoming_len) - MAX_BUFFER_SIZE;
                                 let to_drop = drop_count.min(current_len);
                                 sink_trace!(logger, "[AudioPlayer] Buffer full, dropping {} samples for latency catch-up", drop_count);
                                 buf.drain(0..to_drop);
                             }
-                            
+
                             buf.extend(samples);
                             sink_trace!(logger, "[AudioPlayer] Buffered {} samples. Total buffered: {}", incoming_len, buf.len());
                         }
@@ -138,7 +136,7 @@ pub fn spawn_audio_player_worker(
                     }
                 }
             }
-            
+
             sink_debug!(logger, "[AudioPlayer] Stopped");
         })
         .expect("spawn media-agent-audio-player")

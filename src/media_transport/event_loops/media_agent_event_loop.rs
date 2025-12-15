@@ -90,7 +90,7 @@ impl MediaAgentEventLoop {
         let handle = std::thread::spawn(move || {
             let mut last_received_local_ts_ms = None;
             let mut last_received_audio_ts_ms = None;
-            
+
             // Initialize random start timestamp for security/standard compliance.
             let mut video_rtp_ts = rand::random::<u32>();
             let mut audio_rtp_ts = rand::random::<u32>();
@@ -120,12 +120,12 @@ impl MediaAgentEventLoop {
                                 rtp_ts: video_rtp_ts, // Assign the monotonic RTP timestamp
                                 codec_spec,
                             };
-                            
+
                             sink_trace!(
                                 logger.clone(),
                                 "[MT Event Loop MA] Sending PacketizeOrder to Packetizer."
                             );
-                            
+
                             // Send to Packetizer and increment timestamp for the next frame
                             if packetizer_order_tx.send(order).is_ok() {
                                 video_rtp_ts = video_rtp_ts.wrapping_add(rtp_ts_step);
@@ -138,7 +138,7 @@ impl MediaAgentEventLoop {
                             timestamp_ms,
                             codec_spec,
                         } => {
-                             sink_debug!(
+                            sink_debug!(
                                 logger.clone(),
                                 "[MT Event Loop MA] Received SendEncodedAudioFrame."
                             );
@@ -152,13 +152,13 @@ impl MediaAgentEventLoop {
                                 rtp_ts: audio_rtp_ts,
                                 codec_spec,
                             };
-                            
+
                             if packetizer_order_tx.send(order).is_ok() {
                                 // 160 samples per frame for 20ms @ 8kHz
                                 audio_rtp_ts = audio_rtp_ts.wrapping_add(160);
                             }
                         }
-                        
+
                         // --- Raw Packet Forwarding ---
                         MediaTransportEvent::RtpIn(pkt) => {
                             sink_trace!(
@@ -172,7 +172,7 @@ impl MediaAgentEventLoop {
                         MediaTransportEvent::Established => {
                             sink_info!(logger, "[MediaAgent Event Loop (MT)] Received Established");
                             let mut sess_guard = session.lock().expect("session lock poisoned");
-                            
+
                             if let Some(sess) = sess_guard.as_mut() {
                                 // 1. Register outbound tracks (SSRCs) in the RTP session
                                 if let Err(e) = ensure_outbound_tracks(
@@ -273,16 +273,16 @@ fn ensure_outbound_tracks(
         let mut guard = outbound_tracks
             .lock()
             .expect("outbound_tracks lock poisoned");
-            
+
         if guard.contains_key(pt) {
             continue;
         }
-        
+
         // Register new track with the underlying RTP session
         let handle = session
             .register_outbound_track(codec.rtp_representation.clone())
             .map_err(|e| MediaTransportError::Send(e.to_string()))?;
-            
+
         sink_debug!(
             logger,
             "[ensure_outbound_tracks] Adding outbound track PT {} ({:?})",

@@ -8,7 +8,7 @@ use crate::sctp::transport::SctpTransport;
 use openssl::ssl::SslStream;
 use sctp_proto::{Association, AssociationHandle, Endpoint, EndpointConfig, ServerConfig};
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
@@ -134,8 +134,8 @@ impl SctpSession {
     }
 
     pub fn handle_sctp_packet(&self, packet: Vec<u8>) {
-        let _ = self
-            .tx
-            .send(SctpEvents::IncomingSctpPacket { sctp_packet: packet });
+        let _ = self.tx.send(SctpEvents::IncomingSctpPacket {
+            sctp_packet: packet,
+        });
     }
 }

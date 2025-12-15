@@ -37,6 +37,8 @@ pub mod rtcp;
 pub mod rtp;
 /// Manages RTP sessions for sending and receiving media.
 pub mod rtp_session;
+/// SCTP implementation for file transfer.
+pub mod sctp;
 /// SDP (Session Description Protocol) parsing and building.
 pub mod sdp;
 /// Signaling server implementation for coordinating WebRTC connections.
@@ -47,5 +49,3 @@ pub mod signaling_client;
 pub mod srtp;
 /// TLS (Transport Layer Security) utility functions.
 pub mod tls_utils;
-/// SCTP implementation for file transfer.
-pub mod sctp;

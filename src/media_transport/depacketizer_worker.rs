@@ -67,7 +67,7 @@ pub fn spawn_depacketizer_worker(
                     pkt.ssrc,
                     pkt.seq
                 );
-                
+
                 // 1. Verify if this Payload Type is currently negotiated/allowed.
                 let ok_pt = allowed_pts
                     .read()

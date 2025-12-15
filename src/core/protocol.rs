@@ -60,9 +60,7 @@ pub fn parse_app_msg(bytes: &[u8]) -> Option<AppMsg> {
     let s = String::from_utf8_lossy(bytes);
     let s = s.trim();
     let mut it = s.split_whitespace();
-    let Some(kind) = it.next() else {
-        return None;
-    };
+    let kind = it.next()?;
 
     match kind {
         "SYN" => {

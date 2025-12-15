@@ -1,9 +1,14 @@
+//! Core WebRTC Engine module.
+//!
+//! The [`Engine`] struct is the main entry point for managing a WebRTC session,
+//! orchestrating signaling, ICE, DTLS, and media transport.
+
 use std::{
     net::SocketAddr,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
-        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -12,17 +17,17 @@ use std::{
 use crate::{
     config::Config,
     congestion_controller::CongestionController,
-    connection_manager::{connection_error::ConnectionError, ConnectionManager, OutboundSdp},
+    connection_manager::{ConnectionManager, OutboundSdp, connection_error::ConnectionError},
     core::{
         events::EngineEvent,
-        session::{Session, SessionConfig},
+        session::{Session, SessionConfig, SessionInitArgs},
     },
     dtls::{self, DtlsRole},
-    file_handler::{events::FileHandlerEvents, FileHandler},
+    file_handler::{FileHandler, events::FileHandlerEvents},
     ice::type_ice::ice_agent::IceRole,
     log::log_sink::LogSink,
     media_agent::video_frame::VideoFrame,
-    media_transport::{media_transport_event::MediaTransportEvent, MediaTransport},
+    media_transport::{MediaTransport, media_transport_event::MediaTransportEvent},
     sctp::events::SctpEvents,
     sink_debug, sink_error, sink_info, sink_trace,
 };
@@ -172,6 +177,10 @@ impl Engine {
     /// # Errors
     ///
     /// Returns a `String` error if no nominated ICE pair is available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal session lock is poisoned.
     #[allow(clippy::expect_used)]
     pub fn start(&mut self) -> Result<(), String> {
         let mut guard = self.session.lock().expect("session lock poisoned");
@@ -184,6 +193,10 @@ impl Engine {
     }
 
     /// Stops the WebRTC session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal session lock is poisoned.
     #[allow(clippy::expect_used)]
     pub fn stop(&mut self) {
         if let Some(sess) = self.session.lock().expect("session lock poisoned").as_mut() {
@@ -193,7 +206,6 @@ impl Engine {
         // Stop file handler
         if let Ok(mut fh_guard) = self.file_handler.lock() {
             if let Some(fh) = fh_guard.as_ref() {
-                // If FileHandler had Arc<AtomicBool> we could update them, but they are in Engine.
                 // Reset flags
                 self.sending_files.store(false, Ordering::SeqCst);
                 self.receiving_files.store(false, Ordering::SeqCst);
@@ -204,12 +216,14 @@ impl Engine {
         }
     }
     /// Closes the WebRTC session and resets the connection manager.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal session lock is poisoned.
     #[allow(clippy::expect_used)]
     pub fn close_session(&mut self) {
         let mut guard = self.session.lock().expect("session lock poisoned");
         *guard = None;
-        // This ensures cm.ice_agent.get_data_channel_socket() returns Err/None
-        // in the next poll() loop, preventing the zombie DTLS handshake.
         self.cm.reset();
         sink_debug!(
             self.logger_sink,
@@ -222,60 +236,81 @@ impl Engine {
     }
 
     pub fn send_file(&self, path: String, id: u32) {
-        println!("[CLI DEBUG] Engine::send_file called path={} id={}", path, id);
-        sink_info!(self.logger_sink, "[Engine] send_file called for path: {} (id: {})", path, id);
+        println!(
+            "[CLI DEBUG] Engine::send_file called path={} id={}",
+            path, id
+        );
+        sink_info!(
+            self.logger_sink,
+            "[Engine] send_file called for path: {} (id: {})",
+            path,
+            id
+        );
         if let Ok(fh_guard) = self.file_handler.lock() {
             if let Some(fh) = fh_guard.as_ref() {
-                sink_info!(self.logger_sink, "[Engine] FileHandler found, sending ReadFile event");
+                sink_info!(
+                    self.logger_sink,
+                    "[Engine] FileHandler found, sending ReadFile event"
+                );
                 self.sending_files.store(true, Ordering::SeqCst);
                 if let Err(e) = fh.send(FileHandlerEvents::ReadFile { path, id }) {
-                    sink_error!(self.logger_sink, "[Engine] Failed to send ReadFile event to FileHandler: {}", e);
+                    sink_error!(
+                        self.logger_sink,
+                        "[Engine] Failed to send ReadFile event to FileHandler: {}",
+                        e
+                    );
                 }
             } else {
-                sink_error!(self.logger_sink, "[Engine] FileHandler is None in send_file!");
+                sink_error!(
+                    self.logger_sink,
+                    "[Engine] FileHandler is None in send_file!"
+                );
             }
         } else {
-            sink_error!(self.logger_sink, "[Engine] Failed to lock FileHandler in send_file");
+            sink_error!(
+                self.logger_sink,
+                "[Engine] Failed to lock FileHandler in send_file"
+            );
         }
     }
 
     pub fn accept_file(&self, id: u32, filename: String) {
-        if let Ok(sess_guard) = self.session.lock() {
-            if let Some(sess) = sess_guard.as_ref() {
-                // We are receiving a file
-                self.receiving_files.store(true, Ordering::SeqCst);
-                sess.send_sctp_event(SctpEvents::SendAccept { id });
-            }
+        if let Ok(sess_guard) = self.session.lock()
+            && let Some(sess) = sess_guard.as_ref()
+        {
+            // We are receiving a file
+            self.receiving_files.store(true, Ordering::SeqCst);
+            sess.send_sctp_event(SctpEvents::SendAccept { id });
         }
         // Notify local FileHandler to start writing
-        if let Ok(fh_guard) = self.file_handler.lock() {
-            if let Some(fh) = fh_guard.as_ref() {
-                let _ = fh.send(FileHandlerEvents::WriteFile { filename, id });
-            }
+        if let Ok(fh_guard) = self.file_handler.lock()
+            && let Some(fh) = fh_guard.as_ref()
+        {
+            let _ = fh.send(FileHandlerEvents::WriteFile { filename, id });
         }
     }
 
     pub fn reject_file(&self, id: u32) {
-        if let Ok(sess_guard) = self.session.lock() {
-            if let Some(sess) = sess_guard.as_ref() {
-                sess.send_sctp_event(SctpEvents::SendReject { id });
-            }
+        if let Ok(sess_guard) = self.session.lock()
+            && let Some(sess) = sess_guard.as_ref()
+        {
+            sess.send_sctp_event(SctpEvents::SendReject { id });
         }
     }
 
     pub fn cancel_file(&self, id: u32) {
         // Cancel can be local sender cancelling, or local receiver cancelling
         // Notify Session to send Cancel msg
-        if let Ok(sess_guard) = self.session.lock() {
-            if let Some(sess) = sess_guard.as_ref() {
-                sess.send_sctp_event(SctpEvents::SendCancel { id });
-            }
+        if let Ok(sess_guard) = self.session.lock()
+            && let Some(sess) = sess_guard.as_ref()
+        {
+            sess.send_sctp_event(SctpEvents::SendCancel { id });
         }
         // Also notify local FileHandler to stop
-        if let Ok(fh_guard) = self.file_handler.lock() {
-            if let Some(fh) = fh_guard.as_ref() {
-                let _ = fh.send(FileHandlerEvents::Cancel(id));
-            }
+        if let Ok(fh_guard) = self.file_handler.lock()
+            && let Some(fh) = fh_guard.as_ref()
+        {
+            let _ = fh.send(FileHandlerEvents::Cancel(id));
         }
     }
 
@@ -285,6 +320,10 @@ impl Engine {
 
     /// Polls for `EngineEvent`s and processes them.
     /// This method is called repeatedly to drive the engine's state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal session lock or file handler lock is poisoned.
     #[allow(clippy::expect_used)]
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         // keep ICE reactive
@@ -310,8 +349,6 @@ impl Engine {
                     remote: peer,
                 });
 
-                // Matar al worker de ICE antes de DTLS ---
-                // Esto asegura que nadie más esté leyendo del socket.
                 self.cm.stop_ice_worker();
 
                 // --- IceRole -> DtlsRole ---
@@ -347,51 +384,45 @@ impl Engine {
                         let sending_files_clone = self.sending_files.clone();
                         let fh_weak = Arc::downgrade(&fh);
                         // Interval from config or default
-                        let drain_interval_ms = self.config.get("file_handler", "drain_interval_ms").and_then(|s| s.parse().ok()).unwrap_or(100);
+                        let drain_interval_ms = self
+                            .config
+                            .get("file_handler", "drain_interval_ms")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(100);
                         let drain_interval = Duration::from_millis(drain_interval_ms);
 
-                        // We need a way to stop this thread when session ends?
-                        // For now it runs until fh sends error on send?
-                        // Or we can rely on Weak ref if we had one.
-                        // Or just let it run. If file_handler shuts down, send returns error, loop can break?
-                        // But sending_files is false usually.
                         thread::spawn(move || {
                             loop {
                                 thread::sleep(drain_interval);
-                                // If sending_files is true
                                 if sending_files_clone.load(Ordering::SeqCst) {
                                     if let Some(fh) = fh_weak.upgrade() {
-                                        if let Err(_) = fh.send(FileHandlerEvents::DrainChunks) {
-                                            break; // FileHandler stopped
+                                        if fh.send(FileHandlerEvents::DrainChunks).is_err() {
+                                            break;
                                         }
                                     } else {
-                                        break; // FileHandler dropped
-                                    }
-                                } else {
-                                    // Check if we are orphaned
-                                    if fh_weak.strong_count() == 0 {
                                         break;
                                     }
+                                } else if fh_weak.strong_count() == 0 {
+                                    break;
                                 }
                             }
                         });
 
-
-                        let sess = Session::new(
-                            Arc::clone(&sock),
+                        let sess = Session::new(SessionInitArgs {
+                            sock: Arc::clone(&sock),
                             peer,
-                            self.cm.remote_codecs().clone(),
-                            self.event_tx.clone(),
-                            self.logger_sink.clone(),
-                            SessionConfig {
+                            remote_codecs: self.cm.remote_codecs().clone(),
+                            event_tx: self.event_tx.clone(),
+                            logger: self.logger_sink.clone(),
+                            cfg: SessionConfig {
                                 handshake_timeout: Duration::from_secs(10),
                                 resend_every: Duration::from_millis(250),
                                 close_timeout: Duration::from_secs(5),
                                 close_resend_every: Duration::from_millis(250),
                             },
-                            Some(srtp_cfg),
+                            srtp_cfg: Some(srtp_cfg),
                             ssl_stream,
-                        );
+                        });
                         *self.session.lock().expect("session lock poisoned") = Some(sess);
                     }
                     Err(e) => {
@@ -425,76 +456,63 @@ impl Engine {
                         if let Some(media_transport_tx) =
                             self.media_transport.media_transport_event_tx()
                         {
-                            let _ =
-                                media_transport_tx.send(MediaTransportEvent::UpdateBitrate(br));
+                            let _ = media_transport_tx.send(MediaTransportEvent::UpdateBitrate(br));
                         }
                         processed += 1;
                         out.push(EngineEvent::UpdateBitrate(br));
                     }
 
                     EngineEvent::SendFileOffer(props) => {
-                        if let Ok(sess_guard) = self.session.lock() {
-                            if let Some(sess) = sess_guard.as_ref() {
-                                sess.send_sctp_event(SctpEvents::SendOffer { file_properties: props });
-                            }
+                        if let Ok(sess_guard) = self.session.lock()
+                            && let Some(sess) = sess_guard.as_ref()
+                        {
+                            sess.send_sctp_event(SctpEvents::SendOffer {
+                                file_properties: props,
+                            });
                         }
                     }
                     EngineEvent::SendFileChunk(id, payload) => {
-                        if let Ok(sess_guard) = self.session.lock() {
-                            if let Some(sess) = sess_guard.as_ref() {
-                                sess.send_sctp_event(SctpEvents::SendChunk { file_id: id, payload });
-                            }
+                        if let Ok(sess_guard) = self.session.lock()
+                            && let Some(sess) = sess_guard.as_ref()
+                        {
+                            sess.send_sctp_event(SctpEvents::SendChunk {
+                                file_id: id,
+                                payload,
+                            });
                         }
                     }
                     EngineEvent::SendFileEnd(id) => {
-                        if let Ok(sess_guard) = self.session.lock() {
-                            if let Some(sess) = sess_guard.as_ref() {
-                                sess.send_sctp_event(SctpEvents::SendEndFile { id });
-                            }
+                        if let Ok(sess_guard) = self.session.lock()
+                            && let Some(sess) = sess_guard.as_ref()
+                        {
+                            sess.send_sctp_event(SctpEvents::SendEndFile { id });
                         }
                         // Reset sending flag if no other files? For now simple reset.
                         self.sending_files.store(false, Ordering::SeqCst);
                     }
                     EngineEvent::ReceivedFileChunk(id, _seq, payload) => {
                         // Don't expose to UI, send to FileHandler
-                        if let Ok(fh_guard) = self.file_handler.lock() {
-                            if let Some(fh) = fh_guard.as_ref() {
-                                let _ = fh.send(FileHandlerEvents::WriteChunk { id, payload });
-                            }
+                        if let Ok(fh_guard) = self.file_handler.lock()
+                            && let Some(fh) = fh_guard.as_ref()
+                        {
+                            let _ = fh.send(FileHandlerEvents::WriteChunk { id, payload });
                         }
                     }
                     EngineEvent::ReceivedFileEnd(id) => {
-                         // Explicit end of file from peer
-                         // We could notify FileHandler to force close if not already?
-                         // Or just treat as success.
-                         // But FileHandler already detects empty chunk?
-                         // Let's rely on FileHandler's own logic for now, but update flags.
-                         self.receiving_files.store(false, Ordering::SeqCst);
-                         // Optional: Pass to FileHandlerEvents::RemoteEnd?
-                         out.push(EngineEvent::ReceivedFileEnd(id));
-                         processed += 1;
+                        self.receiving_files.store(false, Ordering::SeqCst);
+                        out.push(EngineEvent::ReceivedFileEnd(id));
+                        processed += 1;
                     }
                     EngineEvent::ReceivedFileOffer(props) => {
-                         // Prepare file writer?
-                         // "Deberá tener soporte para eventos... ReceivedOffer"
-                         // We probably want to ask UI first.
-                         // So we push to UI.
-                         // But we also need to initialize writer when accepted?
-                         // RtcApp will call accept_file which sends Accept.
-                         // And probably triggers FileHandler::WriteFile?
-                         // Yes, RtcApp should call engine.init_download(...) ?
-                         // Or Engine handles it?
-                         // "Engine deberá tener un FileHandler... Deberá tener soporte para eventos... ReceivedOffer"
-                         // I'll forward to UI. UI will call `engine.start_download`?
-                         out.push(EngineEvent::ReceivedFileOffer(props));
-                         processed += 1;
+                        out.push(EngineEvent::ReceivedFileOffer(props));
+                        processed += 1;
                     }
                     EngineEvent::ReceivedFileAccept(id) => {
                         // Peer accepted our file. Notify FileHandler to start sending.
-                        if let Ok(fh_guard) = self.file_handler.lock() {
-                            if let Some(fh) = fh_guard.as_ref() {
-                                let _ = fh.send(FileHandlerEvents::RemoteAccepted(id));
-                            }
+                        if let Ok(fh_guard) = self.file_handler.lock()
+                            && let Some(fh) = fh_guard.as_ref()
+                        {
+                            let _ = fh.send(FileHandlerEvents::RemoteAccepted(id));
                         }
                         out.push(EngineEvent::ReceivedFileAccept(id));
                         processed += 1;

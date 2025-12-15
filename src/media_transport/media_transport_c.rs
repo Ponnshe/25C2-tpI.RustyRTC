@@ -179,7 +179,6 @@ impl MediaTransport {
 
         let payload_map_for_worker = payload_map.clone();
 
-
         // 3. Start Depacketizer (Ingress)
         let (depacketizer_event_tx, depacketizer_event_rx) = mpsc::channel();
         self.depacketizer_handle = Some(spawn_depacketizer_worker(

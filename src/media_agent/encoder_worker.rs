@@ -63,7 +63,7 @@ pub fn spawn_encoder_worker(
     config: Arc<Config>,
 ) -> Result<JoinHandle<()>, Error> {
     sink_debug!(logger.clone(), "[Encoder] Starting...");
-    
+
     thread::Builder::new()
         .name("media-agent-encoder".into())
         .spawn(move || {
@@ -94,7 +94,7 @@ pub fn spawn_encoder_worker(
                             if force_keyframe {
                                 h264_encoder.request_keyframe();
                             }
-                            
+
                             match h264_encoder.encode_frame_to_h264(&frame) {
                                 Ok(annexb_frame) => {
                                     sink_debug!(

@@ -1,5 +1,5 @@
-use std::time::{Duration, Instant};
 use crate::sctp::events::SctpFileProperties;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct SctpStream {

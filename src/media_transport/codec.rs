@@ -9,17 +9,17 @@ use crate::{media_agent::spec::CodecSpec, rtp_session::rtp_codec::RtpCodec};
 pub struct CodecDescriptor {
     /// The human-readable name of the codec (e.g., "H264", "OPUS").
     pub codec_name: &'static str,
-    
+
     /// The RTP-specific configuration (Payload Type, Clock Rate, etc.).
     pub rtp_representation: RtpCodec,
-    
+
     /// The SDP `fmtp` (Format Parameter) line.
     ///
     /// This string contains specific configuration parameters negotiated via SDP.
     /// For H.264, this includes the Profile-Level-ID and Packetization Mode.
     /// Example: `"profile-level-id=42e01f;packetization-mode=1"`
     pub sdp_fmtp: Option<String>,
-    
+
     /// The internal enum identifier used by the `MediaAgent` logic.
     pub spec: CodecSpec,
 }
