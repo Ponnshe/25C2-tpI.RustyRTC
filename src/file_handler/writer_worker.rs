@@ -27,7 +27,7 @@ impl WriterWorker {
         log_sink: Arc<dyn LogSink>,
     ) -> Result<Self, String> {
         let file = File::create(&path).map_err(|e| e.to_string())?;
-        let writer = BufWriter::new(file);
+        let writer = BufWriter::with_capacity(10 * 1024 * 1024, file);
         Ok(Self {
             id,
             writer,
@@ -89,17 +89,6 @@ impl WriterWorker {
                         self.id,
                         payload.len()
                     );
-                    if let Err(e) = self.writer.flush() {
-                        sink_error!(
-                            self.log_sink,
-                            "[WRITER_WORKER] Worker {} flush error: {}",
-                            self.id,
-                            e
-                        );
-                        let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
-                        self.cleanup();
-                        break;
-                    }
                 }
                 Ok(WriterCommands::Cancel) => {
                     sink_info!(
