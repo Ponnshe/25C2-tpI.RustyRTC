@@ -69,7 +69,13 @@ impl SctpReceiver {
 
             match event {
                 Ok(SctpEvents::ReadableSctpPacket { sctp_packet }) => {
+                    let start = Instant::now();
                     self.handle_packet(sctp_packet);
+                    sink_trace!(
+                        self.log_sink,
+                        "[SCTP_RECEIVER] Processed ReadableSctpPacket in {:?}",
+                        start.elapsed()
+                    );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     // Handle SCTP timeout if needed
@@ -120,6 +126,7 @@ impl SctpReceiver {
 
     #[allow(clippy::expect_used)]
     fn handle_packet(&self, packet: Vec<u8>) {
+        let start = Instant::now();
         // println!("[CLI DEBUG] SctpReceiver::handle_packet len={}", packet.len());
         sink_trace!(
             self.log_sink,
@@ -175,10 +182,16 @@ impl SctpReceiver {
                 // Packet consumed, no event.
             }
         }
+        sink_trace!(
+            self.log_sink,
+            "[SCTP_RECEIVER] handle_packet took {:?}",
+            start.elapsed()
+        );
     }
 
     #[allow(clippy::expect_used)]
     fn poll_association(&self) {
+        let start = Instant::now();
         let mut assoc_guard = self.association.lock().expect("association lock poisoned");
         if let Some(assoc) = assoc_guard.as_mut() {
             let now = Instant::now();
@@ -255,6 +268,14 @@ impl SctpReceiver {
                     _ => {}
                 }
             }
+        }
+        let elapsed = start.elapsed();
+        if elapsed.as_micros() > 100 {
+             sink_trace!(
+                self.log_sink,
+                "[SCTP_RECEIVER] poll_association took {:?}",
+                elapsed
+            );
         }
     }
 

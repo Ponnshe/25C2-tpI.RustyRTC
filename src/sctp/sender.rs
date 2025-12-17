@@ -154,6 +154,7 @@ impl SctpSender {
                     self.send_message(SctpProtocolMessage::Cancel { id }, &mut pending_messages);
                 }
                 Ok(SctpEvents::SendChunk { file_id, payload }) => {
+                    let start_chunk = Instant::now();
                     let seq = {
                         let mut streams = self.streams.write().expect("streams lock poisoned");
                         if let Some(stream) = streams.get_mut(&file_id) {
@@ -186,6 +187,11 @@ impl SctpSender {
                             self.log_sink,
                             "[SCTP_SENDER] File bytes sent to SCTP: {}",
                             payload_len
+                        );
+                        sink_trace!(
+                            self.log_sink,
+                            "[SCTP_SENDER] Processed SendChunk in {:?}",
+                            start_chunk.elapsed()
                         );
                     } else {
                         sink_warn!(
@@ -241,6 +247,7 @@ impl SctpSender {
                     }
 
                     // Poll transmit
+                    let start_poll = Instant::now();
                     while let Some(transmit) = assoc.poll_transmit(now) {
                         if let Payload::RawEncode(bytes_vec) = transmit.payload {
                             let mut payload = Vec::new();
@@ -254,6 +261,14 @@ impl SctpSender {
                             );
                             let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                         }
+                    }
+                    let elapsed_poll = start_poll.elapsed();
+                    if elapsed_poll.as_micros() > 100 {
+                         sink_trace!(
+                            self.log_sink,
+                            "[SCTP_SENDER] poll_transmit took {:?}",
+                            elapsed_poll
+                        );
                     }
                 }
             }
@@ -292,6 +307,7 @@ impl SctpSender {
 
     #[allow(clippy::expect_used)]
     fn send_message(&self, msg: SctpProtocolMessage, pending: &mut Vec<SctpProtocolMessage>) {
+        let start = Instant::now();
         let payload = match msg.serialize() {
             Ok(p) => p,
             Err(e) => {
@@ -366,5 +382,10 @@ impl SctpSender {
             );
             pending.push(msg);
         }
+        sink_trace!(
+            self.log_sink,
+            "[SCTP_SENDER] send_message took {:?}",
+            start.elapsed()
+        );
     }
 }

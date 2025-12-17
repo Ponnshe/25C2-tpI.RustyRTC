@@ -56,9 +56,15 @@ impl SctpTransport {
                     }
                     SctpEvents::TransmitSctpPacket { payload } => {
                         // Encrypt and send
+                        let start_write = std::time::Instant::now();
                         if let Err(e) = self.ssl_stream.write_all(&payload) {
                             sink_error!(self.log_sink, "[SctpTransport] DTLS write error: {}", e);
                         }
+                        sink_trace!(
+                            self.log_sink,
+                            "[SCTP_TRANSPORT] DTLS write time: {:?}",
+                            start_write.elapsed()
+                        );
                     }
                     _ => {}
                 }
