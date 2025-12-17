@@ -34,58 +34,67 @@ impl SctpTransport {
 
     pub fn run(mut self) {
         sink_debug!(self.log_sink, "[SctpTransport] Started");
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65535];
 
-        while let Ok(event) = self.rx.recv() {
-            match event {
-                SctpEvents::IncomingSctpPacket { sctp_packet } => {
-                    // Packet from UDP socket (via Session)
-                    sink_trace!(
-                        self.log_sink,
-                        "[SctpTransport] Received IncomingSctpPacket len={}",
-                        sctp_packet.len()
-                    );
-                    // Push to internal queue
-                    self.ssl_stream.get_mut().push_incoming(sctp_packet);
+        while let Ok(first_event) = self.rx.recv() {
+            let mut batch = Vec::with_capacity(16);
+            batch.push(first_event);
+            batch.extend(self.rx.try_iter());
 
-                    // Decrypt
-                    loop {
-                        match self.ssl_stream.read(&mut buf) {
-                            Ok(n) => {
-                                if n > 0 {
-                                    sink_trace!(
-                                        self.log_sink,
-                                        "[SctpTransport] Decrypted {} bytes",
-                                        n
-                                    );
-                                    let decrypted = buf[..n].to_vec();
-                                    // Send to Router
-                                    let _ = self.router_tx.send(SctpEvents::ReadableSctpPacket {
-                                        sctp_packet: decrypted,
-                                    });
-                                }
-                            }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                break;
-                            }
-                            Err(e) => {
-                                sink_error!(
-                                    self.log_sink,
-                                    "[SctpTransport] DTLS read error: {}",
-                                    e
-                                );
-                                // Potentially fatal?
-                            }
+            // Bulk Injection & Processing
+            for event in batch {
+                match event {
+                    SctpEvents::IncomingSctpPacket { sctp_packet } => {
+                        // Packet from UDP socket (via Session)
+                        sink_trace!(
+                            self.log_sink,
+                            "[SctpTransport] Received IncomingSctpPacket len={}",
+                            sctp_packet.len()
+                        );
+                        // Push to internal queue (Bulk Injection)
+                        self.ssl_stream.get_mut().push_incoming(sctp_packet);
+                    }
+                    SctpEvents::TransmitSctpPacket { payload } => {
+                        // Encrypt and send
+                        if let Err(e) = self.ssl_stream.write_all(&payload) {
+                            sink_error!(self.log_sink, "[SctpTransport] DTLS write error: {}", e);
                         }
                     }
+                    _ => {}
                 }
-                SctpEvents::TransmitSctpPacket { payload } => {
-                    // Encrypt and send
-                    if let Err(e) = self.ssl_stream.write_all(&payload) {
-                        sink_error!(self.log_sink, "[SctpTransport] DTLS write error: {}", e);
+            }
+
+            // Optimized Read Loop
+            loop {
+                match self.ssl_stream.read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            sink_trace!(
+                                self.log_sink,
+                                "[SctpTransport] Decrypted {} bytes",
+                                n
+                            );
+                            let decrypted = buf[..n].to_vec();
+                            // Send to Router
+                            let _ = self.router_tx.send(SctpEvents::ReadableSctpPacket {
+                                sctp_packet: decrypted,
+                            });
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        break;
+                    }
+                    Err(e) => {
+                        sink_error!(
+                            self.log_sink,
+                            "[SctpTransport] DTLS read error: {}",
+                            e
+                        );
+                        break;
                     }
                 }
-                _ => {}
             }
         }
         sink_debug!(self.log_sink, "[SctpTransport] Stopped");
