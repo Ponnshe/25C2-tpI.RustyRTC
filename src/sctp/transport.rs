@@ -66,12 +66,15 @@ impl SctpTransport {
 
             // Optimized Read Loop
             loop {
+                let start = std::time::Instant::now();
                 match self.ssl_stream.read(&mut buf) {
                     Ok(n) => {
+                        let elapsed = start.elapsed();
                         if n > 0 {
                             sink_trace!(
                                 self.log_sink,
-                                "[SctpTransport] Decrypted {} bytes",
+                                "[SCTP_TRANSPORT] DTLS decryption time: {:?} (decrypted {} bytes)",
+                                elapsed,
                                 n
                             );
                             let decrypted = buf[..n].to_vec();
