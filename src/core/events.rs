@@ -47,6 +47,9 @@ pub enum EngineEvent {
     ReceivedFileCancel(u32),
     ReceivedFileChunk(u32, u32, Vec<u8>),
     ReceivedFileEnd(u32),
+    
+    UploadProgress { id: u32, current: usize, total: usize },
+    DownloadProgress { id: u32, current: usize },
 
     /// Updates the mute state of the audio capture (true = muted, false = active).
     ToggleAudio(bool),

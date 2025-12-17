@@ -40,6 +40,7 @@ impl WriterWorker {
 
     pub fn run(mut self) {
         sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} started", self.id);
+        let mut total_written = 0;
         loop {
             match self.rx_cmd.recv_timeout(TIMEOUT_DURATION) {
                 Ok(WriterCommands::WriteChunk(payload)) => {
@@ -83,12 +84,18 @@ impl WriterWorker {
                         self.cleanup();
                         break;
                     }
+                    total_written += payload.len();
                     sink_debug!(
                         self.log_sink,
-                        "[WRITER_WORKER] Worker {} wrote {} bytes",
+                        "[WRITER_WORKER] Worker {} wrote {} bytes (Total: {})",
                         self.id,
-                        payload.len()
+                        payload.len(),
+                        total_written
                     );
+                    let _ = self.tx_listener.send(FileHandlerEvents::DownloadProgress {
+                        id: self.id,
+                        current: total_written,
+                    });
                 }
                 Ok(WriterCommands::Cancel) => {
                     sink_info!(

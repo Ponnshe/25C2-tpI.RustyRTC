@@ -1,7 +1,7 @@
 use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_info, sink_trace, sink_warn};
+use crate::{sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 use bytes::Bytes;
 use sctp_proto::{
     Association, AssociationHandle, DatagramEvent, Endpoint, Event, Payload, StreamEvent,
@@ -124,6 +124,11 @@ impl SctpReceiver {
         sink_trace!(
             self.log_sink,
             "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}",
+            packet.len()
+        );
+        sink_debug!(
+            self.log_sink,
+            "[SCTP_RECEIVER] SCTP bytes received via DTLS: {}",
             packet.len()
         );
         let mut endpoint = self.endpoint.lock().expect("Failed to lock endpoint");
@@ -314,6 +319,11 @@ impl SctpReceiver {
                             "[SCTP_RECEIVER] Received Chunk for file_id: {} seq: {}",
                             id,
                             seq
+                        );
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_RECEIVER] File bytes received: {}",
+                            payload.len()
                         );
                         {
                             let mut streams = self.streams.write().expect("streams lock poisoned");

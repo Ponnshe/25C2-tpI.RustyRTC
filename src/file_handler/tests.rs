@@ -43,6 +43,19 @@ mod tests {
             .send(ReaderCommands::GetChunk)
             .expect("failed to send command");
 
+        // Expect UploadProgress
+        match rx_listener
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recv timeout")
+        {
+            FileHandlerEvents::UploadProgress { id, current, total } => {
+                assert_eq!(id, 1);
+                assert_eq!(current, content.len());
+                assert_eq!(total, content.len());
+            }
+            _ => panic!("Expected UploadProgress"),
+        }
+
         // Expect chunk
         match rx_listener
             .recv_timeout(Duration::from_secs(1))
@@ -123,6 +136,18 @@ mod tests {
             .send(ReaderCommands::GetChunk)
             .expect("failed to send command");
 
+        // Expect UploadProgress
+        match rx_listener
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recv timeout")
+        {
+            FileHandlerEvents::UploadProgress { id, current, total: _ } => {
+                assert_eq!(id, 1);
+                assert_eq!(current, chunk_size);
+            }
+            _ => panic!("Expected UploadProgress"),
+        }
+
         // Expect full 16KB chunk
         match rx_listener
             .recv_timeout(Duration::from_secs(1))
@@ -140,6 +165,18 @@ mod tests {
         tx_cmd
             .send(ReaderCommands::GetChunk)
             .expect("failed to send command");
+
+        // Expect UploadProgress
+        match rx_listener
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recv timeout")
+        {
+            FileHandlerEvents::UploadProgress { id, current, total: _ } => {
+                assert_eq!(id, 1);
+                assert_eq!(current, total_size);
+            }
+            _ => panic!("Expected UploadProgress"),
+        }
 
         // Expect remaining 1KB chunk
         match rx_listener
@@ -204,6 +241,18 @@ mod tests {
         tx_cmd
             .send(WriterCommands::WriteChunk(content.to_vec()))
             .expect("failed to send command");
+
+        // Expect DownloadProgress
+        match rx_listener
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recv timeout")
+        {
+            FileHandlerEvents::DownloadProgress { id, current } => {
+                assert_eq!(id, 2);
+                assert_eq!(current, content.len());
+            }
+            _ => panic!("Expected DownloadProgress"),
+        }
 
         // Send EOF
         tx_cmd

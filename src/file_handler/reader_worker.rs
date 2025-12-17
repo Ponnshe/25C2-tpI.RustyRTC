@@ -36,6 +36,9 @@ impl ReaderWorker {
 
     pub fn run(mut self) {
         sink_info!(self.log_sink, "[READER_WORKER] Worker {} started", self.id);
+        
+        let file_size = self.reader.get_ref().metadata().map(|m| m.len()).unwrap_or(0);
+        let mut total_read = 0;
 
         while let Ok(cmd) = self.rx_cmd.recv() {
             match cmd {
@@ -61,12 +64,22 @@ impl ReaderWorker {
                         }
                         Ok(n) => {
                             buffer.truncate(n);
+                            total_read += n as u64;
                             sink_debug!(
                                 self.log_sink,
-                                "[READER_WORKER] Worker {} read {} bytes",
+                                "[READER_WORKER] Worker {} read {} bytes (Total: {}/{})",
                                 self.id,
-                                n
+                                n,
+                                total_read,
+                                file_size
                             );
+                            
+                            let _ = self.tx_listener.send(FileHandlerEvents::UploadProgress {
+                                id: self.id,
+                                current: total_read as usize,
+                                total: file_size as usize,
+                            });
+
                             if let Err(e) = self.tx_listener.send(FileHandlerEvents::ReadChunk {
                                 id: self.id,
                                 payload: buffer,

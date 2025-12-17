@@ -20,6 +20,8 @@ pub enum FileHandlerEvents {
     RemoteAccepted(u32),
     ReaderWorkerFinished(u32),
     WriterWorkerFinished(u32),
+    UploadProgress { id: u32, current: usize, total: usize },
+    DownloadProgress { id: u32, current: usize },
     Cancel(u32),
     Err(String),
     DrainChunks,

@@ -380,6 +380,12 @@ impl FileHandler {
                         }
                     }
                 }
+                FileHandlerEvents::UploadProgress { id, current, total } => {
+                    let _ = event_tx.send(EngineEvent::UploadProgress { id, current, total });
+                }
+                FileHandlerEvents::DownloadProgress { id, current } => {
+                    let _ = event_tx.send(EngineEvent::DownloadProgress { id, current });
+                }
             }
         }
         sink_info!(log_sink, "[FILE_HANDLER] Listener stopped");

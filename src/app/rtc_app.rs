@@ -64,10 +64,13 @@ enum FileTransferState {
     Sending {
         id: u32,
         filename: String,
+        progress: f32,
     },
     Receiving {
         id: u32,
         filename: String,
+        total_size: usize,
+        progress: f32,
     },
     Finished {
         msg: String,
@@ -738,6 +741,7 @@ impl RtcApp {
                     self.file_transfer_state = FileTransferState::Sending {
                         id: props.transaction_id,
                         filename: props.file_name,
+                        progress: 0.0,
                     };
                 }
                 EngineEvent::SendFileChunk(..)
@@ -758,6 +762,20 @@ impl RtcApp {
                     self.status_line = "File transfer finished (received).".into();
                     self.file_transfer_state = FileTransferState::Idle;
                     self.receiving_files.store(false, Ordering::SeqCst);
+                }
+                EngineEvent::UploadProgress { id, current, total } => {
+                    if let FileTransferState::Sending { id: current_id, progress, .. } = &mut self.file_transfer_state {
+                        if *current_id == id {
+                            *progress = (current as f32 / total as f32) * 100.0;
+                        }
+                    }
+                }
+                EngineEvent::DownloadProgress { id, current } => {
+                     if let FileTransferState::Receiving { id: current_id, progress, total_size, .. } = &mut self.file_transfer_state {
+                        if *current_id == id && *total_size > 0 {
+                             *progress = (current as f32 / *total_size as f32) * 100.0;
+                        }
+                    }
                 }
                 EngineEvent::ToggleAudio(muted) => {
                     self.is_muted = muted;
@@ -829,6 +847,7 @@ impl RtcApp {
                 ));
                 let id_to_accept = remote_props.transaction_id;
                 let filename_to_receive = remote_props.file_name.clone();
+                let filesize_to_receive = remote_props.file_size as usize;
 
                 ui.horizontal(|ui| {
                     if ui.button("Accept").clicked() {
@@ -837,6 +856,8 @@ impl RtcApp {
                         self.file_transfer_state = FileTransferState::Receiving {
                             id: id_to_accept,
                             filename: filename_to_receive,
+                            total_size: filesize_to_receive,
+                            progress: 0.0,
                         };
                     }
                     if ui.button("Reject").clicked() {
@@ -845,16 +866,18 @@ impl RtcApp {
                     }
                 });
             }
-            FileTransferState::Sending { id, filename } => {
-                ui.label(format!("Sending {}...", filename));
+            FileTransferState::Sending { id, filename, progress } => {
+                ui.label(format!("Sending {}... {:.1}%", filename, progress));
+                ui.add(egui::ProgressBar::new(progress / 100.0));
                 if ui.button("Cancel").clicked() {
                     self.engine.cancel_file(*id);
                     self.sending_files.store(false, Ordering::SeqCst);
                     self.file_transfer_state = FileTransferState::Idle;
                 }
             }
-            FileTransferState::Receiving { id, filename } => {
-                ui.label(format!("Receiving {}...", filename));
+            FileTransferState::Receiving { id, filename, progress, .. } => {
+                ui.label(format!("Receiving {}... {:.1}%", filename, progress));
+                ui.add(egui::ProgressBar::new(progress / 100.0));
                 if ui.button("Cancel").clicked() {
                     self.engine.cancel_file(*id);
                     self.receiving_files.store(false, Ordering::SeqCst);

@@ -2,7 +2,7 @@ use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::protocol::SctpProtocolMessage;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_info, sink_trace, sink_warn};
+use crate::{sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 use bytes::Bytes;
 use sctp_proto::{
     Association, AssociationHandle, ClientConfig, Endpoint, Error, Payload,
@@ -173,6 +173,7 @@ impl SctpSender {
                             s,
                             file_id
                         );
+                        let payload_len = payload.len();
                         self.send_message(
                             SctpProtocolMessage::Chunk {
                                 id: file_id,
@@ -180,6 +181,11 @@ impl SctpSender {
                                 payload,
                             },
                             &mut pending_messages,
+                        );
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_SENDER] File bytes sent to SCTP: {}",
+                            payload_len
                         );
                     } else {
                         sink_warn!(
@@ -241,6 +247,11 @@ impl SctpSender {
                             for b in bytes_vec {
                                 payload.extend_from_slice(&b);
                             }
+                            sink_debug!(
+                                self.log_sink,
+                                "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
+                                payload.len()
+                            );
                             let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                         }
                     }
@@ -340,6 +351,11 @@ impl SctpSender {
                     for b in bytes_vec {
                         payload.extend_from_slice(&b);
                     }
+                    sink_debug!(
+                        self.log_sink,
+                        "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
+                        payload.len()
+                    );
                     let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
