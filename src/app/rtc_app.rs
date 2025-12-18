@@ -764,16 +764,27 @@ impl RtcApp {
                     self.receiving_files.store(false, Ordering::SeqCst);
                 }
                 EngineEvent::UploadProgress { id, current, total } => {
-                    if let FileTransferState::Sending { id: current_id, progress, .. } = &mut self.file_transfer_state {
+                    if let FileTransferState::Sending {
+                        id: current_id,
+                        progress,
+                        ..
+                    } = &mut self.file_transfer_state
+                    {
                         if *current_id == id {
                             *progress = (current as f32 / total as f32) * 100.0;
                         }
                     }
                 }
                 EngineEvent::DownloadProgress { id, current } => {
-                     if let FileTransferState::Receiving { id: current_id, progress, total_size, .. } = &mut self.file_transfer_state {
+                    if let FileTransferState::Receiving {
+                        id: current_id,
+                        progress,
+                        total_size,
+                        ..
+                    } = &mut self.file_transfer_state
+                    {
                         if *current_id == id && *total_size > 0 {
-                             *progress = (current as f32 / *total_size as f32) * 100.0;
+                            *progress = (current as f32 / *total_size as f32) * 100.0;
                         }
                     }
                 }
@@ -866,7 +877,11 @@ impl RtcApp {
                     }
                 });
             }
-            FileTransferState::Sending { id, filename, progress } => {
+            FileTransferState::Sending {
+                id,
+                filename,
+                progress,
+            } => {
                 ui.label(format!("Sending {}... {:.1}%", filename, progress));
                 ui.add(egui::ProgressBar::new(progress / 100.0));
                 if ui.button("Cancel").clicked() {
@@ -875,7 +890,12 @@ impl RtcApp {
                     self.file_transfer_state = FileTransferState::Idle;
                 }
             }
-            FileTransferState::Receiving { id, filename, progress, .. } => {
+            FileTransferState::Receiving {
+                id,
+                filename,
+                progress,
+                ..
+            } => {
                 ui.label(format!("Receiving {}... {:.1}%", filename, progress));
                 ui.add(egui::ProgressBar::new(progress / 100.0));
                 if ui.button("Cancel").clicked() {
@@ -1199,7 +1219,7 @@ impl RtcApp {
                     );
                 }
             } else {
-                self.background_log(LogLevel::Debug, "Skipping debug checks for non-RGB frames");
+                self.background_log(LogLevel::Trace, "Skipping debug checks for non-RGB frames");
             }
         }
     }
