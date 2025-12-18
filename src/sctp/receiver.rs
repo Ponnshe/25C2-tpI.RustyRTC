@@ -62,6 +62,12 @@ impl SctpReceiver {
             // Use a small timeout if sctp doesn't need immediate attention, to check stream timeouts
             let wait_duration = timeout.unwrap_or(Duration::from_millis(100));
 
+            sink_trace!(
+                self.log_sink,
+                "[SCTP_RECEIVER] wait_duration before: {:?}",
+                wait_duration
+            );
+
             // Cap wait duration to check stream timeouts frequently (e.g. every 1 sec)
             let wait_duration = wait_duration.min(Duration::from_secs(1));
 
@@ -78,6 +84,10 @@ impl SctpReceiver {
                     );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    sink_trace!(
+                        self.log_sink,
+                        "[SCTP_RECEIVER] Timeout",
+                    );
                     // Handle SCTP timeout if needed
                     let mut assoc_guard =
                         self.association.lock().expect("association lock poisoned");
