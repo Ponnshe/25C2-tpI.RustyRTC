@@ -98,7 +98,8 @@ impl SctpSession {
                     | SctpEvents::SendReject { .. }
                     | SctpEvents::SendCancel { .. }
                     | SctpEvents::SendChunk { .. }
-                    | SctpEvents::SendEndFile { .. } => {
+                    | SctpEvents::SendEndFile { .. }
+                    | SctpEvents::KickSender => {
                         let _ = tx_sender_clone.send(event);
                     }
                     SctpEvents::TransmitSctpPacket { .. } => {

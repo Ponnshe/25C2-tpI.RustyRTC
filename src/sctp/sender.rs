@@ -153,6 +153,9 @@ impl SctpSender {
                     }
                     self.send_message(SctpProtocolMessage::Cancel { id }, &mut pending_messages);
                 }
+                Ok(SctpEvents::KickSender) => {
+                    sink_trace!(self.log_sink, "[SCTP_SENDER] KickSender received, waking up");
+                }
                 Ok(SctpEvents::SendChunk { file_id, payload }) => {
                     let start_chunk = Instant::now();
                     let seq = {

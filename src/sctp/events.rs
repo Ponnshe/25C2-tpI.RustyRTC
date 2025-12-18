@@ -24,5 +24,6 @@ pub enum SctpEvents {
     SctpConnected,
     SctpErr(String),
     TransmitSctpPacket { payload: Vec<u8> },
+    KickSender,
     Shutdown,
 }

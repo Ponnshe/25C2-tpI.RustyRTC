@@ -190,6 +190,7 @@ impl SctpReceiver {
         }
         drop(endpoint);
         self.poll_association();
+        let _ = self.tx.send(SctpEvents::KickSender);
         sink_trace!(
             self.log_sink,
             "[SCTP_RECEIVER] handle_packet took {:?}",
