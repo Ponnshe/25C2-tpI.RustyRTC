@@ -84,10 +84,7 @@ impl SctpReceiver {
                     );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    sink_trace!(
-                        self.log_sink,
-                        "[SCTP_RECEIVER] Timeout",
-                    );
+                    sink_trace!(self.log_sink, "[SCTP_RECEIVER] Timeout",);
                     // Handle SCTP timeout if needed
                     let mut assoc_guard =
                         self.association.lock().expect("association lock poisoned");
@@ -137,7 +134,6 @@ impl SctpReceiver {
     #[allow(clippy::expect_used)]
     fn handle_packet(&self, packet: Vec<u8>) {
         let start = Instant::now();
-        // println!("[CLI DEBUG] SctpReceiver::handle_packet len={}", packet.len());
         sink_trace!(
             self.log_sink,
             "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}",
@@ -172,7 +168,6 @@ impl SctpReceiver {
                 }
 
                 // Poll the new association immediately
-                self.poll_association();
             }
             Some((_handle, DatagramEvent::AssociationEvent(event))) => {
                 let mut my_assoc_guard =
@@ -186,12 +181,12 @@ impl SctpReceiver {
                     );
                 }
                 drop(my_assoc_guard); // unlock to poll
-                self.poll_association();
             }
             None => {
                 // Packet consumed, no event.
             }
         }
+        self.poll_association();
         sink_trace!(
             self.log_sink,
             "[SCTP_RECEIVER] handle_packet took {:?}",
@@ -281,7 +276,7 @@ impl SctpReceiver {
         }
         let elapsed = start.elapsed();
         if elapsed.as_micros() > 100 {
-             sink_trace!(
+            sink_trace!(
                 self.log_sink,
                 "[SCTP_RECEIVER] poll_association took {:?}",
                 elapsed
