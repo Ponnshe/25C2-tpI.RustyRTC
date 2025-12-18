@@ -69,7 +69,7 @@ impl SctpReceiver {
             );
 
             // Cap wait duration to check stream timeouts frequently (e.g. every 1 sec)
-            let wait_duration = wait_duration.min(Duration::from_secs(1));
+            let wait_duration = wait_duration.min(Duration::from_secs(2));
 
             let event = self.rx.recv_timeout(wait_duration);
 
