@@ -166,8 +166,6 @@ impl SctpReceiver {
                         .expect("association handle lock poisoned");
                     *my_handle = Some(handle);
                 }
-
-                // Poll the new association immediately
             }
             Some((_handle, DatagramEvent::AssociationEvent(event))) => {
                 let mut my_assoc_guard =
@@ -183,9 +181,14 @@ impl SctpReceiver {
                 drop(my_assoc_guard); // unlock to poll
             }
             None => {
+                sink_trace!(
+                    self.log_sink,
+                    "[SCTP_RECEIVER] Packet processed by Endpoint (No User Event)"
+                );
                 // Packet consumed, no event.
             }
         }
+        drop(endpoint);
         self.poll_association();
         sink_trace!(
             self.log_sink,
