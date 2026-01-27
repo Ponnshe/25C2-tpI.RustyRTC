@@ -22,6 +22,7 @@ pub struct SctpSender {
     pub association_handle: Arc<Mutex<Option<AssociationHandle>>>,
     pub streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
     pub endpoint: Arc<Mutex<Endpoint>>,
+    pub is_client: bool,
 }
 
 impl SctpSender {
@@ -33,6 +34,7 @@ impl SctpSender {
         association_handle: Arc<Mutex<Option<AssociationHandle>>>,
         streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
         endpoint: Arc<Mutex<Endpoint>>,
+        is_client: bool,
     ) -> Self {
         Self {
             log_sink,
@@ -42,6 +44,7 @@ impl SctpSender {
             association_handle,
             streams,
             endpoint,
+            is_client,
         }
     }
 
@@ -282,6 +285,10 @@ impl SctpSender {
     fn ensure_connection(&self) {
         let mut assoc_guard = self.association.lock().expect("association lock poisoned");
         if assoc_guard.is_none() {
+            if !self.is_client {
+                // If we are server, we wait for incoming connection (handled by Receiver)
+                return;
+            }
             sink_info!(
                 self.log_sink,
                 "[SCTP_SENDER] Initiating SCTP association (ensure_connection)..."

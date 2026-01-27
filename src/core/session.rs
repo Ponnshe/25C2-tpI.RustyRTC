@@ -113,6 +113,8 @@ pub struct SessionInitArgs {
     pub srtp_cfg: Option<SrtpSessionConfig>,
     /// The DTLS stream over UDP.
     pub ssl_stream: SslStream<BufferedUdpChannel>,
+    /// Whether we are the DTLS client (active opener)
+    pub is_client: bool,
 }
 
 impl Session {
@@ -123,6 +125,7 @@ impl Session {
             args.logger.clone(),
             sctp_parent_tx,
             args.ssl_stream,
+            args.is_client,
         ));
 
         // Spawn thread to forward SCTP events to EngineEvent
@@ -495,6 +498,10 @@ impl Session {
 
     pub fn send_sctp_event(&self, event: SctpEvents) {
         let _ = self.sctp_session.tx.send(event);
+    }
+
+    pub fn buffered_amount(&self) -> usize {
+        self.sctp_session.buffered_amount()
     }
 }
 

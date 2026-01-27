@@ -14,6 +14,7 @@ use std::thread;
 
 pub struct SctpSession {
     pub tx: Sender<SctpEvents>,
+    association: Arc<Mutex<Option<Association>>>,
 }
 
 impl SctpSession {
@@ -21,6 +22,7 @@ impl SctpSession {
         log_sink: Arc<dyn LogSink>,
         parent_tx: Sender<SctpEvents>,
         ssl_stream: SslStream<BufferedUdpChannel>,
+        is_client: bool,
     ) -> Self {
         let (tx, rx) = channel();
 
@@ -61,6 +63,7 @@ impl SctpSession {
             association_handle.clone(),
             streams.clone(),
             endpoint.clone(),
+            is_client,
         );
 
         // Transport
@@ -127,7 +130,10 @@ impl SctpSession {
             }
         });
 
-        Self { tx }
+        Self {
+            tx,
+            association,
+        }
     }
 
     pub fn shutdown(&self) {
@@ -138,5 +144,16 @@ impl SctpSession {
         let _ = self.tx.send(SctpEvents::IncomingSctpPacket {
             sctp_packet: packet,
         });
+    }
+
+    pub fn buffered_amount(&self) -> usize {
+        if let Ok(mut guard) = self.association.lock() {
+            if let Some(assoc) = guard.as_mut() {
+                if let Ok(stream) = assoc.stream(0) {
+                    return stream.buffered_amount().unwrap_or(0);
+                }
+            }
+        }
+        0
     }
 }

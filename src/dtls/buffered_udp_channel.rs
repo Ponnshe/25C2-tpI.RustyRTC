@@ -19,6 +19,7 @@ pub struct BufferedUdpChannel {
     incoming_queue: VecDeque<u8>,
     manual_mode: bool,
     logger: Arc<dyn LogSink>,
+    outgoing_queue: VecDeque<Vec<u8>>,
 }
 
 impl fmt::Debug for BufferedUdpChannel {
@@ -40,6 +41,7 @@ impl BufferedUdpChannel {
             incoming_queue: VecDeque::new(),
             manual_mode: false,
             logger,
+            outgoing_queue: VecDeque::new(),
         }
     }
 
@@ -49,6 +51,10 @@ impl BufferedUdpChannel {
 
     pub fn push_incoming(&mut self, data: Vec<u8>) {
         self.incoming_queue.extend(data);
+    }
+
+    pub fn has_pending_writes(&self) -> bool {
+        !self.outgoing_queue.is_empty()
     }
 }
 
@@ -102,15 +108,54 @@ impl Read for BufferedUdpChannel {
 
 impl Write for BufferedUdpChannel {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        sink_trace!(
-            &self.logger,
-            "[DTLS IO] Sending {} bytes to {}",
-            buf.len(),
-            self.peer
-        );
-        self.sock.send_to(buf, self.peer)
+        // If queue is not empty, we must queue this new packet to maintain order
+        if !self.outgoing_queue.is_empty() {
+             self.outgoing_queue.push_back(buf.to_vec());
+             return Ok(buf.len());
+        }
+
+        match self.sock.send_to(buf, self.peer) {
+            Ok(n) => {
+                sink_trace!(
+                    &self.logger,
+                    "[DTLS IO] Sent {} bytes to {}",
+                    n,
+                    self.peer
+                );
+                Ok(n)
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // Queue the packet instead of failing
+                sink_warn!(
+                    &self.logger,
+                    "[DTLS IO] Socket WouldBlock, queuing packet of size {}",
+                    buf.len()
+                );
+                self.outgoing_queue.push_back(buf.to_vec());
+                Ok(buf.len()) // Pretend we wrote it
+            }
+            Err(e) => Err(e),
+        }
     }
+
     fn flush(&mut self) -> io::Result<()> {
+        while let Some(packet) = self.outgoing_queue.front() {
+            match self.sock.send_to(packet, self.peer) {
+                Ok(n) => {
+                    sink_trace!(
+                         &self.logger,
+                         "[DTLS IO] Flushed queued packet of {} bytes",
+                         n
+                    );
+                    self.outgoing_queue.pop_front();
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // Still blocked, stop flushing
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            }
+        }
         Ok(())
     }
 }
