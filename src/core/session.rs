@@ -274,7 +274,7 @@ impl Session {
         let sctp_session = self.sctp_session.clone();
 
         thread::spawn(move || {
-            let mut buf = [0u8; 1500];
+            let mut buf = [0u8; 65535];
             let mut packet_batch: Vec<Vec<u8>> = Vec::with_capacity(64);
 
             while rx_run.load(Ordering::SeqCst) {
