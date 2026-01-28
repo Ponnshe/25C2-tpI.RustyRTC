@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::{Arc, mpsc::Receiver, mpsc::Sender};
 
-const CHUNK_SIZE: usize = 1024;
+const CHUNK_SIZE: usize = 1024 * 16;
 
 pub struct ReaderWorker {
     id: u32,
