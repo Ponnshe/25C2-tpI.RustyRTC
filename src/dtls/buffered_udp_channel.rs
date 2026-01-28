@@ -37,7 +37,7 @@ impl BufferedUdpChannel {
             sock,
             peer,
             reader: Cursor::new(Vec::new()),
-            recv_buf: vec![0u8; 4096],
+            recv_buf: vec![0u8; 65535],
             incoming_queue: VecDeque::new(),
             manual_mode: false,
             logger,
