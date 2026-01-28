@@ -289,6 +289,7 @@ impl FileHandler {
                         "[FILE_HANDLER] ReadChunk received from worker {}",
                         id
                     );
+                    crate::sctp_log!(log_sink, "ReadChunk: FileID:{} Size:{}", id, payload.len());
                     sink_trace!(
                         log_sink,
                         "[FILE_HANDLER] Forwarding ReadChunk to Engine. Payload size: {}",
@@ -303,6 +304,7 @@ impl FileHandler {
                         id,
                         payload.len()
                     );
+                    crate::sctp_log!(log_sink, "WriteChunk: FileID:{} Size:{}", id, payload.len());
                     let map = workers.lock().expect("Worker lock poisoned");
                     if let Some(WorkerTx::Writer(tx)) = map.get(&id) {
                         if let Err(e) = tx.send(WriterCommands::WriteChunk(payload)) {

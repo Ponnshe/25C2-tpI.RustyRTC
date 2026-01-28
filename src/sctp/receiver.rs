@@ -139,6 +139,7 @@ impl SctpReceiver {
             "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}",
             packet.len()
         );
+        crate::sctp_log!(self.log_sink, "SCTP_PACKET_IN: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&packet));
         sink_debug!(
             self.log_sink,
             "[SCTP_RECEIVER] SCTP bytes received via DTLS: {}",
@@ -147,7 +148,7 @@ impl SctpReceiver {
         let mut endpoint = self.endpoint.lock().expect("Failed to lock endpoint");
         let now = Instant::now();
         // Use a dummy address as we are tunneling over DTLS
-        let remote: SocketAddr = "127.0.0.1:5000".parse().expect("Invalid dummy IP address");
+        let remote: SocketAddr = "192.168.1.1:5000".parse().expect("Invalid dummy IP address");
 
         let bytes = Bytes::from(packet);
 
@@ -212,6 +213,7 @@ impl SctpReceiver {
                     for b in bytes_vec {
                         payload.extend_from_slice(&b);
                     }
+                    crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
                     let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
@@ -350,6 +352,7 @@ impl SctpReceiver {
                             id,
                             seq
                         );
+                        crate::sctp_log!(self.log_sink, "ReceiveChunk: FileID:{} Seq:{} Size:{}", id, seq, payload.len());
                         sink_debug!(
                             self.log_sink,
                             "[SCTP_RECEIVER] File bytes received: {}",

@@ -37,7 +37,8 @@ impl SctpSession {
         let association_handle = Arc::new(Mutex::new(None::<AssociationHandle>));
 
         // Init Endpoint
-        let config = EndpointConfig::default();
+        let mut config = EndpointConfig::default();
+        config.max_payload_size(1200);
         let server_config = ServerConfig::default();
         // Wrap config in Arc as required by Endpoint::new
         let endpoint = Endpoint::new(Arc::new(config), Some(Arc::new(server_config)));

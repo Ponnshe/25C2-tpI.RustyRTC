@@ -181,6 +181,7 @@ impl SctpSender {
                             file_id
                         );
                         let payload_len = payload.len();
+                        crate::sctp_log!(self.log_sink, "SendChunk: FileID:{} Seq:{} Size:{}", file_id, s, payload_len);
                         self.send_message(
                             SctpProtocolMessage::Chunk {
                                 id: file_id,
@@ -261,10 +262,9 @@ impl SctpSender {
                                 payload.extend_from_slice(&b);
                             }
                             sink_debug!(
-                                self.log_sink,
-                                "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
                                 payload.len()
                             );
+                            crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
                             let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                         }
                     }
@@ -294,8 +294,9 @@ impl SctpSender {
                 "[SCTP_SENDER] Initiating SCTP association (ensure_connection)..."
             );
             let mut endpoint = self.endpoint.lock().expect("endpoint lock poisoned");
-            let remote: SocketAddr = "127.0.0.1:5000".parse().expect("Invalid dummy IP address");
-            match endpoint.connect(ClientConfig::default(), remote) {
+            let remote: SocketAddr = "192.168.1.1:5000".parse().expect("Invalid dummy IP address");
+            let mut config = ClientConfig::default();
+            match endpoint.connect(config, remote) {
                 Ok((handle, assoc)) => {
                     *assoc_guard = Some(assoc);
                     let mut handle_guard = self
@@ -382,6 +383,7 @@ impl SctpSender {
                         "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
                         payload.len()
                     );
+                    crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
                     let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }

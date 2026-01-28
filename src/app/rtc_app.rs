@@ -1219,7 +1219,7 @@ impl RtcApp {
                     );
                 }
             } else {
-                self.background_log(LogLevel::Trace, "Skipping debug checks for non-RGB frames");
+                //self.background_log(LogLevel::Trace, "Skipping debug checks for non-RGB frames");
             }
         }
     }

@@ -31,6 +31,7 @@ log-debug = ["log-info"]        # Debug implies Info
 log-info  = ["log-warn"]        # Info implies Warn
 log-warn  = ["log-error"]       # Warn implies Error
 log-error = []
+sctp-transfer-debug = [] # Detailed SCTP/File transfer logs
 
 
 [lints.clippy]

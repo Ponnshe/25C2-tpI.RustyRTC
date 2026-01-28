@@ -86,6 +86,7 @@ impl SctpTransport {
                                 "[SCTP_TRANSPORT] DTLS write time: {:?}",
                                 start_write.elapsed()
                             );
+                            crate::sctp_log!(self.log_sink, "DTLS_ENCRYPT/SEND_START: {}", payload.len());
                         }
                         _ => {}
                     }
@@ -111,6 +112,7 @@ impl SctpTransport {
                                 elapsed,
                                 n
                             );
+                            crate::sctp_log!(self.log_sink, "DTLS_DECRYPT/RECV_END: {} (Time: {:?})", n, elapsed);
                             let decrypted = buf[..n].to_vec();
                             // Send to Router
                             let _ = self.router_tx.send(SctpEvents::ReadableSctpPacket {

@@ -314,3 +314,22 @@ macro_rules! logger_error {
         ()
     };
 }
+
+// ---------------------- SCTP TRANSFER DEBUG ----------------------
+#[cfg(feature = "sctp-transfer-debug")]
+#[macro_export]
+macro_rules! sctp_log {
+    ($sink:expr, $($arg:tt)*) => {
+        // Force INFO level logs for transfer debug so they appear even in INFO mode
+        $crate::sink_log!($sink, $crate::log::log_level::LogLevel::Info, "[SCTP_DEBUG] {}", format!($($arg)*));
+    }
+}
+
+#[cfg(not(feature = "sctp-transfer-debug"))]
+#[macro_export]
+macro_rules! sctp_log {
+    ($($arg:tt)*) => {
+        ()
+    };
+}
+
