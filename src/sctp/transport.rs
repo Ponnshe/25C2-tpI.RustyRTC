@@ -95,15 +95,22 @@ impl SctpTransport {
 
             // Always try to read/flush after event processing (or timeout)
             // Optimized Read Loop & Flush
+            let mut read_count = 0;
             loop {
                 // Try to flush outgoing queue first
                 if let Err(e) = self.ssl_stream.get_mut().flush() {
                     sink_error!(self.log_sink, "[SctpTransport] Flush error: {}", e);
                 }
 
+                if read_count >= 20 {
+                    // Yield to event loop to allow sending responses (SACKs)
+                    break;
+                }
+
                 let start = std::time::Instant::now();
                 match self.ssl_stream.read(&mut buf) {
                     Ok(n) => {
+                        read_count += 1;
                         let elapsed = start.elapsed();
                         if n > 0 {
                             sink_trace!(

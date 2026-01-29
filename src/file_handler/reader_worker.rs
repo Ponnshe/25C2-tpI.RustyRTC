@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::{Arc, mpsc::Receiver, mpsc::Sender};
 
-const CHUNK_SIZE: usize = 1024 * 16;
+const CHUNK_SIZE: usize = 1024;
 
 pub struct ReaderWorker {
     id: u32,
@@ -92,6 +92,8 @@ impl ReaderWorker {
                                 );
                                 break;
                             }
+                            // Pacing to avoid UDP buffer overflow
+                            std::thread::sleep(std::time::Duration::from_micros(500));
                         }
                         Err(e) => {
                             sink_error!(

@@ -169,10 +169,12 @@ impl SctpReceiver {
                 }
             }
             Some((_handle, DatagramEvent::AssociationEvent(event))) => {
+                sink_trace!(self.log_sink, "[SCTP_RECEIVER] Endpoint returned AssociationEvent: {:?}", event);
                 let mut my_assoc_guard =
                     self.association.lock().expect("association lock poisoned");
                 if let Some(assoc) = my_assoc_guard.as_mut() {
                     assoc.handle_event(event);
+                    sink_trace!(self.log_sink, "[SCTP_RECEIVER] Association handled event");
                 } else {
                     sink_warn!(
                         self.log_sink,
