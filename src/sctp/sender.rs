@@ -257,15 +257,15 @@ impl SctpSender {
                     let start_poll = Instant::now();
                     while let Some(transmit) = assoc.poll_transmit(now) {
                         if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                            let mut payload = Vec::new();
                             for b in bytes_vec {
-                                payload.extend_from_slice(&b);
+                                let payload = b.to_vec();
+                                crate::sctp_log!(
+                                    self.log_sink,
+                                    "SCTP_PACKET_OUT: {}",
+                                    crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                                );
+                                let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                             }
-                            sink_debug!(
-                                payload.len()
-                            );
-                            crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
-                            let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                         }
                     }
                     let elapsed_poll = start_poll.elapsed();
@@ -374,17 +374,20 @@ impl SctpSender {
             let now = Instant::now();
             while let Some(transmit) = assoc.poll_transmit(now) {
                 if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                    let mut payload = Vec::new();
                     for b in bytes_vec {
-                        payload.extend_from_slice(&b);
+                        let payload = b.to_vec();
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
+                            payload.len()
+                        );
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SCTP_PACKET_OUT: {}",
+                            crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                        );
+                        let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                     }
-                    sink_debug!(
-                        self.log_sink,
-                        "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
-                        payload.len()
-                    );
-                    crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
-                    let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
         } else {

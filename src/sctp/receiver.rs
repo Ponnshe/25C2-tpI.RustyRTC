@@ -211,12 +211,15 @@ impl SctpReceiver {
             // Poll transmit
             while let Some(transmit) = assoc.poll_transmit(now) {
                 if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                    let mut payload = Vec::new();
                     for b in bytes_vec {
-                        payload.extend_from_slice(&b);
+                        let payload = b.to_vec();
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SCTP_PACKET_OUT: {}",
+                            crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                        );
+                        let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                     }
-                    crate::sctp_log!(self.log_sink, "SCTP_PACKET_OUT: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&payload));
-                    let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
 
