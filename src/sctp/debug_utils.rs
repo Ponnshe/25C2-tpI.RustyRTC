@@ -76,22 +76,6 @@ pub fn parse_sctp_packet_summary(packet: &[u8]) -> String {
 
         // Move to next chunk (padded to 4 bytes boundary)
         let current_pos = cursor.position();
-        // The length field in the chunk header includes the header itself.
-        // But we already read 4 (type+flags+len) + (chunk_len - 4) maybe?
-        // Actually: cursor position is now at header + 12 (if data) or header + 0 (if we just peeked)
-        // Wait, I read type,flags,len (4 bytes).
-        // For DATA, I read 12 more bytes. Total 16 bytes read.
-        // We need to jump to (Start of Chunk + Chunk Length + Padding)
-
-        // Let's reset logic:
-        // We started at `start_pos = cursor.position() - 4`.
-        // We should seek to `start_pos + chunk_length`.
-        // Then apply padding loop.
-
-        // Correct logic is slightly annoying with forward reading, let's just seek relative.
-        // We read 4 bytes header.
-        // If DATA, we read 12 bytes more.
-        // So bytes_read_in_body = if DATA { 12 } else { 0 };
 
         let bytes_read_in_body = if chunk_type == 0 { 12 } else { 0 };
         let remaining_in_chunk = (chunk_length as i64) - 4 - bytes_read_in_body;

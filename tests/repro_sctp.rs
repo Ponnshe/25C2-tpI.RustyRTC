@@ -1,6 +1,5 @@
-
-use rustyrtc::sctp::debug_utils::parse_sctp_packet_summary;
 use byteorder::{BigEndian, WriteBytesExt};
+use rustyrtc::sctp::debug_utils::parse_sctp_packet_summary;
 use std::io::Write;
 
 #[test]
@@ -55,6 +54,13 @@ fn test_repro_missing_padding_theory() {
     println!("Summary: {}", summary);
 
     // Verify if we reproduced the Type:19 error
-    assert!(summary.contains("Type:19"), "Did not reproduce Type:19. Got: {}", summary);
-    assert!(summary.contains("DATA:TSN=2092334635"), "First chunk not parsed?");
+    assert!(
+        summary.contains("Type:19"),
+        "Did not reproduce Type:19. Got: {}",
+        summary
+    );
+    assert!(
+        summary.contains("DATA:TSN=2092334635"),
+        "First chunk not parsed?"
+    );
 }

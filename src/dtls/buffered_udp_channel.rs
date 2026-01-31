@@ -110,18 +110,13 @@ impl Write for BufferedUdpChannel {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // If queue is not empty, we must queue this new packet to maintain order
         if !self.outgoing_queue.is_empty() {
-             self.outgoing_queue.push_back(buf.to_vec());
-             return Ok(buf.len());
+            self.outgoing_queue.push_back(buf.to_vec());
+            return Ok(buf.len());
         }
 
         match self.sock.send_to(buf, self.peer) {
             Ok(n) => {
-                sink_trace!(
-                    &self.logger,
-                    "[DTLS IO] Sent {} bytes to {}",
-                    n,
-                    self.peer
-                );
+                sink_trace!(&self.logger, "[DTLS IO] Sent {} bytes to {}", n, self.peer);
                 Ok(n)
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -143,9 +138,9 @@ impl Write for BufferedUdpChannel {
             match self.sock.send_to(packet, self.peer) {
                 Ok(n) => {
                     sink_trace!(
-                         &self.logger,
-                         "[DTLS IO] Flushed queued packet of {} bytes",
-                         n
+                        &self.logger,
+                        "[DTLS IO] Flushed queued packet of {} bytes",
+                        n
                     );
                     self.outgoing_queue.pop_front();
                 }

@@ -126,11 +126,6 @@ impl SctpSender {
                         file_name: "".to_string(),
                         file_size: 0,
                         transaction_id: id,
-                        // Note: we don't know the file name here, but we need a stream entry for tracking chunks (if we were sending)
-                        // Actually ReceivedAccept means the other side accepted our offer.
-                        // So we should have a stream? Actually SendOffer created it.
-                        // But if we are receiver-side of the file... wait, SctpSender sends chunks.
-                        // If we receive accept, we are the Sender of the file.
                     };
                     let stream = SctpStream::new(props);
                     let mut streams = self.streams.write().expect("streams lock poisoned");
@@ -157,7 +152,10 @@ impl SctpSender {
                     self.send_message(SctpProtocolMessage::Cancel { id }, &mut pending_messages);
                 }
                 Ok(SctpEvents::KickSender) => {
-                    sink_trace!(self.log_sink, "[SCTP_SENDER] KickSender received, waking up");
+                    sink_trace!(
+                        self.log_sink,
+                        "[SCTP_SENDER] KickSender received, waking up"
+                    );
                 }
                 Ok(SctpEvents::SendChunk { file_id, payload }) => {
                     let start_chunk = Instant::now();
@@ -181,7 +179,13 @@ impl SctpSender {
                             file_id
                         );
                         let payload_len = payload.len();
-                        crate::sctp_log!(self.log_sink, "SendChunk: FileID:{} Seq:{} Size:{}", file_id, s, payload_len);
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SendChunk: FileID:{} Seq:{} Size:{}",
+                            file_id,
+                            s,
+                            payload_len
+                        );
                         self.send_message(
                             SctpProtocolMessage::Chunk {
                                 id: file_id,
@@ -270,7 +274,7 @@ impl SctpSender {
                     }
                     let elapsed_poll = start_poll.elapsed();
                     if elapsed_poll.as_micros() > 100 {
-                         sink_trace!(
+                        sink_trace!(
                             self.log_sink,
                             "[SCTP_SENDER] poll_transmit took {:?}",
                             elapsed_poll
@@ -294,7 +298,9 @@ impl SctpSender {
                 "[SCTP_SENDER] Initiating SCTP association (ensure_connection)..."
             );
             let mut endpoint = self.endpoint.lock().expect("endpoint lock poisoned");
-            let remote: SocketAddr = "192.168.1.1:5000".parse().expect("Invalid dummy IP address");
+            let remote: SocketAddr = "192.168.1.1:5000"
+                .parse()
+                .expect("Invalid dummy IP address");
             let mut config = ClientConfig::default();
             match endpoint.connect(config, remote) {
                 Ok((handle, assoc)) => {

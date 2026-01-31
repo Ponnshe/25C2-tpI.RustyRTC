@@ -36,8 +36,13 @@ impl ReaderWorker {
 
     pub fn run(mut self) {
         sink_info!(self.log_sink, "[READER_WORKER] Worker {} started", self.id);
-        
-        let file_size = self.reader.get_ref().metadata().map(|m| m.len()).unwrap_or(0);
+
+        let file_size = self
+            .reader
+            .get_ref()
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or(0);
         let mut total_read = 0;
 
         while let Ok(cmd) = self.rx_cmd.recv() {
@@ -73,7 +78,7 @@ impl ReaderWorker {
                                 total_read,
                                 file_size
                             );
-                            
+
                             let _ = self.tx_listener.send(FileHandlerEvents::UploadProgress {
                                 id: self.id,
                                 current: total_read as usize,

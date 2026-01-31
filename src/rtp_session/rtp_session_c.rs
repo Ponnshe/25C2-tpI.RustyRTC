@@ -70,7 +70,6 @@ impl RtpSession {
         initial_send: Vec<RtpSendConfig>,
         srtp_cfg: Option<SrtpSessionConfig>,
     ) -> Result<Self, RtpSessionError> {
-        // Inicializar contextos SRTP si hay configuración
         let (srtp_inbound, srtp_outbound) = if let Some(srtp_session_cfg) = &srtp_cfg {
             (
                 Some(Arc::new(Mutex::new(SrtpContext::new(

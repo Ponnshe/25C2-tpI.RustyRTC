@@ -12,16 +12,35 @@ pub enum WriterCommands {
 
 #[derive(Debug, Clone)]
 pub enum FileHandlerEvents {
-    ReadFile { path: String, id: u32 },
-    WriteFile { filename: String, id: u32 },
+    ReadFile {
+        path: String,
+        id: u32,
+    },
+    WriteFile {
+        filename: String,
+        id: u32,
+    },
     GetChunk(u32),
-    ReadChunk { id: u32, payload: Vec<u8> },
-    WriteChunk { id: u32, payload: Vec<u8> },
+    ReadChunk {
+        id: u32,
+        payload: Vec<u8>,
+    },
+    WriteChunk {
+        id: u32,
+        payload: Vec<u8>,
+    },
     RemoteAccepted(u32),
     ReaderWorkerFinished(u32),
     WriterWorkerFinished(u32),
-    UploadProgress { id: u32, current: usize, total: usize },
-    DownloadProgress { id: u32, current: usize },
+    UploadProgress {
+        id: u32,
+        current: usize,
+        total: usize,
+    },
+    DownloadProgress {
+        id: u32,
+        current: usize,
+    },
     Cancel(u32),
     Err(String),
     DrainChunks,

@@ -59,7 +59,6 @@ impl SctpReceiver {
             };
 
             // Wait for event or timeout
-            // Use a small timeout if sctp doesn't need immediate attention, to check stream timeouts
             let wait_duration = timeout.unwrap_or(Duration::from_millis(100));
 
             sink_trace!(
@@ -139,7 +138,11 @@ impl SctpReceiver {
             "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}",
             packet.len()
         );
-        crate::sctp_log!(self.log_sink, "SCTP_PACKET_IN: {}", crate::sctp::debug_utils::parse_sctp_packet_summary(&packet));
+        crate::sctp_log!(
+            self.log_sink,
+            "SCTP_PACKET_IN: {}",
+            crate::sctp::debug_utils::parse_sctp_packet_summary(&packet)
+        );
         sink_debug!(
             self.log_sink,
             "[SCTP_RECEIVER] SCTP bytes received via DTLS: {}",
@@ -148,7 +151,9 @@ impl SctpReceiver {
         let mut endpoint = self.endpoint.lock().expect("Failed to lock endpoint");
         let now = Instant::now();
         // Use a dummy address as we are tunneling over DTLS
-        let remote: SocketAddr = "192.168.1.1:5000".parse().expect("Invalid dummy IP address");
+        let remote: SocketAddr = "192.168.1.1:5000"
+            .parse()
+            .expect("Invalid dummy IP address");
 
         let bytes = Bytes::from(packet);
 
@@ -169,7 +174,11 @@ impl SctpReceiver {
                 }
             }
             Some((_handle, DatagramEvent::AssociationEvent(event))) => {
-                sink_trace!(self.log_sink, "[SCTP_RECEIVER] Endpoint returned AssociationEvent: {:?}", event);
+                sink_trace!(
+                    self.log_sink,
+                    "[SCTP_RECEIVER] Endpoint returned AssociationEvent: {:?}",
+                    event
+                );
                 let mut my_assoc_guard =
                     self.association.lock().expect("association lock poisoned");
                 if let Some(assoc) = my_assoc_guard.as_mut() {
@@ -357,7 +366,13 @@ impl SctpReceiver {
                             id,
                             seq
                         );
-                        crate::sctp_log!(self.log_sink, "ReceiveChunk: FileID:{} Seq:{} Size:{}", id, seq, payload.len());
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "ReceiveChunk: FileID:{} Seq:{} Size:{}",
+                            id,
+                            seq,
+                            payload.len()
+                        );
                         sink_debug!(
                             self.log_sink,
                             "[SCTP_RECEIVER] File bytes received: {}",

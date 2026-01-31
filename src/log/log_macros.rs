@@ -332,4 +332,3 @@ macro_rules! sctp_log {
         ()
     };
 }
-

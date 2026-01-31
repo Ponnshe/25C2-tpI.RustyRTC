@@ -88,9 +88,7 @@ impl H264Encoder {
         // Placeholder for future zero-copy YUV path implementation
         match frame.format {
             FrameFormat::Rgb => {}
-            FrameFormat::Yuv420 => {
-                // TODO: use YUVBuffer::new(...) if you already have planar YUV to avoid conversion.
-            }
+            FrameFormat::Yuv420 => {}
         }
 
         let Some(enc) = self.enc.as_mut() else {

@@ -409,7 +409,8 @@ impl Engine {
                                     if !high_buffer {
                                         for _ in 0..20 {
                                             if let Some(fh) = fh_weak.upgrade() {
-                                                if fh.send(FileHandlerEvents::DrainChunks).is_err() {
+                                                if fh.send(FileHandlerEvents::DrainChunks).is_err()
+                                                {
                                                     return;
                                                 }
                                             } else {

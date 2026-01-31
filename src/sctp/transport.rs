@@ -48,7 +48,9 @@ impl SctpTransport {
                 self.rx.recv_timeout(std::time::Duration::from_millis(1))
             } else {
                 // No pending writes, we can block until new events arrive
-                self.rx.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                self.rx
+                    .recv()
+                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
             };
 
             let first_event = match event_result {
@@ -79,14 +81,22 @@ impl SctpTransport {
                             // Encrypt and send
                             let start_write = std::time::Instant::now();
                             if let Err(e) = self.ssl_stream.write_all(&payload) {
-                                sink_error!(self.log_sink, "[SctpTransport] DTLS write error: {}", e);
+                                sink_error!(
+                                    self.log_sink,
+                                    "[SctpTransport] DTLS write error: {}",
+                                    e
+                                );
                             }
                             sink_trace!(
                                 self.log_sink,
                                 "[SCTP_TRANSPORT] DTLS write time: {:?}",
                                 start_write.elapsed()
                             );
-                            crate::sctp_log!(self.log_sink, "DTLS_ENCRYPT/SEND_START: {}", payload.len());
+                            crate::sctp_log!(
+                                self.log_sink,
+                                "DTLS_ENCRYPT/SEND_START: {}",
+                                payload.len()
+                            );
                         }
                         _ => {}
                     }
@@ -119,7 +129,12 @@ impl SctpTransport {
                                 elapsed,
                                 n
                             );
-                            crate::sctp_log!(self.log_sink, "DTLS_DECRYPT/RECV_END: {} (Time: {:?})", n, elapsed);
+                            crate::sctp_log!(
+                                self.log_sink,
+                                "DTLS_DECRYPT/RECV_END: {} (Time: {:?})",
+                                n,
+                                elapsed
+                            );
                             let decrypted = buf[..n].to_vec();
                             // Send to Router
                             let _ = self.router_tx.send(SctpEvents::ReadableSctpPacket {
@@ -133,11 +148,7 @@ impl SctpTransport {
                         break;
                     }
                     Err(e) => {
-                        sink_error!(
-                            self.log_sink,
-                            "[SctpTransport] DTLS read error: {}",
-                            e
-                        );
+                        sink_error!(self.log_sink, "[SctpTransport] DTLS read error: {}", e);
                         break;
                     }
                 }

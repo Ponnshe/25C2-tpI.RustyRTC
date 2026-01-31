@@ -131,10 +131,7 @@ impl SctpSession {
             }
         });
 
-        Self {
-            tx,
-            association,
-        }
+        Self { tx, association }
     }
 
     pub fn shutdown(&self) {
