@@ -15,7 +15,7 @@ use crate::{
         constants::CHANNELS_TIMEOUT, decoder_event::DecoderEvent, events::MediaAgentEvent,
         frame_format::FrameFormat, h264_decoder::H264Decoder, spec::CodecSpec,
     },
-    sink_debug, sink_info,
+    sink_debug, sink_info, sink_trace,
 };
 
 /// Target pixel format for the decoder output.
@@ -115,7 +115,7 @@ pub fn spawn_decoder_worker(
                                         match h264_decoder.decode_frame(&bytes, FRAME_FORMAT) {
                                             Ok(Some(frame)) => {
                                                 let took = t0.elapsed();
-                                                sink_info!(
+                                                sink_trace!(
                                                     logger,
                                                     "[Decoder] Frame Ready sending MediaAgentEvent::DecodedVideoFrame"
                                                 );

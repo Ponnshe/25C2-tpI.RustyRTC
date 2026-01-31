@@ -2,7 +2,7 @@ use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::protocol::SctpProtocolMessage;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_info, sink_trace, sink_warn};
+use crate::{sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 use bytes::Bytes;
 use sctp_proto::{
     Association, AssociationHandle, ClientConfig, Endpoint, Error, Payload,
@@ -22,6 +22,7 @@ pub struct SctpSender {
     pub association_handle: Arc<Mutex<Option<AssociationHandle>>>,
     pub streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
     pub endpoint: Arc<Mutex<Endpoint>>,
+    pub is_client: bool,
 }
 
 impl SctpSender {
@@ -33,6 +34,7 @@ impl SctpSender {
         association_handle: Arc<Mutex<Option<AssociationHandle>>>,
         streams: Arc<RwLock<HashMap<u32, SctpStream>>>,
         endpoint: Arc<Mutex<Endpoint>>,
+        is_client: bool,
     ) -> Self {
         Self {
             log_sink,
@@ -42,6 +44,7 @@ impl SctpSender {
             association_handle,
             streams,
             endpoint,
+            is_client,
         }
     }
 
@@ -123,11 +126,6 @@ impl SctpSender {
                         file_name: "".to_string(),
                         file_size: 0,
                         transaction_id: id,
-                        // Note: we don't know the file name here, but we need a stream entry for tracking chunks (if we were sending)
-                        // Actually ReceivedAccept means the other side accepted our offer.
-                        // So we should have a stream? Actually SendOffer created it.
-                        // But if we are receiver-side of the file... wait, SctpSender sends chunks.
-                        // If we receive accept, we are the Sender of the file.
                     };
                     let stream = SctpStream::new(props);
                     let mut streams = self.streams.write().expect("streams lock poisoned");
@@ -153,7 +151,14 @@ impl SctpSender {
                     }
                     self.send_message(SctpProtocolMessage::Cancel { id }, &mut pending_messages);
                 }
+                Ok(SctpEvents::KickSender) => {
+                    sink_trace!(
+                        self.log_sink,
+                        "[SCTP_SENDER] KickSender received, waking up"
+                    );
+                }
                 Ok(SctpEvents::SendChunk { file_id, payload }) => {
+                    let start_chunk = Instant::now();
                     let seq = {
                         let mut streams = self.streams.write().expect("streams lock poisoned");
                         if let Some(stream) = streams.get_mut(&file_id) {
@@ -173,6 +178,14 @@ impl SctpSender {
                             s,
                             file_id
                         );
+                        let payload_len = payload.len();
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SendChunk: FileID:{} Seq:{} Size:{}",
+                            file_id,
+                            s,
+                            payload_len
+                        );
                         self.send_message(
                             SctpProtocolMessage::Chunk {
                                 id: file_id,
@@ -180,6 +193,16 @@ impl SctpSender {
                                 payload,
                             },
                             &mut pending_messages,
+                        );
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_SENDER] File bytes sent to SCTP: {}",
+                            payload_len
+                        );
+                        sink_trace!(
+                            self.log_sink,
+                            "[SCTP_SENDER] Processed SendChunk in {:?}",
+                            start_chunk.elapsed()
                         );
                     } else {
                         sink_warn!(
@@ -235,14 +258,27 @@ impl SctpSender {
                     }
 
                     // Poll transmit
+                    let start_poll = Instant::now();
                     while let Some(transmit) = assoc.poll_transmit(now) {
                         if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                            let mut payload = Vec::new();
                             for b in bytes_vec {
-                                payload.extend_from_slice(&b);
+                                let payload = b.to_vec();
+                                crate::sctp_log!(
+                                    self.log_sink,
+                                    "SCTP_PACKET_OUT: {}",
+                                    crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                                );
+                                let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                             }
-                            let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                         }
+                    }
+                    let elapsed_poll = start_poll.elapsed();
+                    if elapsed_poll.as_micros() > 100 {
+                        sink_trace!(
+                            self.log_sink,
+                            "[SCTP_SENDER] poll_transmit took {:?}",
+                            elapsed_poll
+                        );
                     }
                 }
             }
@@ -253,13 +289,20 @@ impl SctpSender {
     fn ensure_connection(&self) {
         let mut assoc_guard = self.association.lock().expect("association lock poisoned");
         if assoc_guard.is_none() {
+            if !self.is_client {
+                // If we are server, we wait for incoming connection (handled by Receiver)
+                return;
+            }
             sink_info!(
                 self.log_sink,
                 "[SCTP_SENDER] Initiating SCTP association (ensure_connection)..."
             );
             let mut endpoint = self.endpoint.lock().expect("endpoint lock poisoned");
-            let remote: SocketAddr = "127.0.0.1:5000".parse().expect("Invalid dummy IP address");
-            match endpoint.connect(ClientConfig::default(), remote) {
+            let remote: SocketAddr = "192.168.1.1:5000"
+                .parse()
+                .expect("Invalid dummy IP address");
+            let mut config = ClientConfig::default();
+            match endpoint.connect(config, remote) {
                 Ok((handle, assoc)) => {
                     *assoc_guard = Some(assoc);
                     let mut handle_guard = self
@@ -281,6 +324,7 @@ impl SctpSender {
 
     #[allow(clippy::expect_used)]
     fn send_message(&self, msg: SctpProtocolMessage, pending: &mut Vec<SctpProtocolMessage>) {
+        let start = Instant::now();
         let payload = match msg.serialize() {
             Ok(p) => p,
             Err(e) => {
@@ -336,11 +380,20 @@ impl SctpSender {
             let now = Instant::now();
             while let Some(transmit) = assoc.poll_transmit(now) {
                 if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                    let mut payload = Vec::new();
                     for b in bytes_vec {
-                        payload.extend_from_slice(&b);
+                        let payload = b.to_vec();
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_SENDER] SCTP bytes sent to DTLS: {}",
+                            payload.len()
+                        );
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SCTP_PACKET_OUT: {}",
+                            crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                        );
+                        let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                     }
-                    let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
         } else {
@@ -350,5 +403,10 @@ impl SctpSender {
             );
             pending.push(msg);
         }
+        sink_trace!(
+            self.log_sink,
+            "[SCTP_SENDER] send_message took {:?}",
+            start.elapsed()
+        );
     }
 }

@@ -128,7 +128,6 @@ pub fn spawn_encoder_worker(
                     },
 
                     Err(RecvTimeoutError::Timeout) => {
-                        // Timeout is expected; allows checking the `running` flag.
                         #[cfg(debug_assertions)]
                         logger_debug!(
                             logger,
@@ -142,7 +141,6 @@ pub fn spawn_encoder_worker(
                             logger,
                             "[MediaAgent Encoder] The channel has been disconnected"
                         );
-                        // Optional: break; // If the instruction channel dies, the worker could exit.
                     }
                 }
             }

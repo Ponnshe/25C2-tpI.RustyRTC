@@ -383,24 +383,40 @@ impl Engine {
                         // Spawn DrainChunks thread
                         let sending_files_clone = self.sending_files.clone();
                         let fh_weak = Arc::downgrade(&fh);
+                        let session_clone = self.session.clone();
                         // Interval from config or default
                         let drain_interval_ms = self
                             .config
                             .get("file_handler", "drain_interval_ms")
                             .and_then(|s| s.parse().ok())
-                            .unwrap_or(100);
+                            .unwrap_or(1);
                         let drain_interval = Duration::from_millis(drain_interval_ms);
 
                         thread::spawn(move || {
                             loop {
                                 thread::sleep(drain_interval);
                                 if sending_files_clone.load(Ordering::SeqCst) {
-                                    if let Some(fh) = fh_weak.upgrade() {
-                                        if fh.send(FileHandlerEvents::DrainChunks).is_err() {
-                                            break;
+                                    // Check buffered amount ONCE before the burst
+                                    let mut high_buffer = false;
+                                    if let Ok(guard) = session_clone.lock() {
+                                        if let Some(sess) = guard.as_ref() {
+                                            if sess.buffered_amount() > 512_000 {
+                                                high_buffer = true;
+                                            }
                                         }
-                                    } else {
-                                        break;
+                                    }
+
+                                    if !high_buffer {
+                                        for _ in 0..20 {
+                                            if let Some(fh) = fh_weak.upgrade() {
+                                                if fh.send(FileHandlerEvents::DrainChunks).is_err()
+                                                {
+                                                    return;
+                                                }
+                                            } else {
+                                                return;
+                                            }
+                                        }
                                     }
                                 } else if fh_weak.strong_count() == 0 {
                                     break;
@@ -422,6 +438,7 @@ impl Engine {
                             },
                             srtp_cfg: Some(srtp_cfg),
                             ssl_stream,
+                            is_client: dtls_role == DtlsRole::Client,
                         });
                         *self.session.lock().expect("session lock poisoned") = Some(sess);
                     }

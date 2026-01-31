@@ -1,3 +1,4 @@
+pub mod debug_utils;
 pub mod events;
 pub mod protocol;
 pub mod receiver;

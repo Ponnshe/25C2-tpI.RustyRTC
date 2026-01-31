@@ -14,6 +14,7 @@ use std::thread;
 
 pub struct SctpSession {
     pub tx: Sender<SctpEvents>,
+    association: Arc<Mutex<Option<Association>>>,
 }
 
 impl SctpSession {
@@ -21,6 +22,7 @@ impl SctpSession {
         log_sink: Arc<dyn LogSink>,
         parent_tx: Sender<SctpEvents>,
         ssl_stream: SslStream<BufferedUdpChannel>,
+        is_client: bool,
     ) -> Self {
         let (tx, rx) = channel();
 
@@ -35,7 +37,8 @@ impl SctpSession {
         let association_handle = Arc::new(Mutex::new(None::<AssociationHandle>));
 
         // Init Endpoint
-        let config = EndpointConfig::default();
+        let mut config = EndpointConfig::default();
+        config.max_payload_size(1200);
         let server_config = ServerConfig::default();
         // Wrap config in Arc as required by Endpoint::new
         let endpoint = Endpoint::new(Arc::new(config), Some(Arc::new(server_config)));
@@ -61,6 +64,7 @@ impl SctpSession {
             association_handle.clone(),
             streams.clone(),
             endpoint.clone(),
+            is_client,
         );
 
         // Transport
@@ -98,7 +102,8 @@ impl SctpSession {
                     | SctpEvents::SendReject { .. }
                     | SctpEvents::SendCancel { .. }
                     | SctpEvents::SendChunk { .. }
-                    | SctpEvents::SendEndFile { .. } => {
+                    | SctpEvents::SendEndFile { .. }
+                    | SctpEvents::KickSender => {
                         let _ = tx_sender_clone.send(event);
                     }
                     SctpEvents::TransmitSctpPacket { .. } => {
@@ -126,7 +131,7 @@ impl SctpSession {
             }
         });
 
-        Self { tx }
+        Self { tx, association }
     }
 
     pub fn shutdown(&self) {
@@ -137,5 +142,16 @@ impl SctpSession {
         let _ = self.tx.send(SctpEvents::IncomingSctpPacket {
             sctp_packet: packet,
         });
+    }
+
+    pub fn buffered_amount(&self) -> usize {
+        if let Ok(mut guard) = self.association.lock() {
+            if let Some(assoc) = guard.as_mut() {
+                if let Ok(stream) = assoc.stream(0) {
+                    return stream.buffered_amount().unwrap_or(0);
+                }
+            }
+        }
+        0
     }
 }

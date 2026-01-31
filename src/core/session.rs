@@ -113,6 +113,8 @@ pub struct SessionInitArgs {
     pub srtp_cfg: Option<SrtpSessionConfig>,
     /// The DTLS stream over UDP.
     pub ssl_stream: SslStream<BufferedUdpChannel>,
+    /// Whether we are the DTLS client (active opener)
+    pub is_client: bool,
 }
 
 impl Session {
@@ -123,6 +125,7 @@ impl Session {
             args.logger.clone(),
             sctp_parent_tx,
             args.ssl_stream,
+            args.is_client,
         ));
 
         // Spawn thread to forward SCTP events to EngineEvent
@@ -271,61 +274,77 @@ impl Session {
         let sctp_session = self.sctp_session.clone();
 
         thread::spawn(move || {
-            let mut buf = [0u8; 1500];
-            while rx_run.load(Ordering::SeqCst) {
-                match rx_sock.recv(&mut buf) {
-                    Ok(n) => {
-                        let pkt = &buf[..n];
-                        if n == 0 {
-                            continue;
-                        }
-                        let first_byte = pkt[0];
+            let mut buf = [0u8; 65535];
+            let mut packet_batch: Vec<Vec<u8>> = Vec::with_capacity(64);
 
-                        if (20..=63).contains(&first_byte) {
-                            // DTLS (SCTP)
-                            sctp_session.handle_sctp_packet(pkt.to_vec());
-                        } else if (128..=191).contains(&first_byte) {
-                            // RTP/RTCP
-                            if rx_est.load(Ordering::SeqCst) {
-                                let maybe_tx = rtp_media_tx
-                                    .lock()
-                                    .ok()
-                                    .and_then(|guard| guard.as_ref().cloned());
-                                if let Some(tx_media) = maybe_tx {
-                                    let _ = tx_media.send(pkt.to_vec());
-                                }
+            while rx_run.load(Ordering::SeqCst) {
+                // 1. Burst Drain
+                for _ in 0..64 {
+                    match rx_sock.recv(&mut buf) {
+                        Ok(n) => {
+                            if n > 0 {
+                                packet_batch.push(buf[..n].to_vec());
                             }
-                        } else {
-                            // AppMsg
-                            if let Some(msg) = protocol::parse_app_msg(pkt) {
-                                let args = HandleAppMsgArgs {
-                                    msg,
-                                    rx_sock: &rx_sock,
-                                    rx_tok_peer: &rx_tok_peer,
-                                    rx_est: &rx_est,
-                                    rx_close_done: &rx_close_done,
-                                    rx_peer_init: &rx_peer_init,
-                                    local_token,
-                                    tx: &tx,
-                                    logger: &logger,
-                                    rtp_media_tx: &rtp_media_tx,
-                                    rtp_session_handle: &rtp_session_handle,
-                                    hs_got_syn: &hs_got_syn,
-                                    hs_sent_synack: &hs_sent_synack,
-                                };
-                                handle_app_msg(args);
-                            } else {
-                                sink_debug!(&logger, "Ignored unknown packet (len={})", pkt.len());
-                            }
+                        }
+                        Err(ref e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            break;
+                        }
+                        Err(e) => {
+                            sink_error!(&logger, "recv error: {e}");
+                            let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
+                            return;
                         }
                     }
-                    Err(ref e)
-                        if e.kind() == std::io::ErrorKind::WouldBlock
-                            || e.kind() == std::io::ErrorKind::TimedOut => {}
-                    Err(e) => {
-                        sink_error!(&logger, "recv error: {e}");
-                        let _ = tx.send(EngineEvent::Error(format!("recv error: {e}")));
-                        break;
+                }
+
+                // 2. Process Batch
+                if packet_batch.is_empty() {
+                    thread::yield_now();
+                    continue;
+                }
+
+                for pkt in packet_batch.drain(..) {
+                    let first_byte = pkt[0];
+
+                    if (20..=63).contains(&first_byte) {
+                        // DTLS (SCTP)
+                        sctp_session.handle_sctp_packet(pkt);
+                    } else if (128..=191).contains(&first_byte) {
+                        // RTP/RTCP
+                        if rx_est.load(Ordering::SeqCst) {
+                            let maybe_tx = rtp_media_tx
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.as_ref().cloned());
+                            if let Some(tx_media) = maybe_tx {
+                                let _ = tx_media.send(pkt);
+                            }
+                        }
+                    } else {
+                        // AppMsg
+                        if let Some(msg) = protocol::parse_app_msg(&pkt) {
+                            let args = HandleAppMsgArgs {
+                                msg,
+                                rx_sock: &rx_sock,
+                                rx_tok_peer: &rx_tok_peer,
+                                rx_est: &rx_est,
+                                rx_close_done: &rx_close_done,
+                                rx_peer_init: &rx_peer_init,
+                                local_token,
+                                tx: &tx,
+                                logger: &logger,
+                                rtp_media_tx: &rtp_media_tx,
+                                rtp_session_handle: &rtp_session_handle,
+                                hs_got_syn: &hs_got_syn,
+                                hs_sent_synack: &hs_sent_synack,
+                            };
+                            handle_app_msg(args);
+                        } else {
+                            sink_debug!(&logger, "Ignored unknown packet (len={})", pkt.len());
+                        }
                     }
                 }
             }
@@ -479,6 +498,10 @@ impl Session {
 
     pub fn send_sctp_event(&self, event: SctpEvents) {
         let _ = self.sctp_session.tx.send(event);
+    }
+
+    pub fn buffered_amount(&self) -> usize {
+        self.sctp_session.buffered_amount()
     }
 }
 

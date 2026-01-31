@@ -1,7 +1,7 @@
 use crate::log::log_sink::LogSink;
 use crate::sctp::events::SctpEvents;
 use crate::sctp::stream::SctpStream;
-use crate::{sink_error, sink_info, sink_trace, sink_warn};
+use crate::{sink_debug, sink_error, sink_info, sink_trace, sink_warn};
 use bytes::Bytes;
 use sctp_proto::{
     Association, AssociationHandle, DatagramEvent, Endpoint, Event, Payload, StreamEvent,
@@ -59,19 +59,31 @@ impl SctpReceiver {
             };
 
             // Wait for event or timeout
-            // Use a small timeout if sctp doesn't need immediate attention, to check stream timeouts
             let wait_duration = timeout.unwrap_or(Duration::from_millis(100));
 
+            sink_trace!(
+                self.log_sink,
+                "[SCTP_RECEIVER] wait_duration before: {:?}",
+                wait_duration
+            );
+
             // Cap wait duration to check stream timeouts frequently (e.g. every 1 sec)
-            let wait_duration = wait_duration.min(Duration::from_secs(1));
+            let wait_duration = wait_duration.min(Duration::from_secs(2));
 
             let event = self.rx.recv_timeout(wait_duration);
 
             match event {
                 Ok(SctpEvents::ReadableSctpPacket { sctp_packet }) => {
+                    let start = Instant::now();
                     self.handle_packet(sctp_packet);
+                    sink_trace!(
+                        self.log_sink,
+                        "[SCTP_RECEIVER] Processed ReadableSctpPacket in {:?}",
+                        start.elapsed()
+                    );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    sink_trace!(self.log_sink, "[SCTP_RECEIVER] Timeout",);
                     // Handle SCTP timeout if needed
                     let mut assoc_guard =
                         self.association.lock().expect("association lock poisoned");
@@ -120,16 +132,28 @@ impl SctpReceiver {
 
     #[allow(clippy::expect_used)]
     fn handle_packet(&self, packet: Vec<u8>) {
-        // println!("[CLI DEBUG] SctpReceiver::handle_packet len={}", packet.len());
+        let start = Instant::now();
         sink_trace!(
             self.log_sink,
             "[SCTP_RECEIVER] Handling incoming SCTP packet of size {}",
             packet.len()
         );
+        crate::sctp_log!(
+            self.log_sink,
+            "SCTP_PACKET_IN: {}",
+            crate::sctp::debug_utils::parse_sctp_packet_summary(&packet)
+        );
+        sink_debug!(
+            self.log_sink,
+            "[SCTP_RECEIVER] SCTP bytes received via DTLS: {}",
+            packet.len()
+        );
         let mut endpoint = self.endpoint.lock().expect("Failed to lock endpoint");
         let now = Instant::now();
         // Use a dummy address as we are tunneling over DTLS
-        let remote: SocketAddr = "127.0.0.1:5000".parse().expect("Invalid dummy IP address");
+        let remote: SocketAddr = "192.168.1.1:5000"
+            .parse()
+            .expect("Invalid dummy IP address");
 
         let bytes = Bytes::from(packet);
 
@@ -148,15 +172,18 @@ impl SctpReceiver {
                         .expect("association handle lock poisoned");
                     *my_handle = Some(handle);
                 }
-
-                // Poll the new association immediately
-                self.poll_association();
             }
             Some((_handle, DatagramEvent::AssociationEvent(event))) => {
+                sink_trace!(
+                    self.log_sink,
+                    "[SCTP_RECEIVER] Endpoint returned AssociationEvent: {:?}",
+                    event
+                );
                 let mut my_assoc_guard =
                     self.association.lock().expect("association lock poisoned");
                 if let Some(assoc) = my_assoc_guard.as_mut() {
                     assoc.handle_event(event);
+                    sink_trace!(self.log_sink, "[SCTP_RECEIVER] Association handled event");
                 } else {
                     sink_warn!(
                         self.log_sink,
@@ -164,16 +191,28 @@ impl SctpReceiver {
                     );
                 }
                 drop(my_assoc_guard); // unlock to poll
-                self.poll_association();
             }
             None => {
+                sink_trace!(
+                    self.log_sink,
+                    "[SCTP_RECEIVER] Packet processed by Endpoint (No User Event)"
+                );
                 // Packet consumed, no event.
             }
         }
+        drop(endpoint);
+        self.poll_association();
+        let _ = self.tx.send(SctpEvents::KickSender);
+        sink_trace!(
+            self.log_sink,
+            "[SCTP_RECEIVER] handle_packet took {:?}",
+            start.elapsed()
+        );
     }
 
     #[allow(clippy::expect_used)]
     fn poll_association(&self) {
+        let start = Instant::now();
         let mut assoc_guard = self.association.lock().expect("association lock poisoned");
         if let Some(assoc) = assoc_guard.as_mut() {
             let now = Instant::now();
@@ -181,11 +220,15 @@ impl SctpReceiver {
             // Poll transmit
             while let Some(transmit) = assoc.poll_transmit(now) {
                 if let Payload::RawEncode(bytes_vec) = transmit.payload {
-                    let mut payload = Vec::new();
                     for b in bytes_vec {
-                        payload.extend_from_slice(&b);
+                        let payload = b.to_vec();
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "SCTP_PACKET_OUT: {}",
+                            crate::sctp::debug_utils::parse_sctp_packet_summary(&payload)
+                        );
+                        let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                     }
-                    let _ = self.tx.send(SctpEvents::TransmitSctpPacket { payload });
                 }
             }
 
@@ -251,6 +294,14 @@ impl SctpReceiver {
                 }
             }
         }
+        let elapsed = start.elapsed();
+        if elapsed.as_micros() > 100 {
+            sink_trace!(
+                self.log_sink,
+                "[SCTP_RECEIVER] poll_association took {:?}",
+                elapsed
+            );
+        }
     }
 
     #[allow(clippy::expect_used)]
@@ -314,6 +365,18 @@ impl SctpReceiver {
                             "[SCTP_RECEIVER] Received Chunk for file_id: {} seq: {}",
                             id,
                             seq
+                        );
+                        crate::sctp_log!(
+                            self.log_sink,
+                            "ReceiveChunk: FileID:{} Seq:{} Size:{}",
+                            id,
+                            seq,
+                            payload.len()
+                        );
+                        sink_debug!(
+                            self.log_sink,
+                            "[SCTP_RECEIVER] File bytes received: {}",
+                            payload.len()
                         );
                         {
                             let mut streams = self.streams.write().expect("streams lock poisoned");

@@ -27,7 +27,7 @@ impl WriterWorker {
         log_sink: Arc<dyn LogSink>,
     ) -> Result<Self, String> {
         let file = File::create(&path).map_err(|e| e.to_string())?;
-        let writer = BufWriter::new(file);
+        let writer = BufWriter::with_capacity(10 * 1024 * 1024, file);
         Ok(Self {
             id,
             writer,
@@ -40,6 +40,7 @@ impl WriterWorker {
 
     pub fn run(mut self) {
         sink_info!(self.log_sink, "[WRITER_WORKER] Worker {} started", self.id);
+        let mut total_written = 0;
         loop {
             match self.rx_cmd.recv_timeout(TIMEOUT_DURATION) {
                 Ok(WriterCommands::WriteChunk(payload)) => {
@@ -83,23 +84,18 @@ impl WriterWorker {
                         self.cleanup();
                         break;
                     }
+                    total_written += payload.len();
                     sink_debug!(
                         self.log_sink,
-                        "[WRITER_WORKER] Worker {} wrote {} bytes",
+                        "[WRITER_WORKER] Worker {} wrote {} bytes (Total: {})",
                         self.id,
-                        payload.len()
+                        payload.len(),
+                        total_written
                     );
-                    if let Err(e) = self.writer.flush() {
-                        sink_error!(
-                            self.log_sink,
-                            "[WRITER_WORKER] Worker {} flush error: {}",
-                            self.id,
-                            e
-                        );
-                        let _ = self.tx_listener.send(FileHandlerEvents::Err(e.to_string()));
-                        self.cleanup();
-                        break;
-                    }
+                    let _ = self.tx_listener.send(FileHandlerEvents::DownloadProgress {
+                        id: self.id,
+                        current: total_written,
+                    });
                 }
                 Ok(WriterCommands::Cancel) => {
                     sink_info!(

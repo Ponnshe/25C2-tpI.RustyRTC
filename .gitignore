@@ -76,3 +76,4 @@ TAGS
 
 *.db
 src/target_tmp
+downloads/
